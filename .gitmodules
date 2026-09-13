@@ -1,0 +1,12 @@
+[submodule "third_party/vggt-omega"]
+	path = third_party/vggt-omega
+	url = https://github.com/facebookresearch/vggt-omega.git
+	branch = main
+[submodule "third_party/stereospace"]
+	path = third_party/stereospace
+	url = https://github.com/prs-eth/stereospace.git
+	branch = main
+[submodule "third_party/pycusfm"]
+	path = third_party/pycusfm
+	url = https://github.com/nvidia-isaac/pyCuSFM.git
+	branch = main

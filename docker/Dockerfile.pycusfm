@@ -22,12 +22,14 @@ RUN bash setup.bash cuda13 && \
 # CUDA is supplied by our base image. Install all three TensorRT components
 # explicitly, without resolving that obsolete runtime dependency. Keep build
 # isolation enabled so NVIDIA's wheel-stub build backend can be installed.
+# Retain the working pip installer for these legacy TensorRT packages only.
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install --no-deps \
         tensorrt-cu13==10.13.3.9 \
         tensorrt-cu13-bindings==10.13.3.9 \
-        tensorrt-cu13-libs==10.13.3.9 && \
-    python -m pip install --no-deps -e /opt/third_party/pycusfm
+        tensorrt-cu13-libs==10.13.3.9
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --no-deps -e /opt/third_party/pycusfm
 # pyCuSFM's other dependencies (NumPy, setuptools, PyYAML, Pillow) are already
 # installed by the preceding images. Do not re-resolve TensorRT's runtime stub.
 

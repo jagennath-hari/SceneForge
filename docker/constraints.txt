@@ -1,0 +1,11 @@
+# Keep upstream requirements from replacing the selected CUDA framework stack.
+torch==2.12.1+cu132
+torchvision==0.27.1+cu132
+numpy==1.26.4
+# Newer OpenCV releases require NumPy 2, while VGGT-Omega requires NumPy <2.
+opencv-python==4.11.0.86
+# pyCuSFM uses pkg_resources, removed in newer setuptools releases.
+setuptools<81
+# Match pyCuSFM's CUDA 13 reference container: tensorrt:25.09-py3.
+# Prefer its TensorRT version over choosing a newer release by CUDA minor alone.
+tensorrt-cu13==10.13.3.9

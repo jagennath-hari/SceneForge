@@ -1,0 +1,22 @@
+# Only image definitions, pinned upstream sources and application source enter.
+**
+!docker/
+!docker/**
+!third_party/
+!third_party/vggt-omega/
+!third_party/vggt-omega/**
+!third_party/stereospace/
+!third_party/stereospace/**
+!third_party/pycusfm/
+!third_party/pycusfm/**
+!stereoforge/
+!stereoforge/**
+!configs/
+!configs/**
+**/.git
+**/.git/**
+**/__pycache__
+**/*.pyc
+**/.cache
+**/.venv
+third_party/pycusfm/pycusfm/x86_cuda12/

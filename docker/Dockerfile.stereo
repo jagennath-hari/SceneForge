@@ -1,0 +1,10 @@
+# syntax=docker/dockerfile:1
+ARG BASE_FROM=stereoforge/geometry:latest
+FROM ${BASE_FROM} AS stereo
+
+COPY third_party/stereospace/requirements.txt /opt/requirements/stereospace.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install -r /opt/requirements/stereospace.txt
+# Upstream has no package metadata; retain its source and inference entry point.
+COPY third_party/stereospace/ /opt/third_party/stereospace/
+ENV PYTHONPATH=/workspace/StereoForge:/opt/third_party/stereospace

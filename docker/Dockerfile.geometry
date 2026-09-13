@@ -1,0 +1,10 @@
+# syntax=docker/dockerfile:1
+ARG BASE_FROM=stereoforge/base:latest
+FROM ${BASE_FROM} AS geometry
+
+COPY third_party/vggt-omega/requirements.txt /opt/requirements/vggt-omega.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install -r /opt/requirements/vggt-omega.txt
+COPY third_party/vggt-omega/ /opt/third_party/vggt-omega/
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --no-build-isolation --no-deps /opt/third_party/vggt-omega

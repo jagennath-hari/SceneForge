@@ -93,22 +93,25 @@ when scale is independently calibrated.
 ## Inspect results
 
 Open the new host-side `data/intermediate/geometry_<timestamp>/index.html`.
-The self-contained WebGL viewer displays VGGT points, trajectory, camera frustums,
-RGB/depth/confidence previews and progressive playback. Playback uses the saved
-reconstruction; it is not a live inference display.
+It opens the final colored pyCuSFM reconstruction, or a diagnostic page if
+refinement failed. There is one 3D viewer for a refined run, with points, camera
+frustums, trajectory and progressive playback. Source depth/confidence previews
+are still labeled as VGGT references; dense arrays remain available for recovery.
+If refinement is explicitly disabled, the result is a VGGT-only viewer.
 
-Follow **View pyCuSFM reconstruction** for the validated sparse result or a
-failure report. VGGT provides dense depth; pyCuSFM provides sparse landmarks and
-optimized cameras. The sparse viewer's depth previews remain VGGT references.
-Missing refined cameras are reported explicitly and are not filled with VGGT
-poses labeled as refined.
+Standalone BA exports black point colors. Validation restores the original
+RGB-sampled seed colors through checked observation associations, preserving the
+native export separately. Missing refined cameras are reported explicitly.
+Refinement uses one elapsed-time progress bar whose stage label and counters
+change in place; detailed native output remains in stage log files. Geometry
+serialization likewise uses one progress bar.
 
 Useful artifacts inside each run:
 
 | Path | Contents |
 |---|---|
 | `geometry.npz`, `metadata.json`, `run.json` | Dense arrays, camera data and provenance |
-| `previews/`, `contact_sheet.jpg`, `point_cloud.ply` | Dense inspection artifacts |
+| `previews/`, `contact_sheet.jpg` | Source RGB/depth/confidence inspection |
 | `pycusfm/initialization.json` | Track/landmark counts and unsupported frames |
 | `pycusfm/initialized_sparse/` | Readable depth-initialized COLMAP model |
 | `pycusfm/initialized_binary/` | Binary input used to bypass the native text-import bug |
@@ -152,7 +155,9 @@ python -m stereoforge.geometry.ba_demo \
 ```
 
 Both commands create a new `pycusfm_ba_<timestamp>/` report. Open its `index.html`
-directly; previous results remain intact. The validator restores filenames from
+directly. Report-only recovery also points the main run entry page at the new
+viewer; previous result directories remain intact. `--ba-result` can also name
+the full run’s `pycusfm/` directory to refresh its colors without rerunning BA. The validator restores filenames from
 stable image IDs after checking observation coordinates and camera associations.
 
 To refresh only the existing VGGT viewer from its saved arrays:

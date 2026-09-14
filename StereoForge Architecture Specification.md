@@ -20,11 +20,11 @@ Continuous video or ordered image folder
     → decoded RGB frames and timestamps
     → adaptive multi-GPU VGGT-Ω inference
     → CPU alignment and merging
-    → saved dense geometry and VGGT viewer
+    → saved dense geometry and source previews
     → ALIKED/LightGlue matching
     → multi-frame tracks initialized from VGGT depth
     → pyCuSFM standalone bundle adjustment
-    → validated sparse reconstruction and comparison viewer
+    → validated colored sparse reconstruction and final viewer
 ```
 
 Refinement is enabled by default and can be disabled in configuration. A failed
@@ -217,7 +217,8 @@ A full run publishes `data/intermediate/geometry_<timestamp>/` containing:
 
 - `input_frames/`: decoded images and timestamps for video inputs.
 - `geometry.npz`, `metadata.json`, `run.json`: merged VGGT arrays and provenance.
-- `previews/`, `contact_sheet.jpg`, `point_cloud.ply`, `index.html`: dense inspection.
+- `previews/`, `contact_sheet.jpg`: source image/depth/confidence inspection.
+- `index.html`: entry point to the final pyCuSFM viewer or diagnostic page.
 - `pycusfm/input/`, `config/`, stage logs, and `workspace/`: native refinement inputs
   and diagnostics.
 - `pycusfm/initialized_sparse/` and `initialized_binary/`: depth-seeded BA models.
@@ -228,8 +229,13 @@ A full run publishes `data/intermediate/geometry_<timestamp>/` containing:
 
 The self-contained WebGL viewer supports points, camera frustums, trajectory,
 progressive playback and RGB/depth/confidence previews. Playback reveals a saved
-final reconstruction; it is not live reconstruction. The sparse viewer links back
-to VGGT and labels the dense previews as VGGT references.
+final reconstruction; it is not live reconstruction. The final sparse viewer labels dense previews as VGGT references. Refined runs
+do not generate a second VGGT 3D viewer or dense PLY. Dense arrays are retained
+for recovery; explicitly disabling refinement still produces a VGGT-only viewer.
+Native BA discards RGB colors, so validated points recover their measured seed
+colors through unchanged observation associations, not by assuming point IDs
+remain stable. Detailed native logs remain on disk while one shared progress
+bar displays the active refinement stage.
 
 Sparse cameras are aligned to VGGT with a similarity transform for comparison.
 This removes global gauge differences, not local drift. Missing cameras are not
@@ -237,7 +243,7 @@ filled with invented refined poses. `complete` requires full frame coverage plus
 aligned nonempty geometry; it does not certify reconstruction accuracy. Partial,
 empty, failed and interrupted results retain diagnostic explanations.
 
-The full runner preserves the VGGT report if refinement fails. Recovery commands
+The full runner preserves VGGT arrays and source previews if refinement fails. Recovery commands
 can refine saved arrays, retry BA from initialized landmarks, or regenerate a
 report from completed BA output. These create new result folders rather than
 replacing earlier runs. A successful native exit code alone is insufficient;

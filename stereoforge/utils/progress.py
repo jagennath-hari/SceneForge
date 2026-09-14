@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 import logging
 import sys
 from threading import Event, Thread
@@ -14,13 +15,19 @@ from tqdm import tqdm
 
 LOGGER = logging.getLogger(__name__)
 T = TypeVar("T")
+_shared_progress: ContextVar[Progress | None] = ContextVar("shared_progress", default=None)
 
 
 class Progress:
     """Count completed work only; a heartbeat is not evidence of GPU progress."""
 
     def __init__(self, description: str, total: int | None = None, unit: str = "item") -> None:
+        self.parent = _shared_progress.get()
+        self.total = total
+        self.completed = 0
         self.description = description
+        if self.parent is not None:
+            return
         self.detail = "working"
         self.interactive = sys.stderr.isatty()
         self.bar = tqdm(total=total, desc=description, unit=unit, dynamic_ncols=True,
@@ -32,20 +39,33 @@ class Progress:
         self.thread = Thread(target=self._refresh, name="progress-refresh", daemon=True)
 
     def __enter__(self) -> Progress:
+        if self.parent is not None:
+            self.status("working")
+            return self
         if not self.interactive:
             LOGGER.info("%s: started", self.description)
         self.thread.start()
         return self
 
     def status(self, detail: str) -> None:
+        if self.parent is not None:
+            self.parent.status(f"{self.description} · {detail}")
+            return
         self.detail = detail
         self.bar.set_postfix_str(detail, refresh=False)
 
     def advance(self, count: int = 1) -> None:
         self.completed += count
+        if self.parent is not None:
+            self.status(f"{self.completed}/{self.total}" if self.total is not None else str(self.completed))
+            return
         self.bar.update(count)
 
     def add_work(self, count: int = 1) -> None:
+        if self.parent is not None:
+            if self.total is not None:
+                self.total += count
+            return
         if self.bar.total is not None:
             self.bar.total += count
 
@@ -59,6 +79,9 @@ class Progress:
                             self.description, self.completed, monotonic() - self.started, self.detail)
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
+        if self.parent is not None:
+            self.status("done" if exc_type is None else "stopped")
+            return
         self.stopped.set()
         self.thread.join()
         self.status("done" if exc_type is None else "stopped")
@@ -66,6 +89,17 @@ class Progress:
         if not self.interactive:
             LOGGER.info("%s: %s, %d completed in %.1fs", self.description, self.detail,
                         self.completed, monotonic() - self.started)
+
+
+@contextmanager
+def progress_group(description: str) -> Iterator[Progress]:
+    """Reuse one elapsed-time bar for all nested stages and item counters."""
+    with Progress(description) as progress:
+        token = _shared_progress.set(progress)
+        try:
+            yield progress
+        finally:
+            _shared_progress.reset(token)
 
 
 @contextmanager

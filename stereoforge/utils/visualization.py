@@ -17,7 +17,7 @@ from stereoforge.geometry.config import PreviewConfig
 from stereoforge.geometry.geometry_utils import confidence_filtered_mask, depth_percentiles
 from stereoforge.geometry.types import GeometrySequence
 from .artifacts import write_json
-from .progress import Progress, tracked
+from .progress import Progress, progress_group, tracked
 
 FloatArray = NDArray[np.float32]
 ByteArray = NDArray[np.uint8]
@@ -81,6 +81,14 @@ class GeometryReportWriter:
     def write(
         self, sequence: GeometrySequence, output: Path, *,
         provenance: Mapping[str, Any] | None = None,
+        viewer: bool = True,
+    ) -> dict[str, Any]:
+        with progress_group("Saving geometry"):
+            return self._write(sequence, output, provenance=provenance, viewer=viewer)
+
+    def _write(
+        self, sequence: GeometrySequence, output: Path, *,
+        provenance: Mapping[str, Any] | None, viewer: bool,
     ) -> dict[str, Any]:
         sequence.validate()
         output = Path(output)
@@ -95,9 +103,10 @@ class GeometryReportWriter:
         with Progress("Compressing geometry.npz"):
             self._write_arrays(sequence, arrays, output)
         records = self._write_previews(sequence, arrays, output, depth_range, confidence_range)
-        with Progress("Exporting point cloud"):
-            xyz, colors, point_frames = self._sample_points(arrays)
-            self._write_ply(output / "point_cloud.ply", xyz, colors)
+        if viewer:
+            with Progress("Exporting point cloud"):
+                xyz, colors, point_frames = self._sample_points(arrays)
+                self._write_ply(output / "point_cloud.ply", xyz, colors)
         metadata: dict[str, Any] = {
             "format_version": 1, "units": sequence.units,
             "meters_per_unit": sequence.meters_per_unit,
@@ -112,12 +121,10 @@ class GeometryReportWriter:
             "contact_sheet_note": "Overview of up to 24 evenly spaced frames; individual PNGs include every frame",
             "provenance": dict(provenance or {}), "frames": records,
         }
-        if provenance and provenance.get("refinement"):
-            metadata["refinement_link"] = "pycusfm/index.html"
-            metadata["refinement_label"] = "View pyCuSFM reconstruction"
         write_json(output / "metadata.json", metadata)
-        with Progress("Writing HTML viewer"):
-            self._write_viewer(output, metadata, xyz, colors, point_frames)
+        if viewer:
+            with Progress("Writing HTML viewer"):
+                self._write_viewer(output, metadata, xyz, colors, point_frames)
         return metadata
 
     @staticmethod

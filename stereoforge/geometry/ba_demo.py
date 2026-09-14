@@ -41,6 +41,10 @@ def publish_saved_ba(source: Path, output: Path, metadata: dict) -> int:
         "bundle_adjustment_backend": "bundle_adjustment_runner", "report_only": True,
     })
     summary = write_refinement_report(output, metadata, max_points=240000)
+    (output.parent / "index.html").write_text(
+        '<!doctype html><meta charset="utf-8">'
+        f'<meta http-equiv="refresh" content="0; url={output.name}/index.html">'
+        f'<a href="{output.name}/index.html">Open final reconstruction</a>', encoding="utf-8")
     logging.info("%s: %d/%d frames, %d points. Open %s", summary.get("status"),
                  summary.get("registered_frames", 0), len(metadata["frames"]),
                  summary.get("sparse_points", 0), output / "index.html")
@@ -61,8 +65,8 @@ def main() -> int:
         metadata = json.loads((run / "metadata.json").read_text())
         if args.ba_result is not None:
             source_ba = args.ba_result.expanduser().resolve()
-            if source_ba.parent != run or not source_ba.name.startswith("pycusfm_ba_"):
-                raise ValueError("--ba-result must be a pycusfm_ba_* retry directory inside --run")
+            if source_ba.parent != run or not (source_ba.name == "pycusfm" or source_ba.name.startswith("pycusfm_ba_")):
+                raise ValueError("--ba-result must be pycusfm or a pycusfm_ba_* retry directory inside --run")
             return publish_saved_ba(source_ba, output, metadata)
         config = RefinementConfig(device=args.device)
         source = run / "pycusfm"

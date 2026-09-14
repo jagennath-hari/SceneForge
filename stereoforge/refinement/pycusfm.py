@@ -18,7 +18,7 @@ from PIL import Image
 import torch
 
 from stereoforge.utils.artifacts import write_json
-from stereoforge.utils.progress import Progress, tracked
+from stereoforge.utils.progress import Progress, progress_group, tracked
 from stereoforge.geometry.config import RefinementConfig
 from stereoforge.geometry.types import GeometrySequence
 from .tracks import NativeMatchesReader
@@ -93,6 +93,11 @@ class CuSFMRefiner:
 
     def run(self, sequence: GeometrySequence, timestamps: tuple[float, ...] | None,
             directory: Path) -> CuSFMResult:
+        with progress_group("pyCuSFM"):
+            return self._run(sequence, timestamps, directory)
+
+    def _run(self, sequence: GeometrySequence, timestamps: tuple[float, ...] | None,
+             directory: Path) -> CuSFMResult:
         package = self.preflight()
         if self.config.device >= torch.cuda.device_count():
             raise ValueError("refinement.device is outside the visible CUDA devices")
@@ -166,7 +171,7 @@ class CuSFMRefiner:
                 if env.get("USE_SYSTEM_PROTOBUF", "false").lower() != "true":
                     stage_env["LD_LIBRARY_PATH"] = str(package / "lib") + ":" + env.get("LD_LIBRARY_PATH", "")
             log = directory / f"{stage}.log"
-            with Progress(f"pyCuSFM · {label}"), log.open("w", encoding="utf-8") as stream:
+            with Progress(label), log.open("w", encoding="utf-8") as stream:
                 process = subprocess.Popen(command, env=stage_env,
                                            stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
                 try:

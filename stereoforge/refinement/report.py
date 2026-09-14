@@ -23,7 +23,7 @@ def write_refinement_status(directory: Path, message: str, status: str = "failed
         '<!doctype html><meta charset="utf-8"><title>pyCuSFM diagnostics</title>'
         '<style>body{background:#101620;color:#eee;font:16px system-ui;margin:40px}'
         'a{color:#79cafa}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style>'
-        '<h1>pyCuSFM refinement</h1><p><a href="../index.html">View unrefined VGGT geometry</a></p>'
+        '<h1>pyCuSFM refinement</h1><p><a href="../geometry.npz">Saved source geometry</a></p>'
         f'<p>Status: {html.escape(status)}</p><pre>{html.escape(message)}</pre>'
         f'<h2>Stage logs</h2><ul>{links}</ul>', encoding="utf-8")
     return summary
@@ -151,6 +151,8 @@ def write_refinement_report(directory: Path, original: dict, max_points: int) ->
                "trajectory_rms_after_alignment": float(np.sqrt(np.mean(np.sum((scale*source+translation-target)**2, axis=1)))) if aligned else None,
                "note": "Alignment removes global gauge differences for comparison, not local drift. Dense depth remains the original VGGT estimate."}
     metadata = deepcopy(original)
+    metadata.pop("refinement_link", None)
+    metadata.pop("refinement_label", None)
     refinement_path = directory / "refinement.json"
     refinement = json.loads(refinement_path.read_text()) if refinement_path.is_file() else {}
     feature_type = refinement.get("feature_type")
@@ -158,7 +160,7 @@ def write_refinement_report(directory: Path, original: dict, max_points: int) ->
     reconstruction_name = f"pyCuSFM · {feature_name}" if feature_name else "pyCuSFM"
     summary["feature_type"] = feature_type
     metadata.update(frames=frames, reconstruction_name=reconstruction_name, sparse_refinement=True,
-                    refinement_link="../index.html", refinement_label="View VGGT reconstruction", refinement_summary=summary)
+                    refinement_summary=summary)
     if not aligned:
         metadata["units"] = "reconstruction_units"
         metadata["meters_per_unit"] = None

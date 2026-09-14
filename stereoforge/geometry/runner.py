@@ -128,7 +128,8 @@ class GeometryDemoRunner:
                 provenance["refinement"] = {"status": "pending"}
             write_json(staging / "run.json", provenance)
             # Preserve the unrefined VGGT result independently of SfM success.
-            metadata = self.report_writer.write(sequence, staging, provenance=provenance)
+            metadata = self.report_writer.write(sequence, staging, provenance=provenance,
+                                                viewer=not self.config.refinement.enabled)
             if self.config.refinement.enabled:
                 try:
                     refinement = CuSFMRefiner(self.config.refinement).run(sequence, timestamps, staging / "pycusfm")
@@ -139,12 +140,19 @@ class GeometryDemoRunner:
                     status = "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed"
                     message = str(exc) or "Refinement interrupted by user"
                     provenance["refinement"] = write_refinement_status(staging / "pycusfm", message, status)
-                    LOGGER.warning("pyCuSFM %s: %s. Preserving VGGT report and all refinement files.", status, message)
+                    LOGGER.warning("pyCuSFM %s: %s. Preserving source geometry and all refinement files.", status, message)
                 if provenance["refinement"]["status"] not in {"complete", "failed", "interrupted"}:
                     LOGGER.warning("pyCuSFM returned a partial or empty reconstruction; inspect its report and logs")
                 write_json(staging / "run.json", provenance)
                 metadata["provenance"] = provenance
                 write_json(staging / "metadata.json", metadata)
+                # One visible reconstruction: the entry page opens the final
+                # sparse viewer, or its diagnostic page if refinement failed.
+                (staging / "index.html").write_text(
+                    '<!doctype html><meta charset="utf-8">'
+                    '<meta http-equiv="refresh" content="0; url=pycusfm/index.html">'
+                    '<title>StereoForge reconstruction</title>'
+                    '<a href="pycusfm/index.html">Open final reconstruction</a>', encoding="utf-8")
             summaries = tuple(FrameSummary(f["frame_index"], f["valid_fraction"], f["depth_p50"])
                               for f in metadata["frames"])
         # Only return success after the complete report is published.

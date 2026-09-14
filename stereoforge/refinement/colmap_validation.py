@@ -36,6 +36,13 @@ class ColmapOutputValidator:
         # identity via the COLMAP ID, then verify the measurement ordering before
         # restoring our original source filename. Never infer identity from order.
         expected_images = {}
+        seed_point_ids = {}
+        seed_colors = {}
+        with (initialized / "points3D.txt").open() as stream:
+            for line in stream:
+                if line.strip() and not line.startswith("#"):
+                    fields = line.split()
+                    seed_colors[int(fields[0])] = fields[4:7]
         with (initialized / "images.txt").open() as stream:
             while line := stream.readline():
                 if line.strip() and not line.startswith("#"):
@@ -49,6 +56,7 @@ class ColmapOutputValidator:
                     uv = np.array([(float(values[i]), float(values[i+1]))
                                    for i in range(0, len(values), 3)]).reshape(-1, 2)
                     expected_images[identifier] = (int(fields[8]), fields[9], uv)
+                    seed_point_ids[identifier] = [int(values[i+2]) for i in range(0, len(values), 3)]
         images = {}
         with candidates[0].open() as stream:
             while line := stream.readline():
@@ -104,6 +112,7 @@ class ColmapOutputValidator:
                 if not np.isfinite(xyz).all():
                     continue
                 observations, errors, frames = [], [], set()
+                seed_ids = set()
                 for j in range(8, len(fields), 2):
                     image_id, index = int(fields[j]), int(fields[j+1])
                     if image_id not in images or index < 0 or index >= len(images[image_id][4]):
@@ -111,6 +120,7 @@ class ColmapOutputValidator:
                     if image_id in frames or (image_id, index) in claimed_observations:
                         raise ValueError("Ambiguous optimized landmark observations")
                     frames.add(image_id)
+                    seed_ids.add(seed_point_ids[image_id][index])
                     claimed_observations.add((image_id, index))
                     _, camera_id, rotation, translation, uv = images[image_id]
                     u, v, point_id = uv[index]
@@ -125,7 +135,12 @@ class ColmapOutputValidator:
                         observations.append((image_id, index))
                         errors.append(error)
                 if len(observations) >= self.min_observations:
-                    points.append((identifier, fields[1:7], observations, float(np.mean(errors))))
+                    if len(seed_ids) != 1 or next(iter(seed_ids)) not in seed_colors:
+                        raise ValueError("Optimized track cannot be associated with one colored seed landmark")
+                    # Standalone BA exports black RGB. Restore measured seed color
+                    # through unchanged observations, not potentially renumbered point IDs.
+                    color = seed_colors[next(iter(seed_ids))]
+                    points.append((identifier, [*fields[1:4], *color], observations, float(np.mean(errors))))
         if not points:
             raise ValueError("No landmarks passed post-BA reprojection validation; raw BA output is retained in workspace/ba_raw")
         retained_images: dict[int, list[tuple[int, int]]] = {}
@@ -150,4 +165,5 @@ class ColmapOutputValidator:
                              + " ".join(f"{i} {j}" for i, j in tracks[identifier]) + "\n")
         return {"native_landmarks": input_points, "validated_landmarks": len(points),
                 "validated_frames": len(retained_images), "post_ba_max_reprojection_error": self.max_error,
-                "min_track_observations": self.min_observations}
+                "min_track_observations": self.min_observations,
+                "point_color_source": "RGB seed landmarks mapped through validated observations"}

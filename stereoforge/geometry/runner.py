@@ -89,11 +89,18 @@ class GeometryDemoRunner:
             checkpoint = self._resolve_checkpoint(request)
         with staged_output(request.output) as staging:
             timestamps: tuple[float, ...] | None = None
+            video_extraction: dict[str, Any] | None = None
             if request.video is not None:
                 LOGGER.info("Decoding continuous video; all frames are retained unless selection options are supplied")
-                sampler = VideoFrameSampler(request.start_seconds or 0.0, request.duration, request.frame_count)
+                sampler = VideoFrameSampler(request.start_seconds or 0.0, request.duration, request.frame_count,
+                                            max_edge=3 * self.config.geometry.image_resolution)
                 sampled = sampler.sample(request.video, staging / "input_frames")
                 image_paths, timestamps = sampled.paths, sampled.timestamps_seconds
+                video_extraction = {
+                    "source_size_wh": sampled.source_size, "working_size_wh": sampled.working_size,
+                    "decoder": sampled.decoder, "max_edge": sampler.max_edge,
+                    "note": "Working images are resized; intrinsics describe VGGT processed images, not source video pixels",
+                }
                 with Progress("Validating decoded images"):
                     validate_image_paths(image_paths)
             geometry = self.config.geometry
@@ -117,6 +124,7 @@ class GeometryDemoRunner:
                 "preprocess_mode": geometry.preprocess_mode, "device": geometry.device,
                 "video": str(request.video) if request.video else None,
                 "video_timestamps_seconds": timestamps,
+                "video_extraction": video_extraction,
                 "frame_count": len(image_paths),
                 "selection": {"start_seconds": request.start_seconds, "duration": request.duration,
                               "requested_frames": request.frame_count},

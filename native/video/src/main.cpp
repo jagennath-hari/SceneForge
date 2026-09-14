@@ -2,6 +2,7 @@
 #include <nlohmann/json.hpp>
 #include <charconv>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -22,7 +23,8 @@ int main(int argc, char** argv) {
             const std::string key = argv[i];
             if (key == "--help") {
                 std::cout << "stereoforge-extract-frames --input VIDEO --output EMPTY_DIR "
-                             "[--start-seconds N] [--duration N] [--frames N]\n";
+                             "[--start-seconds N] [--duration N] [--frames N] "
+                             "[--max-edge N (default 1536; 0 = original)] [--hardware cuda|cpu]\n";
                 return 0;
             }
             if (++i == argc) throw std::invalid_argument("Missing value for " + key);
@@ -31,17 +33,27 @@ int main(int argc, char** argv) {
             else if (key == "--output") options.output = value;
             else if (key == "--start-seconds") options.start_seconds = number(value);
             else if (key == "--duration") options.duration = number(value);
-            else if (key == "--frames") {
+            else if (key == "--hardware") {
+                if (value != "cuda" && value != "cpu") throw std::invalid_argument("Hardware must be cuda or cpu");
+                options.hardware = value == "cuda";
+            }
+            else if (key == "--frames" || key == "--max-edge") {
                 std::size_t count{};
                 const std::from_chars_result parsed = std::from_chars(value.data(), value.data() + value.size(), count);
                 if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) throw std::invalid_argument("Invalid frame count");
-                options.count = count;
+                if (key == "--frames") options.count = count;
+                else {
+                    if (count > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+                        throw std::invalid_argument("Maximum edge is too large");
+                    options.max_edge = static_cast<int>(count);
+                }
             } else throw std::invalid_argument("Unknown option: " + key);
         }
         if (options.input.empty() || options.output.empty()) throw std::invalid_argument("--input and --output are required");
         const stereoforge::video::VideoExtractor extractor{std::move(options)};
         const std::size_t count = extractor.extract([](const stereoforge::video::ExtractionProgress& p) {
             nlohmann::json event{{"saved", p.saved_frames}, {"timestamp_seconds", p.timestamp_seconds}};
+            event["stage"] = p.stage;
             event["total"] = p.estimated_total ? nlohmann::json(*p.estimated_total) : nlohmann::json(nullptr);
             std::cout << event.dump() << std::endl;
         });

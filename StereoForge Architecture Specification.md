@@ -48,8 +48,8 @@ StereoForge/
 ├── scripts/build_and_start.sh        # Build environment and enter/attach to it
 ├── native/video/
 │   ├── CMakeLists.txt
-│   ├── include/stereoforge/video/video_extractor.hpp
-│   └── src/                         # FFmpeg RAII owners, extractor, CLI
+│   ├── include/stereoforge/video/    # All .hpp/.cuh headers and RAII declarations
+│   └── src/                         # Only .cpp/.cu translation units
 ├── stereoforge/
 │   ├── geometry/
 │   │   ├── types.py                 # GeometrySequence and FrameGeometry
@@ -150,9 +150,68 @@ calibration.
 
 ## Video and adaptive inference
 
-The C++20 FFmpeg extractor decodes every frame by default, writes PNGs, flushes
-delayed frames at EOF, and records timestamps in a manifest. Its Python adapter
-handles process lifecycle and progress; it contains no second decoding loop.
+The C++20 FFmpeg extractor decodes every frame by default, using NVDEC when
+available. Unsupported hardware decoding falls back to CPU, restarting from the
+beginning if a hardware error occurs mid-stream. A CUDA area-resampling kernel
+reduces NV12, P010 and YUV420P surfaces before host transfer. Other surface formats
+are downloaded and resized on CPU. CUDA allocations use the decoder's owning
+context, stream and a reusable frame pool.
+
+The resize kernel uses 32 × 4 thread blocks, with each warp accessing adjacent
+scalar components (including interleaved UV). The normal path cooperatively loads
+source tiles into shared memory and executes one unconditional block barrier
+before consuming them. Partial edge blocks participate in that barrier before
+inactive lanes return. Tiles are never overwritten within a block, so a second
+barrier is unnecessary. Pixel layout and bit shifts are template specializations;
+P010 samples are unpacked before integration and clamped/repacked at the output.
+Ratios whose footprints exceed the 16 KiB shared-memory budget use direct reads.
+This avoids oversized shared allocations; arbitrary-ratio shared gathers are not
+assumed to be bank-conflict-free. All plane kernels use the decoder's stream,
+with launch checks and one checked stream synchronization per frame.
+
+CUDA changes must explain ownership, bounds, memory-access patterns and why each
+barrier is needed. Warp synchronization alone is insufficient when data crosses
+warps. Performance claims require target-device profiling, including register
+pressure, occupancy, memory transactions and shared-bank conflicts, alongside
+end-to-end extraction timing. Correctness validation should cover pitched planes,
+partial tiles, NV12/P010/YUV420P, large ratios and comparison with a CPU area-resize
+reference. Run Compute Sanitizer memory, race and synchronization checks before
+treating a kernel change as validated. The present kernel changes have only been
+reviewed statically; GPU correctness and performance remain unmeasured.
+
+Full-video extraction detects visible CUDA devices. With multiple devices and a
+usable packet index, it partitions the sequence near equally spaced frame counts
+at keyframe timestamps. Each GPU owns an independent demuxer and decoder, seeks
+back to the section's keyframe, and keeps only frames in its half-open timestamp
+interval. The first section decodes from the beginning. Temporary per-section
+outputs are joined before cleanup and validated against every indexed packet PTS:
+missing/duplicate frames, differing dimensions, or non-increasing times invalidate
+the parallel result. Streams without a reliable one-packet/one-frame timestamp
+index, or failed section validation, use sequential extraction. Explicit diagnostic
+frame/time selections remain sequential to preserve their selection semantics.
+This adds a compressed-packet scan but avoids decoding the entire video on every
+GPU. It preserves all selected frames rather than sampling or dropping them.
+
+Extraction produces working images with a maximum edge of 3 × VGGT's configured
+resolution (1536 at the default 512). It never upscales or crops; even-dimension
+rounding can slightly alter aspect ratio. RGB conversion and lossless PNG encoding
+share a CPU budget of up to eight workers (at least one per GPU section), with at
+most two outstanding frames per worker. A single progress bar counts successful
+writes across sections, not queued work. Final file ordering follows timestamps,
+independently of section completion order. Delayed decoded frames
+are flushed at EOF; timestamps and original/working sizes are written to a manifest
+only after all PNGs finish. The original video is retained for future full-resolution
+stereo rendering. VGGT's own crop/resize remains authoritative for its predicted
+intrinsics; working-image coordinates must not be mistaken for original-video pixels.
+
+The Python adapter manages subprocess cancellation, progress and an extraction cache
+under `.frames/` beside the source video. Cache keys include source path, size,
+timestamps/inode, selection, resolution and executable hash. A per-key file lock
+and atomic directory rename prevent partial or concurrent publication. Reuse checks
+the manifest, expected files, sizes and timestamps; it is not a content checksum of
+every image. Published runs hard-link immutable frames where possible, copying
+across filesystems. Cache deletion does not invalidate saved run links. There is
+no second Python decoding loop.
 Native code uses namespaces, classes, explicit types, RAII resource ownership,
 `[[nodiscard]]` where appropriate, and `this->` for instance member access.
 

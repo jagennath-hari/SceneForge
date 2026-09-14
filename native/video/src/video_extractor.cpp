@@ -1,8 +1,16 @@
 #include "stereoforge/video/video_extractor.hpp"
-#include "ffmpeg_resources.hpp"
+#include "stereoforge/video/ffmpeg_resources.hpp"
+#include "stereoforge/video/frame_writer.hpp"
+#include "stereoforge/video/cuda_resize.hpp"
+#include "stereoforge/video/parallel_extractor.hpp"
+extern "C" {
+#include <libavutil/pixdesc.h>
+}
+#include <iostream>
 
 #include <nlohmann/json.hpp>
 #include <cmath>
+#include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
@@ -13,70 +21,37 @@ namespace stereoforge::video {
 namespace {
 using namespace detail;
 
-class PngWriter final {
+class HardwareDecodeError final : public std::runtime_error {
 public:
-    explicit PngWriter(const AVFrame& source) :
-        rgb_(require(FramePtr{av_frame_alloc()})), packet_(require(PacketPtr{av_packet_alloc()})) {
-        const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_PNG);
-        if (!codec) throw std::runtime_error("FFmpeg PNG encoder is unavailable");
-        this->encoder_ = require(CodecPtr{avcodec_alloc_context3(codec)});
-        this->encoder_->width = source.width;
-        this->encoder_->height = source.height;
-        this->encoder_->pix_fmt = AV_PIX_FMT_RGB24;
-        this->encoder_->time_base = AVRational{1, 1};
-        this->encoder_->compression_level = 1;  // Lossless; favor extraction speed over file size.
-        check(avcodec_open2(this->encoder_.get(), codec, nullptr), "Open PNG encoder");
-        this->rgb_->width = source.width;
-        this->rgb_->height = source.height;
-        this->rgb_->format = AV_PIX_FMT_RGB24;
-        check(av_frame_get_buffer(this->rgb_.get(), 32), "Allocate RGB frame");
-    }
-
-    void write(const AVFrame& source, const std::filesystem::path& path, std::size_t index) {
-        if (source.width != this->rgb_->width || source.height != this->rgb_->height)
-            throw std::runtime_error("Video changes dimensions within the recording");
-        check(av_frame_make_writable(this->rgb_.get()), "Make RGB buffer writable");
-        // FFmpeg may change pixel format between frames. Recreate as necessary.
-        if (!this->scale_ || source.format != this->format_) {
-            this->scale_.reset(sws_getContext(source.width, source.height, static_cast<AVPixelFormat>(source.format),
-                                       this->rgb_->width, this->rgb_->height, AV_PIX_FMT_RGB24, SWS_BILINEAR,
-                                       nullptr, nullptr, nullptr));
-            if (!this->scale_) throw std::runtime_error("Cannot create RGB conversion context");
-            this->format_ = source.format;
-        }
-        const int* coefficients = sws_getCoefficients(source.colorspace == AVCOL_SPC_UNSPECIFIED
-                                                       ? SWS_CS_DEFAULT : static_cast<int>(source.colorspace));
-        check(sws_setColorspaceDetails(this->scale_.get(), coefficients, source.color_range == AVCOL_RANGE_JPEG,
-                                      coefficients, 1, 0, 1 << 16, 1 << 16), "Configure color conversion");
-        if (sws_scale(this->scale_.get(), source.data, source.linesize, 0, source.height,
-                      this->rgb_->data, this->rgb_->linesize) != source.height)
-            throw std::runtime_error("Incomplete RGB conversion");
-        this->rgb_->pts = static_cast<std::int64_t>(index);
-        check(avcodec_send_frame(this->encoder_.get(), this->rgb_.get()), "Encode PNG");
-        // PNG is an intra-frame encoder with no delayed frames: one packet per image.
-        check(avcodec_receive_packet(this->encoder_.get(), this->packet_.get()), "Receive PNG");
-        std::ofstream output(path, std::ios::binary);
-        output.exceptions(std::ios::badbit | std::ios::failbit);
-        output.write(reinterpret_cast<const char*>(this->packet_->data), this->packet_->size);
-        output.close();
-        av_packet_unref(this->packet_.get());
-    }
-
-private:
-    CodecPtr encoder_;
-    FramePtr rgb_;
-    PacketPtr packet_;
-    ScalePtr scale_;
-    int format_{-1};
+    using std::runtime_error::runtime_error;
 };
+
+[[nodiscard]] AVPixelFormat choose_format(AVCodecContext*, const AVPixelFormat* formats) {
+    for (const AVPixelFormat* format = formats; *format != AV_PIX_FMT_NONE; ++format)
+        if (*format == AV_PIX_FMT_CUDA) return *format;
+    for (const AVPixelFormat* format = formats; *format != AV_PIX_FMT_NONE; ++format) {
+        const AVPixFmtDescriptor* descriptor = av_pix_fmt_desc_get(*format);
+        if (descriptor && !(descriptor->flags & AV_PIX_FMT_FLAG_HWACCEL)) return *format;
+    }
+    return AV_PIX_FMT_NONE;
+}
+
+void decode_check(int result, bool hardware, const char* operation) {
+    try { check(result, operation); }
+    catch (const std::runtime_error& error) {
+        if (hardware) throw HardwareDecodeError(error.what());
+        throw;
+    }
+}
 }  // namespace
 
 VideoExtractor::VideoExtractor(ExtractionOptions options) : options_(std::move(options)) {
     if (!std::isfinite(this->options_.start_seconds) || this->options_.start_seconds < 0 ||
         (this->options_.duration && (!std::isfinite(*this->options_.duration) || *this->options_.duration <= 0 ||
                               !std::isfinite(this->options_.start_seconds + *this->options_.duration))) ||
-        (this->options_.count && *this->options_.count == 0))
-        throw std::invalid_argument("Invalid start, duration or frame count");
+        (this->options_.count && *this->options_.count == 0) || this->options_.max_edge < 0 ||
+        (this->options_.max_edge > 0 && this->options_.max_edge < 2))
+        throw std::invalid_argument("Invalid start, duration, frame count or maximum edge");
 }
 
 std::size_t VideoExtractor::extract(const ProgressCallback& progress) const {
@@ -84,6 +59,30 @@ std::size_t VideoExtractor::extract(const ProgressCallback& progress) const {
     if (!std::filesystem::is_regular_file(this->options_.input)) throw std::runtime_error("Input video does not exist");
     std::filesystem::create_directories(this->options_.output);
     if (!std::filesystem::is_empty(this->options_.output)) throw std::runtime_error("Output directory must be empty");
+    if (this->options_.hardware && this->options_.start_seconds == 0 &&
+        !this->options_.duration && !this->options_.count) {
+        const ParallelExtractor parallel(this->options_);
+        const std::optional<std::size_t> count = parallel.extract(progress);
+        if (count) return *count;
+    }
+    return this->extract_section(progress, 0, nullptr, 0);
+}
+
+std::size_t VideoExtractor::extract_section(const ProgressCallback& progress, int device,
+    const detail::DecodeSection* section, unsigned writers) const {
+    try { return this->extract_once(progress, this->options_.hardware, device, section, writers); }
+    catch (const HardwareDecodeError& error) {
+        std::cerr << "NVIDIA decode unavailable; restarting extraction on CPU: " << error.what() << '\n';
+        // This directory was empty on entry and belongs to this extraction.
+        for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(this->options_.output))
+            std::filesystem::remove(entry.path());
+        return this->extract_once(progress, false, device, section, writers);
+    }
+}
+
+std::size_t VideoExtractor::extract_once(const ProgressCallback& progress, bool hardware,
+    int device_index, const detail::DecodeSection* section, unsigned worker_limit) const {
+    using namespace detail;
     AVFormatContext* raw = nullptr;
     const int opened = avformat_open_input(&raw, this->options_.input.c_str(), nullptr, nullptr);
     FormatPtr input{raw};
@@ -102,26 +101,69 @@ std::size_t VideoExtractor::extract(const ProgressCallback& progress) const {
     decoder->thread_count = 0;  // FFmpeg chooses decoder threads for this machine.
     decoder->err_recognition = AV_EF_CRCCHECK | AV_EF_EXPLODE;
     decoder->pkt_timebase = stream->time_base;
-    check(avcodec_open2(decoder.get(), codec, nullptr), "Open decoder");
+    bool hardware_enabled = false;
+    if (hardware) {
+        for (int index = 0; ; ++index) {
+            const AVCodecHWConfig* configuration = avcodec_get_hw_config(codec, index);
+            if (!configuration) break;
+            if (configuration->device_type == AV_HWDEVICE_TYPE_CUDA &&
+                (configuration->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)) {
+                AVBufferRef* device = nullptr;
+                const std::string device_name = std::to_string(device_index);
+                const int result = av_hwdevice_ctx_create(&device, AV_HWDEVICE_TYPE_CUDA, device_name.c_str(), nullptr, 0);
+                if (result >= 0) {
+                    decoder->hw_device_ctx = device;
+                    decoder->get_format = choose_format;
+                    decoder->thread_count = 1;  // NVDEC owns its decode surface queue.
+                    hardware_enabled = true;
+                } else {
+                    av_buffer_unref(&device);
+                    std::cerr << "NVIDIA decoder unavailable; using CPU decoding\n";
+                }
+                break;
+            }
+        }
+    }
+    decode_check(avcodec_open2(decoder.get(), codec, nullptr), hardware_enabled, "Open decoder");
+    if (section && section->seek) {
+        check(av_seek_frame(input.get(), stream_index, section->begin, AVSEEK_FLAG_BACKWARD), "Seek section keyframe");
+        avcodec_flush_buffers(decoder.get());
+    }
     PacketPtr packet = require(PacketPtr{av_packet_alloc()});
     FramePtr frame = require(FramePtr{av_frame_alloc()});
-    std::unique_ptr<PngWriter> writer;
+    FrameWriterPool writers(this->options_.max_edge, worker_limit);
+    CudaResizer resizer;
+    std::deque<std::future<void>> pending;
+    std::size_t saved = 0;
+    int source_width = 0;
+    int source_height = 0;
+    bool used_cuda = false;
     std::optional<double> origin;
     if (stream->start_time != AV_NOPTS_VALUE) origin = stream->start_time * av_q2d(stream->time_base);
+    if (section) origin = section->origin * av_q2d(stream->time_base);
     std::optional<double> previous;
     std::optional<std::size_t> total = this->options_.count;
-    if (!total && this->options_.start_seconds == 0 && !this->options_.duration && stream->nb_frames > 0)
+    if (!section && !total && this->options_.start_seconds == 0 && !this->options_.duration && stream->nb_frames > 0)
         total = static_cast<std::size_t>(stream->nb_frames);
     if (progress) progress({0, 0, total});
     nlohmann::json records = nlohmann::json::array();
+    const std::function<void()> complete_one = [&] {
+        pending.front().get();
+        pending.pop_front();
+        ++saved;
+        records[saved - 1]["bytes"] = std::filesystem::file_size(
+            this->options_.output / records[saved - 1]["file"].get<std::string>());
+        if (progress) progress({saved, records[saved - 1]["timestamp_seconds"].get<double>(), total});
+    };
     bool finished = false;
     // Decode from the beginning even for a diagnostic selection: stable timestamp
     // origin and no seek/keyframe ambiguity. Full-video extraction is the default.
     const std::function<void()> receive = [&, this] {
         while (!finished) {
+            if (section && section->cancelled->load()) throw std::runtime_error("Parallel extraction cancelled");
             const int result = avcodec_receive_frame(decoder.get(), frame.get());
             if (result == AVERROR(EAGAIN) || result == AVERROR_EOF) break;
-            check(result, "Decode frame");
+            decode_check(result, hardware_enabled, "Decode frame");
             if (frame->flags & AV_FRAME_FLAG_CORRUPT) throw std::runtime_error("Corrupt video frame");
             if (frame->best_effort_timestamp == AV_NOPTS_VALUE) throw std::runtime_error("Frame has no timestamp");
             const double absolute = frame->best_effort_timestamp * av_q2d(stream->time_base);
@@ -130,17 +172,31 @@ std::size_t VideoExtractor::extract(const ProgressCallback& progress) const {
             if (!std::isfinite(timestamp) || (previous && timestamp <= *previous))
                 throw std::runtime_error("Non-increasing or invalid video timestamps");
             previous = timestamp;
+            if (section && section->end && frame->best_effort_timestamp >= *section->end) { finished = true; break; }
             if (this->options_.duration && timestamp >= this->options_.start_seconds + *this->options_.duration) { finished = true; break; }
             bool selected = this->options_.start_seconds == 0 || timestamp >= this->options_.start_seconds;
+            if (section) selected = frame->best_effort_timestamp >= section->begin;
             if (this->options_.count && this->options_.duration)
                 selected = selected && timestamp >= this->options_.start_seconds + records.size() * *this->options_.duration / *this->options_.count;
             if (selected) {
-                if (!writer) writer = std::make_unique<PngWriter>(*frame);
+                if (source_width == 0) { source_width = frame->width; source_height = frame->height; }
+                if (frame->width != source_width || frame->height != source_height)
+                    throw std::runtime_error("Video changes dimensions within the recording");
+                if (pending.size() >= writers.capacity()) complete_one();
+                FramePtr output;
+                if (frame->format == AV_PIX_FMT_CUDA) {
+                    const FrameSize size = working_size(frame->width, frame->height, this->options_.max_edge);
+                    try { output = resizer.download(*frame, size.width, size.height); }
+                    catch (const std::runtime_error& error) { throw HardwareDecodeError(error.what()); }
+                    used_cuda = true;
+                } else output = require(FramePtr{av_frame_clone(frame.get())});
                 std::ostringstream name;
                 name << "frame_" << std::setfill('0') << std::setw(6) << records.size() << ".png";
-                writer->write(*frame, this->options_.output / name.str(), records.size());
-                records.push_back({{"file", name.str()}, {"timestamp_seconds", timestamp}});
-                if (progress) progress({records.size(), timestamp, total});
+                pending.push_back(writers.submit(std::move(output), this->options_.output / name.str(), records.size()));
+                records.push_back({{"file", name.str()}, {"timestamp_seconds", timestamp},
+                                   {"timestamp_ticks", frame->best_effort_timestamp}});
+                while (!pending.empty() && pending.front().wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+                    complete_one();
                 if (this->options_.count && records.size() == *this->options_.count) finished = true;
             }
             av_frame_unref(frame.get());
@@ -149,23 +205,28 @@ std::size_t VideoExtractor::extract(const ProgressCallback& progress) const {
     while (!finished) {
         const int result = av_read_frame(input.get(), packet.get());
         if (result == AVERROR_EOF) {
-            check(avcodec_send_packet(decoder.get(), nullptr), "Flush decoder");
+            decode_check(avcodec_send_packet(decoder.get(), nullptr), hardware_enabled, "Flush decoder");
             receive();
             break;
         }
         check(result, "Read video packet");
         if (packet->stream_index == stream_index) {
-            check(avcodec_send_packet(decoder.get(), packet.get()), "Send video packet");
+            decode_check(avcodec_send_packet(decoder.get(), packet.get()), hardware_enabled, "Send video packet");
             receive();
         }
         av_packet_unref(packet.get());
     }
     if (records.empty() || (this->options_.count && records.size() != *this->options_.count))
         throw std::runtime_error("Video does not contain the requested frames");
+    while (!pending.empty()) complete_one();
+    const FrameSize size = working_size(source_width, source_height, this->options_.max_edge);
     const std::filesystem::path temporary = this->options_.output / "manifest.json.tmp";
     std::ofstream manifest(temporary);
     manifest.exceptions(std::ios::badbit | std::ios::failbit);
-    manifest << nlohmann::json{{"format_version", 1}, {"frames", records}}.dump(2) << '\n';
+    manifest << nlohmann::json{{"format_version", 1}, {"frames", records},
+        {"source_width", source_width}, {"source_height", source_height},
+        {"width", size.width}, {"height", size.height}, {"decoder", used_cuda ? "cuda" : "cpu"},
+        {"max_edge", this->options_.max_edge}}.dump(2) << '\n';
     manifest.close();
     std::filesystem::rename(temporary, this->options_.output / "manifest.json");
     return records.size();

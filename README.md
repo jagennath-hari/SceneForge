@@ -37,7 +37,7 @@ and cache individually. It does not mount the entire repository.
 All Python packages share `/opt/stereoforge-venv`. Dependencies are installed with
 uv, except for the existing TensorRT pip installation, and constrained by
 `docker/constraints.txt`. There is no `uv sync` workflow or dependency lockfile.
-Native C++20 video extraction is built in the geometry image. Dependency or native
+Native C++20 video extraction and its CUDA resize kernel are built in the geometry image. Dependency or native
 changes require an image rebuild; no empty packaging manifest is maintained.
 
 ## Checkpoint access
@@ -84,6 +84,42 @@ Every frame is retained by default. VGGT distributes overlapping sections across
 visible GPUs with adaptive memory budgets, then unloads its models before CPU
 merging. ALIKED refinement follows. Set `refinement.enabled: false` in
 `configs/default.yaml` for VGGT only. ALIKED is the only supported feature family.
+
+Video extraction uses NVIDIA NVDEC when the codec/profile and installed FFmpeg
+support it, with CPU fallback. A CUDA area resizer reduces supported decoded
+surfaces before copying them to host memory; a bounded pool of up to eight CPU
+workers converts RGB and writes PNGs. For full videos, the extractor detects visible
+CUDA devices and indexes compressed packet timestamps/keyframes before assigning
+independent sections to multiple GPUs. Each worker seeks to its section, decodes
+the required preceding frames and saves only its assigned timestamp interval.
+The combined result must match the full timestamp index exactly before publication.
+One progress bar counts saved frames across devices. The writer budget is shared
+across devices, with at least one writer per section. Unsupported indexing or
+unreliable section boundaries fall back to sequential extraction; explicit frame/time
+selections use the sequential path. Multiple GPUs do not guarantee proportional
+speedups: indexing and disk writes still take time.
+
+Geometry working images have a maximum edge
+of three times the configured VGGT resolution (1536 pixels for the default model).
+Images are never enlarged or cropped during extraction; dimensions round down to
+even pixels for chroma compatibility. VGGT still applies its own final preprocessing
+and predicts intrinsics for those processed dimensions. This changes pixel sampling
+compared with full-resolution extraction; the original video remains untouched.
+
+Completed extractions are cached beside the video in `data/input/.frames/` for
+the usual input location. Rerunning the same source and selection reuses the PNGs,
+hard-linking them into the new run instead of duplicating storage where possible.
+Treat these images as immutable. Source file metadata, extraction options, and
+native executable contents determine cache identity. Incomplete extractions are
+never reused. `input_frames/manifest.json` records source/working dimensions,
+timestamps, file sizes and the decoder used. Deleting `.frames/` releases cached
+files without removing frames already linked into saved runs.
+
+The standalone extractor accepts `--max-edge 0` to retain original resolution
+and `--hardware cpu` for decoder diagnostics. The geometry demo chooses its
+working resolution automatically. After native changes, stop the existing
+container before running `bash scripts/build_and_start.sh`; otherwise the script
+attaches to that container instead of rebuilding.
 
 Optional diagnostic flags include `--frames`, `--start-seconds`, `--duration`,
 `--device cuda:0`, `--output`, and `--debug`. Frame/time selections are explicit;

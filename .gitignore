@@ -16,3 +16,4 @@ StereoForge Architecture Specification.md
 __pycache__/
 *.py[cod]
 .pytest_cache/
+/native/**/build/

@@ -11,7 +11,7 @@ from pathlib import Path
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from .config import DemoConfig
-from .runner import CHECKPOINT_NAME, DemoRequest, GeometryDemoRunner
+from .runner import DemoRequest, GeometryDemoRunner
 
 ROOT = Path(__file__).resolve().parents[2]
 LOGGER = logging.getLogger(__name__)
@@ -26,9 +26,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--duration", type=float, help="Optional diagnostic segment duration; default is through EOF")
     parser.add_argument("--frames", type=int, help="Optional diagnostic frame count; default is all frames")
     parser.add_argument("--config", type=Path, default=ROOT / "configs/default.yaml")
-    checkpoint = parser.add_mutually_exclusive_group()
-    checkpoint.add_argument("--checkpoint", type=Path, help="Local non-text-aligned VGGT-Omega checkpoint")
-    checkpoint.add_argument("--download-checkpoint", action="store_true", help="Download/cache the gated 512 checkpoint")
+    parser.add_argument("--checkpoint", type=Path, help="Explicit local checkpoint; otherwise use weights/cache or download automatically")
+    # Accept old commands without requiring a separate download mode.
+    parser.add_argument("--download-checkpoint", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--output", type=Path, help="New/empty output folder; defaults to a timestamped run")
     parser.add_argument("--device", help="cuda uses all visible GPUs; cuda:N selects one; cpu uses CPU")
     parser.add_argument("--resolution", type=int, help="Match checkpoint resolution (default: 512)")
@@ -40,6 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO, format="%(levelname)s: %(message)s")
+    logging.getLogger("dinov3").setLevel(logging.DEBUG if args.debug else logging.WARNING)
     try:
         config = DemoConfig.from_yaml(args.config)
         config = replace(config, geometry=replace(
@@ -52,9 +53,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         timestamp = datetime.now(timezone.utc).strftime("geometry_%Y%m%d_%H%M%S_%f")
         request = DemoRequest(
             output=args.output or ROOT / "data/intermediate" / timestamp,
-            checkpoint=args.checkpoint or ROOT / "weights" / CHECKPOINT_NAME,
+            checkpoint=args.checkpoint,
             images=None if args.video else args.images or ROOT / "data/input/frames",
-            video=args.video, download_checkpoint=args.download_checkpoint,
+            video=args.video,
             frame_count=args.frames, start_seconds=args.start_seconds, duration=args.duration,
         )
         with logging_redirect_tqdm():

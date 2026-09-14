@@ -2,6 +2,13 @@
 ARG BASE_FROM=stereoforge/base:latest
 FROM ${BASE_FROM} AS geometry
 
+COPY native/video/ /opt/stereoforge-native/video/
+RUN cmake -S /opt/stereoforge-native/video -B /opt/stereoforge-native/build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local && \
+    cmake --build /opt/stereoforge-native/build --parallel 4 && \
+    cmake --install /opt/stereoforge-native/build && \
+    rm -rf /opt/stereoforge-native/build
+
 COPY third_party/vggt-omega/requirements.txt /opt/requirements/vggt-omega.txt
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install -r /opt/requirements/vggt-omega.txt

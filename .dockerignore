@@ -13,6 +13,10 @@
 !stereoforge/**
 !configs/
 !configs/**
+!native/
+!native/video/
+!native/video/**
+native/**/build/
 **/.git
 **/.git/**
 **/__pycache__

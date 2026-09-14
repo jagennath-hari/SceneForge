@@ -8,6 +8,36 @@ walkthrough. Shot detection and edited movies are outside this first version.
 
 Run `bash scripts/build_and_start.sh` to build and enter the environment.
 
+Video extraction is implemented in C++20 under `native/video/`, with a CMake
+library and `stereoforge-extract-frames` executable. `VideoExtractor` uses RAII
+FFmpeg resource owners for decoding, RGB conversion and lossless PNG encoding
+(compression level 1). It preserves decoded timestamps and flushes delayed
+frames at EOF. The Python `VideoFrameSampler` only launches the executable,
+displays progress and reads `input_frames/manifest.json`; it contains no PyAV
+decoder or image-writing loop.
+
+Rebuild and recreate Docker after this change: the geometry Dockerfile compiles
+and installs the executable into `/usr/local/bin`. Native code is copied into
+the image; the whole repository is not mounted. The geometry demo command stays
+the same. These native changes have not been compiled, benchmarked or tested by
+the assistant, and a speedup has not been measured.
+
+For a manual build in an environment with the FFmpeg development packages and
+`nlohmann-json3-dev` installed:
+
+```bash
+cmake -S native/video -B native/video/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build native/video/build --parallel
+native/video/build/stereoforge-extract-frames --input data/input/forest_road.mp4 --output data/input/native_frames
+```
+
+The output directory must be empty. Native extraction supports the same optional
+`--start-seconds`, `--duration` and `--frames` selections; it decodes from the
+beginning for a stable timestamp origin. The manifest is published only after
+success. Through the demo, interruption terminates the child and removes the
+staged output. Standalone interrupted extraction can leave partial PNGs; use a
+new or emptied output directory on retry.
+
 All Python dependencies share `/opt/stereoforge-venv`, created by uv using
 Ubuntu's Python and already on `PATH`. uv from the `latest` image installs the Python packages;
 the legacy TensorRT components retain their working pip installation in the same
@@ -39,7 +69,7 @@ it is not embedded in an image or exposed as a Docker environment-variable value
 
 After creating or replacing the file, stop the existing container and run
 `bash scripts/build_and_start.sh` again so the new mount is used. Then use
-`--download-checkpoint` normally; no `hf auth login` is needed. Avoid running
+the demo normally; no `hf auth login` is needed. Avoid running
 `hf auth login/logout` with the read-only token mount; edit/remove the host file
 and recreate the container instead. Revoking the token in HF settings invalidates
 it. Cached model downloads still persist independently in `.cache/`.
@@ -54,9 +84,11 @@ image rebuild.
 
 Obtain access to the [VGGT-Omega checkpoints](https://huggingface.co/facebook/VGGT-Omega).
 Use the non-text-aligned `vggt_omega_1b_512.pt` checkpoint. Either put it in
-`weights/` on the **host**, or run `hf auth login` inside Docker and pass
-`--download-checkpoint` to the demo. The latter downloads into the persistent HF
-cache; it does not write to the read-only `weights/` mount.
+`weights/` on the **host**, or configure HF credentials inside Docker. The demo
+checks `weights/`, then the persistent HF cache without a network request, and
+downloads automatically only when missing. Downloads go to the cache, not the
+read-only `weights/` mount. An explicit `--checkpoint PATH` must exist; a missing
+custom path raises an error instead of substituting a different model.
 
 For credential entry, create a read-only token in your
 [Hugging Face token settings](https://huggingface.co/settings/tokens), then run
@@ -80,7 +112,7 @@ The existing `.cache/` mount persists login across container restarts and is
 excluded from Git and the Docker build context. Treat it as private when backing
 up or sharing the workspace. The startup script also restricts this directory.
 
-The demo's `--download-checkpoint` uses the saved login automatically and reuses
+The automatic download uses the saved login and reuses
 the cached checkpoint on later runs. Run `hf auth logout` to remove saved login.
 See the [Hugging Face authentication guide](https://huggingface.co/docs/huggingface_hub/en/quick-start#authentication).
 
@@ -89,8 +121,7 @@ Docker from `/workspace/StereoForge`:
 
 ```bash
 python -m stereoforge.geometry.demo \
-  --images data/input/frames \
-  --download-checkpoint
+  --images data/input/frames
 ```
 
 Images are sorted naturally (`frame_2` before `frame_10`), and all are used.
@@ -105,8 +136,7 @@ This command processes the whole video, using every decoded frame:
 
 ```bash
 python -m stereoforge.geometry.demo \
-  --video data/input/forest_road.mp4 \
-  --download-checkpoint
+  --video data/input/forest_road.mp4
 ```
 
 The demo records timestamps and retains every frame (`geometry.max_frames: null`).
@@ -116,13 +146,20 @@ copies; their VRAM is not pooled. On CUDA out-of-memory, the worker splits the
 failed section again with overlap and uses smaller sections for subsequent work.
 Successful sections are temporarily saved to disk and merged in temporal order.
 
-Defaults in `configs/default.yaml` are at most 128 frames per initial section,
-8 shared frames, and a memory estimate using 85% of currently free VRAM with a
-6 GiB model reserve and a 0.25 GiB/frame allowance at resolution 512. With the
-reported ~47 GiB free per A6000, this starts at 128 frames per section. This is
-a heuristic, not a guaranteed memory bound or measured peak; OOM retries still
-reduce sections. Larger sections reduce alignment boundaries but do not guarantee
-lower reconstruction error. Retries stop
+Defaults in `configs/default.yaml` use dynamic section sizes (`chunk_max_frames:
+null`), 8 shared frames and a 90% total-VRAM budget per device. Discovery records
+GPU models and memory; an initial estimate also accounts for resolution and GPU
+count. Each GPU then measures peak PyTorch allocations and adjusts its next
+section size, growing conservatively when there is headroom. Workers claim new
+sections dynamically. An optional `chunk_max_frames` supplies an explicit ceiling.
+
+Before each section, the allocator budget subtracts observed non-PyTorch usage
+from 90% of that GPU's total VRAM. This limits PyTorch allocations; other processes
+and non-PyTorch allocations can still change usage. Allocation failures trigger
+smaller retries and prevent immediate regrowth to the failed size. This targets
+memory use, not GPU compute utilization, and cannot guarantee exactly 90% usage.
+Short recordings or remaining sections may use substantially less memory.
+Larger sections reduce alignment boundaries but do not guarantee lower error. Retries stop
 with an error if even 9 frames cannot fit with the default overlap. `--device cuda`
 uses all visible GPUs; `--device cuda:0` selects one. The CPU path uses one worker.
 
@@ -131,23 +168,30 @@ pixels in shared frames. Depth and camera poses are transformed together; shared
 frames retain the earlier reconstruction. The first section anchors world
 coordinates and scale. Poor alignment stops the run rather than publishing a
 disconnected reconstruction. `run.json` records device memory snapshots, OOM
-retries, section ranges and alignment transforms/errors. Inspect these and the
+retries, per-section memory peaks/budgets, ranges and alignment transforms/errors. Inspect these and the
 camera trajectory: sequential alignment can accumulate drift or leave seams;
 there is no global optimization or loop closure yet. Moving subjects can also
 produce inconsistent geometry. `--meters-per-unit`, if supplied, calibrates the
 first section's reconstruction scale after alignment.
 
-Final merging and report export still need host RAM proportional to the video,
+After all inference workers finish, their models are unloaded and CUDA caches
+are explicitly released before CPU merging begins. A small CUDA context allocation
+can remain until the process exits. Final merging and report export need host RAM proportional to the video,
 plus disk space for extracted frames and temporary predictions.
 
 Terminal progress shows decoded/saved frames, per-GPU completed sections, merging
 and preview generation. Per-GPU status distinguishes model loading, preprocessing,
-inference and saving. Section totals increase when an OOM retry splits work.
+inference and saving. The overall `VGGT inference` bar shows unique frames saved
+out of the full sequence, with percentage, elapsed time and an estimated remaining
+time. It advances after each successful section; overlap and retries count only
+once. Individual GPU displays still count sections, since section sizes change
+dynamically. No within-section completion percentage is inferred.
 Elapsed time refreshes during blocking operations; it is not a measurement of
 within-section GPU completion. Decode totals come from video metadata when present;
 unknown totals show a count without a percentage. Redirected output uses periodic
 status logs instead of animated bars. Per-section inference/merge messages and
 detailed per-frame summaries use `--debug`; merge errors remain in `run.json`.
+Initial section-size and upstream DINO model setup messages also require `--debug`.
 `tqdm` is explicitly included in the base Dockerfile; if an older environment
 lacks it, install it inside Docker with `uv pip install tqdm`.
 
@@ -156,7 +200,7 @@ lacks it, install it inside Docker with `uv pip install tqdm`.
 first N frames, duration alone keeps all frames in that interval, and combining
 frames with duration samples across the interval. None is needed for a full run.
 
-If the checkpoint is already under host `weights/`, omit `--download-checkpoint`.
+Checkpoint selection and missing-model downloads are automatic; no download flag is needed.
 Use `--checkpoint PATH` for another local checkpoint and match `--resolution` to
 its training resolution (512 by default). Run `--help` for other options.
 Upstream controls mixed precision;
@@ -210,7 +254,8 @@ Responsibilities are separated into a small set of typed components:
 | --- | --- |
 | `GeometryConfig`, `PreviewConfig`, `DemoConfig` | Frozen, validated settings; reject malformed YAML and unknown geometry/preview keys |
 | `DemoRequest`, `GeometryDemoRunner` | Validate a run, resolve a checkpoint, coordinate inference and publish outputs |
-| `VideoFrameSampler` | Decode every video frame by default and preserve actual, increasing timestamps |
+| C++ `VideoExtractor` | Native FFmpeg decoding, RGB/PNG conversion, timestamps and frame manifest |
+| `VideoFrameSampler` | Launch the native executable and relay its progress/manifest to Python |
 | `VGGTOmegaGeometryEstimator` | Lazy model loading, sequence inference, camera conversion and model cleanup |
 | `AdaptiveGeometryEstimator` | GPU discovery, overlapping sections, smaller OOM retries and ordered merging |
 | `SimilarityTransform`, `align_overlap` | Robust shared-pixel registration and consistent depth/pose transforms |

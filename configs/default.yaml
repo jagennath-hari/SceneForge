@@ -5,9 +5,9 @@ geometry:
   preprocess_mode: balanced
   max_frames: null  # No artificial frame cap; GPU and host memory still limit size.
   # cuda uses every GPU visible inside Docker; cuda:0 selects only that device.
-  chunk_max_frames: 128  # Initial upper bound; OOM retries split sections further.
+  chunk_max_frames: null  # Dynamic per-GPU sizing; optional explicit ceiling.
   chunk_overlap: 8  # Shared frames used to align depth scale and camera poses.
-  gpu_memory_fraction: 0.85  # Starting-size heuristic, not a hard allocator quota.
+  gpu_memory_fraction: 0.90  # VRAM budget per device, allowing for other allocations.
   # Upstream selects bf16/fp16 for its aggregator; output heads remain float32.
   # Scale remains unknown unless --meters-per-unit is explicitly supplied.
 

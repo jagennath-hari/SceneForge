@@ -1,12 +1,14 @@
 """Memory-aware GPU workers, overlapping OOM retries and ordered reconstruction."""
 
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
 import gc
 import logging
+import math
 from pathlib import Path
-from threading import Event
+from threading import Event, Lock
 
 import torch
 from stereoforge.utils.progress import Progress, tracked
@@ -37,7 +39,7 @@ class Section:
 
 def discover_devices(config: GeometryConfig) -> list[DeviceBudget]:
     if config.device == "cpu":
-        return [DeviceBudget("cpu", "CPU", 0, 0, config.chunk_max_frames)]
+        return [DeviceBudget("cpu", "CPU", 0, 0, config.chunk_max_frames or 32)]
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is unavailable; check Docker GPU access")
     indices = (range(torch.cuda.device_count()) if config.device == "cuda"
@@ -45,12 +47,10 @@ def discover_devices(config: GeometryConfig) -> list[DeviceBudget]:
     budgets = []
     for index in indices:
         free, total = torch.cuda.mem_get_info(index)
-        # Starting heuristic, not a linear memory prediction. The earlier 0.75
-        # GiB/frame allowance selected only ~42 frames on a 48 GiB A6000.
-        # Try larger sections; OOM splitting remains the actual capacity check.
-        usable = max(0, free * config.gpu_memory_fraction - 6 * GIB)
+        # Bootstrap only: measured peaks drive subsequent section sizes.
+        usable = max(0, total * config.gpu_memory_fraction - (total - free) - 6 * GIB)
         estimated = int(usable / (0.25 * GIB) * (512 / config.image_resolution) ** 2)
-        count = max(config.chunk_overlap + 2, min(config.chunk_max_frames, estimated))
+        count = max(config.chunk_overlap + 2, min(config.chunk_max_frames or max(1, estimated), estimated))
         budgets.append(DeviceBudget(f"cuda:{index}", torch.cuda.get_device_name(index), free, total, count))
     return budgets
 
@@ -89,27 +89,43 @@ class AdaptiveGeometryEstimator:
                     len(budgets), sum(d.total_bytes for d in budgets) / GIB,
                     sum(d.free_bytes for d in budgets) / GIB)
         directory.mkdir()
-        assignments: list[list[Section]] = [[] for _ in budgets]
-        start, worker = 0, 0
-        while start < len(paths):
-            stop = min(len(paths), start + budgets[worker].initial_frames)
-            assignments[worker].append(Section(start, stop))
-            if stop == len(paths):
-                break
-            start = stop - self.config.chunk_overlap
-            worker = (worker + 1) % len(budgets)
         cancelled = Event()
+        lock = Lock()
+        cursor = 0
+        covered = bytearray(len(paths))
+        measurements: list[dict] = []
 
-        def run_worker(budget: DeviceBudget, sections: list[Section]) -> tuple[list[Section], list[dict]]:
+        def claim(capacity: int) -> Section | None:
+            nonlocal cursor
+            with lock:
+                if cursor >= len(paths) or cancelled.is_set():
+                    return None
+                section = Section(cursor, min(len(paths), cursor + capacity))
+                cursor = (section.stop if section.stop == len(paths)
+                          else section.stop - self.config.chunk_overlap)
+                return section
+
+        def mark_completed(section: Section) -> None:
+            # Only successfully saved predictions count. Shared frames and OOM
+            # retries must not inflate the fixed full-video denominator.
+            with lock:
+                newly_completed = section.stop - section.start - sum(covered[section.start:section.stop])
+                covered[section.start:section.stop] = b"\x01" * (section.stop - section.start)
+                overall.advance(newly_completed)
+
+        def run_worker(budget: DeviceBudget) -> tuple[list[Section], list[dict]]:
             try:
-                return self._worker(budget, sections, paths, directory, cancelled)
+                return self._worker(budget, paths, directory, cancelled, claim, measurements,
+                                    len(budgets), mark_completed)
             except BaseException:
                 cancelled.set()
                 raise
 
-        with ThreadPoolExecutor(max_workers=len(budgets), thread_name_prefix="geometry-gpu") as pool:
-            futures = [pool.submit(run_worker, budget, sections)
-                       for budget, sections in zip(budgets, assignments, strict=True) if sections]
+        with Progress("VGGT inference", len(paths), "frame") as overall, ThreadPoolExecutor(
+            max_workers=len(budgets), thread_name_prefix="geometry-gpu",
+        ) as pool:
+            overall.status("unique frames saved across all GPUs")
+            futures = [pool.submit(run_worker, budget) for budget in budgets]
             try:
                 results = [future.result() for future in futures]
             except BaseException:
@@ -117,78 +133,110 @@ class AdaptiveGeometryEstimator:
                 raise
         completed = sorted(item for sections, _ in results for item in sections)
         retries = [item for _, attempts in results for item in attempts]
+        LOGGER.info("VGGT models unloaded and CUDA caches released; merging reconstruction on CPU")
         sequence, merges = self._merge(completed, directory, len(paths))
         return sequence, {"devices": [asdict(d) for d in budgets], "oom_retries": retries,
-                          "assignments": [{"device": budget.device, "sections": [asdict(s) for s in assigned]}
-                                          for budget, assigned in zip(budgets, assignments, strict=True)],
+                          "memory_measurements": sorted(measurements, key=lambda m: (m["start"], m["stop"])),
+                          "gpu_memory_fraction": self.config.gpu_memory_fraction,
                           "sections": merges, "overlap": self.config.chunk_overlap,
                           "alignment": "sequential robust Sim(3); first section anchors scale and world",
                           "overlap_policy": "retain earlier section; append each new frame once",
-                          "limitations": "No loop closure/global optimization; accumulated drift and seams remain possible"}
+                          "limitations": "VRAM target is not GPU compute utilization; external allocations can change. No loop closure/global optimization."}
 
-    def _worker(self, budget: DeviceBudget, sections: list[Section], paths: tuple[Path, ...],
-                directory: Path, cancelled: Event) -> tuple[list[Section], list[dict]]:
+    def _worker(self, budget: DeviceBudget, paths: tuple[Path, ...], directory: Path,
+                cancelled: Event, claim: Callable[[int], Section | None],
+                measurements: list[dict], device_count: int,
+                mark_completed: Callable[[Section], None],
+                ) -> tuple[list[Section], list[dict]]:
         completed, retries = [], []
-        context = torch.cuda.device(budget.device) if budget.device != "cpu" else nullcontext()
-        with context, Progress(budget.device, len(sections), "section") as progress, VGGTOmegaGeometryEstimator(
-            self.checkpoint, device=budget.device, image_resolution=self.config.image_resolution,
-            preprocess_mode=self.config.preprocess_mode,
-        ) as estimator:
-            LOGGER.info("%s: %s, free %.1f/%.1f GiB, starting section size %d",
-                        budget.device, budget.name, budget.free_bytes / GIB,
-                        budget.total_bytes / GIB, budget.initial_frames)
-            capacity = budget.initial_frames
+        cuda = budget.device != "cpu"
+        context = torch.cuda.device(budget.device) if cuda else nullcontext()
+        minimum = self.config.chunk_overlap + 1
+        ceiling = self.config.chunk_max_frames or len(paths)
+        # Share initial work across available GPUs; subsequent claims use actual peaks.
+        capacity = max(minimum, min(budget.initial_frames,
+                                   math.ceil(len(paths) / device_count) + self.config.chunk_overlap, ceiling))
+        failed_size = ceiling + 1
+        with context:
+            try:
+                with Progress(budget.device, unit="section") as progress, VGGTOmegaGeometryEstimator(
+                    self.checkpoint, device=budget.device, image_resolution=self.config.image_resolution,
+                    preprocess_mode=self.config.preprocess_mode,
+                ) as estimator:
+                    LOGGER.debug("%s: %s, initial section size %d", budget.device, budget.name, capacity)
 
-            def process(section: Section) -> None:
-                nonlocal capacity
-                if cancelled.is_set():
-                    return
-                size = section.stop - section.start
-                if size > capacity:
-                    split(section)
-                    return
-                failed = False
-                try:
-                    progress.status(f"frames {section.start}:{section.stop} | loading/preprocessing/inference")
-                    LOGGER.debug("%s: inferring frames [%d, %d)", budget.device, section.start, section.stop)
-                    sequence = estimator.predict(
-                        paths[section.start:section.stop], section.start,
-                        status=lambda detail: progress.status(f"frames {section.start}:{section.stop} | {detail}"),
-                    )
-                except GeometryOutOfMemoryError:
-                    # Leave the except block before clearing the allocator: its
-                    # traceback otherwise retains failed inference tensors.
-                    failed = True
-                if failed:
-                    gc.collect()
-                    if budget.device != "cpu":
-                        torch.cuda.empty_cache()
-                    retries.append({"device": budget.device, **asdict(section)})
-                    if size <= self.config.chunk_overlap + 1:
-                        raise RuntimeError(
-                            f"{budget.device}: cannot fit minimum overlapping section ({size} frames). "
-                            "Free GPU memory or reduce geometry.chunk_overlap; no frames were dropped."
-                        )
-                    capacity = (size + self.config.chunk_overlap + 1) // 2
-                    LOGGER.warning("%s: OOM; reducing section capacity to %d", budget.device, capacity)
-                    progress.status(f"OOM retry | capacity {capacity} frames")
-                    split(section)
-                    return
-                progress.status(f"frames {section.start}:{section.stop} | saving predictions")
-                _save(sequence, directory / f"{section.start}_{section.stop}.pt")
-                completed.append(section)
-                progress.advance()
+                    def process(section: Section) -> None:
+                        nonlocal capacity, failed_size
+                        if cancelled.is_set():
+                            return
+                        size = section.stop - section.start
+                        if size > capacity:
+                            split(section)
+                            return
+                        allowed = 0
+                        if cuda:
+                            torch.cuda.synchronize()
+                            torch.cuda.empty_cache()
+                            free, total = torch.cuda.mem_get_info()
+                            external = max(0, total - free - torch.cuda.memory_reserved())
+                            allowed = int(total * self.config.gpu_memory_fraction) - external
+                            if allowed <= 0:
+                                raise RuntimeError(f"{budget.device}: other allocations already consume the VRAM budget")
+                            # This bounds PyTorch's allocator, not allocations by other processes/libraries.
+                            torch.cuda.set_per_process_memory_fraction(allowed / total)
+                            torch.cuda.reset_peak_memory_stats()
+                        failed = False
+                        try:
+                            sequence = estimator.predict(
+                                paths[section.start:section.stop], section.start,
+                                status=lambda detail: progress.status(f"frames {section.start}:{section.stop} | {detail}"),
+                            )
+                        except GeometryOutOfMemoryError:
+                            failed = True
+                        if failed:
+                            gc.collect()
+                            if cuda:
+                                torch.cuda.empty_cache()
+                            retries.append({"device": budget.device, **asdict(section)})
+                            if size <= minimum:
+                                raise RuntimeError(f"{budget.device}: cannot fit {size} frames within the VRAM budget; "
+                                                   "free memory or reduce chunk_overlap")
+                            failed_size = min(failed_size, size)
+                            capacity = (size + self.config.chunk_overlap + 1) // 2
+                            LOGGER.warning("%s: allocation limit reached; retrying smaller sections", budget.device)
+                            split(section)
+                            return
+                        if cuda:
+                            torch.cuda.synchronize()
+                            peak = torch.cuda.max_memory_allocated()
+                            reserved = torch.cuda.max_memory_reserved()
+                            # Conservative square-root growth accounts for nonlinear attention cost.
+                            factor = min(1.5, math.sqrt(max(1, allowed) / max(1, peak)))
+                            proposal = int(size * factor)
+                            capacity = max(minimum, min(ceiling, failed_size - 1, proposal))
+                            measurements.append({"device": budget.device, **asdict(section),
+                                                 "allocator_budget_bytes": allowed, "peak_allocated_bytes": peak,
+                                                 "peak_reserved_bytes": reserved, "next_capacity": capacity})
+                        progress.status(f"frames {section.start}:{section.stop} | saving predictions")
+                        _save(sequence, directory / f"{section.start}_{section.stop}.pt")
+                        completed.append(section)
+                        mark_completed(section)
+                        progress.advance()
 
-            def split(section: Section) -> None:
-                progress.add_work()  # One pending section becomes two.
-                # Children overlap by exactly the configured amount and both
-                # shrink. Recursion terminates at overlap + 1 frames.
-                middle = (section.start + section.stop - self.config.chunk_overlap) // 2
-                process(Section(section.start, middle + self.config.chunk_overlap))
-                process(Section(middle, section.stop))
+                    def split(section: Section) -> None:
+                        middle = (section.start + section.stop - self.config.chunk_overlap) // 2
+                        process(Section(section.start, middle + self.config.chunk_overlap))
+                        process(Section(middle, section.stop))
 
-            for section in sections:
-                process(section)
+                    while (section := claim(capacity)) is not None:
+                        process(section)
+            finally:
+                # The estimator context has dropped model references before this point.
+                gc.collect()
+                if cuda:
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+                    torch.cuda.set_per_process_memory_fraction(1.0)
         return completed, retries
 
     def _merge(self, sections: list[Section], directory: Path, count: int) -> tuple[GeometrySequence, list[dict]]:

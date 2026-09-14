@@ -45,10 +45,11 @@ def discover_devices(config: GeometryConfig) -> list[DeviceBudget]:
     budgets = []
     for index in indices:
         free, total = torch.cuda.mem_get_info(index)
-        # A conservative starting heuristic, not a memory prediction. Actual OOM
-        # retries account for attention, image aspect ratio and other GPU users.
+        # Starting heuristic, not a linear memory prediction. The earlier 0.75
+        # GiB/frame allowance selected only ~42 frames on a 48 GiB A6000.
+        # Try larger sections; OOM splitting remains the actual capacity check.
         usable = max(0, free * config.gpu_memory_fraction - 6 * GIB)
-        estimated = int(usable / (0.75 * GIB) * (512 / config.image_resolution) ** 2)
+        estimated = int(usable / (0.25 * GIB) * (512 / config.image_resolution) ** 2)
         count = max(config.chunk_overlap + 2, min(config.chunk_max_frames, estimated))
         budgets.append(DeviceBudget(f"cuda:{index}", torch.cuda.get_device_name(index), free, total, count))
     return budgets
@@ -149,7 +150,7 @@ class AdaptiveGeometryEstimator:
                 failed = False
                 try:
                     progress.status(f"frames {section.start}:{section.stop} | loading/preprocessing/inference")
-                    LOGGER.info("%s: inferring frames [%d, %d)", budget.device, section.start, section.stop)
+                    LOGGER.debug("%s: inferring frames [%d, %d)", budget.device, section.start, section.stop)
                     sequence = estimator.predict(
                         paths[section.start:section.stop], section.start,
                         status=lambda detail: progress.status(f"frames {section.start}:{section.stop} | {detail}"),
@@ -201,7 +202,7 @@ class AdaptiveGeometryEstimator:
                 except (ValueError, RuntimeError) as exc:
                     raise ValueError(f"Cannot merge section [{section.start}, {section.stop}): {exc}") from exc
                 records.append({**asdict(section), "transform": transform.as_dict() if transform else None})
-                LOGGER.info("Merging frames [%d, %d)%s", section.start, section.stop,
+                LOGGER.debug("Merging frames [%d, %d)%s", section.start, section.stop,
                             f", overlap error={transform.relative_error:.4f}" if transform else " (world anchor)")
                 for i, frame in enumerate(local.frames):
                     if frame.frame_index in frames:

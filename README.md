@@ -116,9 +116,13 @@ copies; their VRAM is not pooled. On CUDA out-of-memory, the worker splits the
 failed section again with overlap and uses smaller sections for subsequent work.
 Successful sections are temporarily saved to disk and merged in temporal order.
 
-Defaults in `configs/default.yaml` are at most 64 frames per initial section,
-8 shared frames, and a memory estimate using 80% of currently free VRAM with a
-model reserve. This is a heuristic, not a guaranteed memory bound. Retries stop
+Defaults in `configs/default.yaml` are at most 128 frames per initial section,
+8 shared frames, and a memory estimate using 85% of currently free VRAM with a
+6 GiB model reserve and a 0.25 GiB/frame allowance at resolution 512. With the
+reported ~47 GiB free per A6000, this starts at 128 frames per section. This is
+a heuristic, not a guaranteed memory bound or measured peak; OOM retries still
+reduce sections. Larger sections reduce alignment boundaries but do not guarantee
+lower reconstruction error. Retries stop
 with an error if even 9 frames cannot fit with the default overlap. `--device cuda`
 uses all visible GPUs; `--device cuda:0` selects one. The CPU path uses one worker.
 
@@ -142,7 +146,8 @@ inference and saving. Section totals increase when an OOM retry splits work.
 Elapsed time refreshes during blocking operations; it is not a measurement of
 within-section GPU completion. Decode totals come from video metadata when present;
 unknown totals show a count without a percentage. Redirected output uses periodic
-status logs instead of animated bars. Detailed per-frame summaries use `--debug`.
+status logs instead of animated bars. Per-section inference/merge messages and
+detailed per-frame summaries use `--debug`; merge errors remain in `run.json`.
 `tqdm` is explicitly included in the base Dockerfile; if an older environment
 lacks it, install it inside Docker with `uv pip install tqdm`.
 

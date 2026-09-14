@@ -20,9 +20,9 @@ class GeometryConfig:
     preprocess_mode: str = "balanced"
     max_frames: int | None = None
     meters_per_unit: float | None = None
-    chunk_max_frames: int = 64
+    chunk_max_frames: int = 128
     chunk_overlap: int = 8
-    gpu_memory_fraction: float = 0.8
+    gpu_memory_fraction: float = 0.85
 
     def __post_init__(self) -> None:
         if not isinstance(self.device, str) or re.fullmatch(r"cpu|cuda(?::\d+)?", self.device) is None:

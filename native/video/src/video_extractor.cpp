@@ -75,7 +75,7 @@ std::size_t VideoExtractor::extract_section(const ProgressCallback& progress, in
         std::cerr << "NVIDIA decode unavailable; restarting extraction on CPU: " << error.what() << '\n';
         // This directory was empty on entry and belongs to this extraction.
         for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(this->options_.output))
-            std::filesystem::remove(entry.path());
+            if (entry.path().filename() != "parallel_diagnostic.json") std::filesystem::remove(entry.path());
         return this->extract_once(progress, false, device, section, writers);
     }
 }
@@ -126,7 +126,7 @@ std::size_t VideoExtractor::extract_once(const ProgressCallback& progress, bool 
     }
     decode_check(avcodec_open2(decoder.get(), codec, nullptr), hardware_enabled, "Open decoder");
     if (section && section->seek) {
-        check(av_seek_frame(input.get(), stream_index, section->begin, AVSEEK_FLAG_BACKWARD), "Seek section keyframe");
+        check(av_seek_frame(input.get(), stream_index, section->seek_timestamp, AVSEEK_FLAG_BACKWARD), "Seek section preroll");
         avcodec_flush_buffers(decoder.get());
     }
     PacketPtr packet = require(PacketPtr{av_packet_alloc()});

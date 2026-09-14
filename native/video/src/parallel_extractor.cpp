@@ -26,6 +26,8 @@ struct PacketIndex final {
     std::vector<std::int64_t> timestamps;
     std::vector<std::int64_t> keyframes;
     std::int64_t origin{};
+    std::size_t packet_count{};
+    std::size_t discard_count{};
 };
 
 // Reading compressed packets is much cheaper than decoding and PNG encoding.
@@ -65,10 +67,14 @@ struct PacketIndex final {
         check(status, "Index video packet");
         if (packet->stream_index == stream_index) {
             if (packet->pts == AV_NOPTS_VALUE || packet->flags & AV_PKT_FLAG_CORRUPT) return std::nullopt;
-            result.timestamps.push_back(packet->pts);
+            ++result.packet_count;
             if (packet->flags & AV_PKT_FLAG_KEY) result.keyframes.push_back(packet->pts);
-            if (progress && result.timestamps.size() % 256 == 0)
-                progress({0, 0, std::nullopt, "indexing video: " + std::to_string(result.timestamps.size()) + " packets"});
+            // These packets still go to the decoder to establish references,
+            // but FFmpeg explicitly marks them as not belonging to the output.
+            if (packet->flags & AV_PKT_FLAG_DISCARD) ++result.discard_count;
+            else result.timestamps.push_back(packet->pts);
+            if (progress && result.packet_count % 256 == 0)
+                progress({0, 0, std::nullopt, "indexing video: " + std::to_string(result.packet_count) + " packets"});
         }
         av_packet_unref(packet.get());
     }
@@ -77,8 +83,8 @@ struct PacketIndex final {
     std::sort(result.keyframes.begin(), result.keyframes.end());
     if (std::adjacent_find(result.timestamps.begin(), result.timestamps.end()) != result.timestamps.end())
         return std::nullopt;
-    if (stream->nb_frames > 0 && static_cast<std::size_t>(stream->nb_frames) != result.timestamps.size())
-        return std::nullopt;
+    // Container sample counts can include edit-list preroll. Validate displayed
+    // timestamps against the decoder output instead of treating nb_frames as truth.
     result.origin = stream->start_time == AV_NOPTS_VALUE ? result.timestamps.front() : stream->start_time;
     return result;
 }
@@ -125,14 +131,25 @@ std::optional<std::size_t> ParallelExtractor::extract(const VideoExtractor::Prog
     std::vector<double> times(boundaries.size(), 0.0);
     std::vector<std::future<std::size_t>> tasks;
     std::exception_ptr failure;
+    nlohmann::json diagnostic{{"packet_count", index.packet_count},
+        {"decode_only_packets", index.discard_count}, {"expected_frames", index.timestamps.size()},
+        {"sections", nlohmann::json::array()}};
     try {
         for (std::size_t device = 0; device < boundaries.size(); ++device) {
             ExtractionOptions options = this->options_;
             options.output = workspace / std::to_string(device);
             std::filesystem::create_directory(options.output);
+            const std::vector<std::int64_t>::const_iterator boundary_key =
+                std::lower_bound(index.keyframes.begin(), index.keyframes.end(), boundaries[device]);
+            const std::size_t key_index = static_cast<std::size_t>(boundary_key - index.keyframes.begin());
+            const std::int64_t preroll = index.keyframes[key_index > 2 ? key_index - 2 : 0];
+            const bool seek = device != 0 && preroll > index.timestamps.front();
             const DecodeSection section{boundaries[device],
                 device + 1 < boundaries.size() ? std::optional<std::int64_t>(boundaries[device + 1]) : std::nullopt,
-                index.origin, device != 0, &cancelled};
+                index.origin, seek, &cancelled, preroll};
+            diagnostic["sections"].push_back({{"device", device}, {"begin_ticks", section.begin},
+                {"end_ticks", section.end ? nlohmann::json(*section.end) : nlohmann::json(nullptr)},
+                {"seek_ticks", seek ? nlohmann::json(preroll) : nlohmann::json(nullptr)}});
             tasks.push_back(std::async(std::launch::async, [&, options, section, device] {
                 try {
                     const VideoExtractor extractor(options);
@@ -165,13 +182,23 @@ std::optional<std::size_t> ParallelExtractor::extract(const VideoExtractor::Prog
         bool any_cuda = false;
         for (std::size_t device = 0; device < boundaries.size(); ++device) {
             nlohmann::json document = read_manifest(workspace / std::to_string(device));
+            diagnostic["sections"][device]["saved_frames"] = document.at("frames").size();
+            diagnostic["sections"][device]["first_ticks"] = document.at("frames").front().at("timestamp_ticks");
+            diagnostic["sections"][device]["last_ticks"] = document.at("frames").back().at("timestamp_ticks");
             if (device == 0) merged = document;
             for (const char* field : {"source_width", "source_height", "width", "height", "max_edge"})
                 if (document.at(field) != merged.at(field)) throw std::runtime_error("Section image dimensions differ");
             for (const nlohmann::json& frame : document.at("frames")) {
                 if (frame_index >= index.timestamps.size() ||
-                    frame.at("timestamp_ticks").get<std::int64_t>() != index.timestamps[frame_index])
-                    throw std::runtime_error("Section boundary omitted or duplicated a frame");
+                    frame.at("timestamp_ticks").get<std::int64_t>() != index.timestamps[frame_index]) {
+                    const std::string expected = frame_index < index.timestamps.size()
+                        ? std::to_string(index.timestamps[frame_index]) : "end of sequence";
+                    diagnostic["first_mismatch"] = {{"frame_index", frame_index}, {"device", device},
+                        {"expected_ticks", expected}, {"actual_ticks", frame.at("timestamp_ticks")}};
+                    throw std::runtime_error("Timestamp mismatch at frame " + std::to_string(frame_index) +
+                        ", device " + std::to_string(device) + ": expected " + expected +
+                        ", got " + frame.at("timestamp_ticks").dump());
+                }
                 const double timestamp = frame.at("timestamp_seconds").get<double>();
                 if (!std::isfinite(timestamp) || timestamp <= previous)
                     throw std::runtime_error("Section timestamps are not strictly ordered");
@@ -184,7 +211,9 @@ std::optional<std::size_t> ParallelExtractor::extract(const VideoExtractor::Prog
                                 {"frames", document.at("frames").size()}});
             documents.push_back(std::move(document));
         }
-        if (frame_index != index.timestamps.size()) throw std::runtime_error("Parallel extraction is incomplete");
+        if (frame_index != index.timestamps.size())
+            throw std::runtime_error("Parallel extraction saved " + std::to_string(frame_index) +
+                " of " + std::to_string(index.timestamps.size()) + " expected displayed frames");
         if (progress) progress({frame_index, previous, frame_index, "publishing ordered frames"});
         for (std::size_t device = 0; device < documents.size(); ++device) {
             for (nlohmann::json frame : documents[device].at("frames")) {
@@ -199,6 +228,7 @@ std::optional<std::size_t> ParallelExtractor::extract(const VideoExtractor::Prog
         merged["frames"] = std::move(records);
         merged["decoder"] = any_cpu ? (any_cuda ? "mixed" : "cpu") : "cuda";
         merged["sections"] = std::move(sections);
+        merged["decode_only_packets"] = index.discard_count;
         std::ofstream output(this->options_.output / "manifest.json.tmp");
         output.exceptions(std::ios::badbit | std::ios::failbit);
         output << merged.dump(2) << '\n';
@@ -208,9 +238,17 @@ std::optional<std::size_t> ParallelExtractor::extract(const VideoExtractor::Prog
         return frame_index;
     } catch (const std::exception& error) {
         std::cerr << "Parallel extraction could not be validated; restarting sequentially: " << error.what() << '\n';
+        diagnostic["error"] = error.what();
+        diagnostic["saved_frames"] = std::accumulate(completed.begin(), completed.end(), std::size_t{0});
+        const std::filesystem::path diagnostic_path = this->options_.output / "parallel_diagnostic.json";
+        std::ofstream report(diagnostic_path);
+        report.exceptions(std::ios::badbit | std::ios::failbit);
+        report << diagnostic.dump(2) << '\n';
+        report.close();
+        std::cerr << "Parallel extraction diagnostic: " << diagnostic_path << '\n';
         // The caller required an empty destination; all contents belong to us.
         for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(this->options_.output))
-            std::filesystem::remove_all(entry.path());
+            if (entry.path() != diagnostic_path) std::filesystem::remove_all(entry.path());
         return std::nullopt;
     }
 }

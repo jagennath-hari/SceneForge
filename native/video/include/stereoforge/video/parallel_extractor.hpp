@@ -13,6 +13,7 @@ struct DecodeSection final {
     std::int64_t origin{};
     bool seek{false};
     const std::atomic_bool* cancelled{};
+    std::int64_t seek_timestamp{};  // Earlier reference frames; begin still owns output.
 };
 
 // Owns parallel orchestration; each worker owns a demuxer, decoder, CUDA context

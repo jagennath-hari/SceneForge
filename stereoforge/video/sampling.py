@@ -104,6 +104,8 @@ class VideoFrameSampler:
                 for path in cached.paths:
                     self._link_or_copy(cache / path.name, destination / path.name)
                 shutil.copy2(cache / "manifest.json", destination / "manifest.json")
+                if (cache / "parallel_diagnostic.json").is_file():
+                    shutil.copy2(cache / "parallel_diagnostic.json", destination / "parallel_diagnostic.json")
                 progress.advance(len(cached.paths) - progress.completed)
         return self._read_manifest(destination)
 

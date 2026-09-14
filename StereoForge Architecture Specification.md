@@ -182,15 +182,20 @@ reviewed statically; GPU correctness and performance remain unmeasured.
 Full-video extraction detects visible CUDA devices. With multiple devices and a
 usable packet index, it partitions the sequence near equally spaced frame counts
 at keyframe timestamps. Each GPU owns an independent demuxer and decoder, seeks
-back to the section's keyframe, and keeps only frames in its half-open timestamp
+back up to two earlier keyframes to establish reference state, and keeps only frames in its half-open timestamp
 interval. The first section decodes from the beginning. Temporary per-section
-outputs are joined before cleanup and validated against every indexed packet PTS:
+outputs are joined before cleanup and validated against every indexed display packet PTS:
 missing/duplicate frames, differing dimensions, or non-increasing times invalidate
 the parallel result. Streams without a reliable one-packet/one-frame timestamp
 index, or failed section validation, use sequential extraction. Explicit diagnostic
 frame/time selections remain sequential to preserve their selection semantics.
 This adds a compressed-packet scan but avoids decoding the entire video on every
 GPU. It preserves all selected frames rather than sampling or dropping them.
+Packets with `AV_PKT_FLAG_DISCARD` still feed the decoder but are not expected
+display frames. Container `nb_frames` can count such preroll samples and is not
+used as an exact display-frame count. Failed parallel validation retains packet
+counts, section boundaries and the first mismatch in `parallel_diagnostic.json`,
+copied into the completed run's `input_frames/` after successful sequential fallback.
 
 Extraction produces working images with a maximum edge of 3 × VGGT's configured
 resolution (1536 at the default 512). It never upscales or crops; even-dimension

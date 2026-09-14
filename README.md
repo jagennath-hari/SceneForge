@@ -92,12 +92,18 @@ workers converts RGB and writes PNGs. For full videos, the extractor detects vis
 CUDA devices and indexes compressed packet timestamps/keyframes before assigning
 independent sections to multiple GPUs. Each worker seeks to its section, decodes
 the required preceding frames and saves only its assigned timestamp interval.
-The combined result must match the full timestamp index exactly before publication.
+Sections decode from up to two earlier keyframes to establish reference frames,
+then retain only their assigned interval. Packets marked by FFmpeg as decode-only
+are excluded from the expected display-frame index, but still reach the decoder.
+The combined result must match that timestamp index exactly before publication.
 One progress bar counts saved frames across devices. The writer budget is shared
 across devices, with at least one writer per section. Unsupported indexing or
 unreliable section boundaries fall back to sequential extraction; explicit frame/time
 selections use the sequential path. Multiple GPUs do not guarantee proportional
 speedups: indexing and disk writes still take time.
+If validation falls back to a sequential pass, its timestamp mismatch and packet
+counts are retained as `input_frames/parallel_diagnostic.json` in the completed run.
+Sequential fallback still attempts NVIDIA acceleration.
 
 Geometry working images have a maximum edge
 of three times the configured VGGT resolution (1536 pixels for the default model).

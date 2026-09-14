@@ -6,7 +6,7 @@
 :root{color-scheme:dark;font:14px system-ui;background:#0b1017;color:#e3edf5}body{max-width:1600px;margin:auto;padding:24px}h1{font-size:25px;margin:0}h2{font-size:15px}p{color:#98aabd;line-height:1.5}header,.toolbar,.timeline{display:flex;align-items:center;gap:16px;flex-wrap:wrap}header{justify-content:space-between;margin-bottom:20px}.badge{color:#68dfc4;border:1px solid #285a51;padding:6px 12px;border-radius:20px}.workspace{display:grid;grid-template-columns:minmax(0,3fr) minmax(260px,1fr);gap:18px}.stage{position:relative;background:#060a10;border:1px solid #233344;border-radius:12px;overflow:hidden}canvas{display:block;width:100%;height:65vh;min-height:360px;touch-action:none}.overlay{position:absolute;left:18px;top:14px;pointer-events:none;color:#9ab1c5}.legend{position:absolute;left:18px;bottom:12px;font-size:12px;color:#a6bbcb}.sidebar{background:#111b26;padding:16px;border-radius:12px;min-width:0}figure{margin:0 0 12px}img{display:block;width:100%;max-height:200px;object-fit:contain;background:#05090e}figcaption{color:#a1b4c5;font-size:12px;margin:6px 0}.toolbar,.timeline{padding:14px 0}button,select{background:#172637;color:#edf6ff;border:1px solid #34495e;border-radius:6px;padding:8px 12px;cursor:pointer}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #62dec3}input[type=range]{accent-color:#62dec3}#frame{flex:1;min-width:160px}#stats{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;color:#adbfcc}a{color:#79cafa}#error{color:#ffb19c;white-space:pre-wrap}label{display:flex;align-items:center;gap:6px}.notes{font-size:12px} @media(max-width:850px){.workspace{grid-template-columns:1fr}.sidebar{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}#stats{grid-column:1/-1}canvas{height:52vh}}
 </style></head>
 <body>
-<header><div><h1>StereoForge</h1><p id="summary"></p></div><span class="badge">VGGT-Ω · Reconstruction</span></header>
+<header><div><h1>StereoForge</h1><p id="summary"></p><a id="refinement-link" hidden></a></div><span class="badge" id="reconstruction-name">VGGT-Ω · Reconstruction</span></header>
 <div class="workspace"><section>
 <div class="stage"><canvas id="cloud" aria-label="Interactive reconstruction. Drag to orbit, Shift-drag to pan, scroll to zoom." tabindex="0"></canvas><div class="overlay" id="scene-label"></div><div class="legend">Cyan · camera trajectory　 Amber · selected camera</div></div>
 <div id="error" role="alert"></div>
@@ -117,5 +117,14 @@ class ReconstructionViewer {
  }
 }
 $('summary').textContent=`${data.frames.length} frames · ${data.points.length.toLocaleString()} sampled points · ${data.units==='meters'?'Calibrated meters':'Scale uncalibrated'}`;
+if(data.reconstruction_name)$('reconstruction-name').textContent=data.reconstruction_name;
+if(data.refinement_link){$('refinement-link').hidden=false;$('refinement-link').href=data.refinement_link;$('refinement-link').textContent=data.refinement_label;}
+if(data.sparse_refinement){
+ document.querySelectorAll('figcaption')[1].textContent='VGGT depth reference · not refined';
+ document.querySelectorAll('figcaption')[2].textContent='VGGT confidence reference';
+ document.querySelector('a[href="geometry.npz"]').href='../geometry.npz';
+ document.querySelector('a[href="contact_sheet.jpg"]').href='../contact_sheet.jpg';
+ const s=data.refinement_summary;$('summary').textContent+=` · ${s.registered_frames}/${s.input_frames} registered · Mean point reprojection error ${s.mean_point_reprojection_error_pixels===null?'unavailable':s.mean_point_reprojection_error_pixels.toFixed(2)+' px'} · ${s.alignment_note||''}`;
+}
 try{new ReconstructionViewer();}catch(error){$('error').textContent=error.message;}
 </script></body></html>

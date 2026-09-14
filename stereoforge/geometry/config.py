@@ -61,9 +61,30 @@ class PreviewConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RefinementConfig:
+    enabled: bool = True
+    backend: str = "pycusfm"
+    feature_type: str = "aliked"
+    device: int = 0
+    debug: bool = False
+
+    def __post_init__(self) -> None:
+        if type(self.enabled) is not bool:
+            raise ValueError("refinement.enabled must be boolean")
+        if type(self.debug) is not bool:
+            raise ValueError("refinement.debug must be boolean")
+        if self.backend != "pycusfm":
+            raise ValueError("This refinement adapter requires pycusfm")
+        if self.feature_type != "aliked":
+            raise ValueError("refinement.feature_type must be aliked; this pipeline uses ALIKED exclusively")
+        require_integer("refinement.device", self.device, minimum=0)
+
+
+@dataclass(frozen=True, slots=True)
 class DemoConfig:
     geometry: GeometryConfig = field(default_factory=GeometryConfig)
     preview: PreviewConfig = field(default_factory=PreviewConfig)
+    refinement: RefinementConfig = field(default_factory=RefinementConfig)
 
     @classmethod
     def from_yaml(cls, path: Path) -> DemoConfig:
@@ -78,10 +99,13 @@ class DemoConfig:
         # Other pipeline sections are intentionally left to their own components.
         geometry = _section(document, "geometry", GeometryConfig)
         preview = _section(document, "preview", PreviewConfig)
-        return cls(geometry=GeometryConfig(**geometry), preview=PreviewConfig(**preview))
+        refinement = _section(document, "refinement", RefinementConfig)
+        return cls(geometry=GeometryConfig(**geometry), preview=PreviewConfig(**preview),
+                   refinement=RefinementConfig(**refinement))
 
 
-def _section(document: Mapping[str, Any], name: str, model: type[GeometryConfig] | type[PreviewConfig]) -> dict[str, Any]:
+def _section(document: Mapping[str, Any], name: str,
+             model: type[GeometryConfig] | type[PreviewConfig] | type[RefinementConfig]) -> dict[str, Any]:
     section = document.get(name, {})
     if not isinstance(section, Mapping):
         raise ValueError(f"{name} must be a YAML mapping")

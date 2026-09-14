@@ -18,5 +18,7 @@ preview:
   max_points: 240000
 
 refinement:
-  enabled: false
+  enabled: true
   backend: pycusfm
+  feature_type: aliked
+  device: 0  # CUDA device index visible inside Docker; VGGT has already released its models.

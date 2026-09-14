@@ -30,6 +30,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         tensorrt-cu13-libs==10.13.3.9
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --no-deps -e /opt/third_party/pycusfm
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install 'protobuf>=5,<7'
 # pyCuSFM's other dependencies (NumPy, setuptools, PyYAML, Pillow) are already
 # installed by the preceding images. Do not re-resolve TensorRT's runtime stub.
 

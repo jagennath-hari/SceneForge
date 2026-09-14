@@ -17,6 +17,8 @@ from .config import DemoConfig
 from .inputs import select_image_paths, validate_image_paths
 from .types import DepthUnits
 from .adaptive import AdaptiveGeometryEstimator
+from .cusfm import CuSFMRefiner
+from .cusfm_report import write_refinement_report, write_refinement_status
 
 LOGGER = logging.getLogger(__name__)
 CHECKPOINT_NAME = "vggt_omega_1b_512.pt"
@@ -122,8 +124,27 @@ class GeometryDemoRunner:
                 "reconstruction": reconstruction,
                 "frame_index_note": "Indices are local to the selected sequence, not original video frames",
             }
+            if self.config.refinement.enabled:
+                provenance["refinement"] = {"status": "pending"}
             write_json(staging / "run.json", provenance)
+            # Preserve the unrefined VGGT result independently of SfM success.
             metadata = self.report_writer.write(sequence, staging, provenance=provenance)
+            if self.config.refinement.enabled:
+                try:
+                    refinement = CuSFMRefiner(self.config.refinement).run(sequence, timestamps, staging / "pycusfm")
+                    comparison = write_refinement_report(staging / "pycusfm", metadata, self.config.preview.max_points)
+                    provenance["refinement"] = {**refinement.summary, "status": comparison.get("status", "complete"),
+                                                "comparison": comparison}
+                except (Exception, KeyboardInterrupt) as exc:
+                    status = "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed"
+                    message = str(exc) or "Refinement interrupted by user"
+                    provenance["refinement"] = write_refinement_status(staging / "pycusfm", message, status)
+                    LOGGER.warning("pyCuSFM %s: %s. Preserving VGGT report and all refinement files.", status, message)
+                if provenance["refinement"]["status"] not in {"complete", "failed", "interrupted"}:
+                    LOGGER.warning("pyCuSFM returned a partial or empty reconstruction; inspect its report and logs")
+                write_json(staging / "run.json", provenance)
+                metadata["provenance"] = provenance
+                write_json(staging / "metadata.json", metadata)
             summaries = tuple(FrameSummary(f["frame_index"], f["valid_fraction"], f["depth_p50"])
                               for f in metadata["frames"])
         # Only return success after the complete report is published.

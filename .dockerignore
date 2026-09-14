@@ -26,3 +26,5 @@ native/**/build/
 **/.secrets
 **/.secrets/**
 third_party/pycusfm/pycusfm/x86_cuda12/
+# The application only uses ALIKED and its matching LightGlue models.
+third_party/pycusfm/pycusfm/models/superpoint_lightglue/

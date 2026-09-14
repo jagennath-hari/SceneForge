@@ -318,4 +318,126 @@ Next milestone: inspect the full sequence's geometry, then implement adaptive
 baseline control and temporal smoothing, followed by StereoSpace and SBS encoding.
 Adaptive sections and alignment now provide the full-video path; their quality
 must be validated on your footage. Shot detection is outside this scope.
-pyCuSFM remains disabled until the core stereo synthesis pipeline works.
+pyCuSFM now runs before report publication by default. Set `refinement.enabled:
+false` in `configs/default.yaml` for a VGGT-only run.
+
+## Monocular refinement with ALIKED
+
+The same demo command now performs VGGT inference, releases its GPU models, then
+runs pyCuSFM before publishing the reports. The stages are ALIKED extraction,
+vocabulary building, pose-graph optimization, feature matching, VGGT depth-based
+landmark initialization, and standalone bundle adjustment. Each native stage has a progress display and a log under
+`pycusfm/`. The feature-model assets come from the pinned upstream installation;
+TensorRT engines are built by upstream in a writable persistent cache keyed by
+ONNX content, GPU model and TensorRT version. First use can take longer.
+
+The pipeline uses only ALIKED extraction and the ALIKED-specific LightGlue
+matcher. `refinement.feature_type` must be `aliked`. Only this model family is
+copied into the runtime model cache. Each run creates a new workspace for
+features, vocabulary and matches.
+
+Run the complete VGGT → pyCuSFM geometry pipeline inside Docker:
+
+```bash
+python -m stereoforge.geometry.demo --video data/input/forest_road.mp4
+```
+
+The default configuration enables refinement and retains every video frame.
+VGGT downloads its checkpoint automatically if needed. After inference and CPU
+merging, pyCuSFM runs with ALIKED. Open the new run's `index.html` for VGGT and
+follow **View pyCuSFM reconstruction** for the sparse refinement or its diagnostic
+report. Completion of individual native processes does not guarantee a valid
+reconstruction; inspect registered-frame coverage and refinement status.
+
+For this single physical camera, the initialized COLMAP model contains camera
+poses, per-frame PINHOLE intrinsics, and observed sparse landmarks. No camera rig
+calibration is introduced. The standalone native bundle adjuster controls its
+intrinsic optimization policy; optimized intrinsics are read back from its export.
+Every input frame is exported to feature extraction and distance-based selection is disabled;
+frames that fail reconstruction are listed as unregistered, never silently
+assigned a refined pose.
+
+Matched ALIKED observations are assembled into multi-frame tracks. Entire tracks
+with competing keypoints in one image are rejected. Tracks need at least three
+valid observations. Each initial 3D point is a confidence-weighted average of VGGT
+depth unprojections in a common coordinate system. Observations inconsistent with
+the seed geometry by more than 14 pixels are removed before optimization.
+
+`initialized_sparse/` stores this input as reciprocal COLMAP image/point tracks;
+`initialization.json` records retained tracks and unsupported frames. The pipeline
+then invokes the bundled `bundle_adjustment_runner`, with robust Cauchy loss and
+the first camera fixed, without re-triangulation. Depth supplies initial values;
+it is not a persistent depth constraint and does not add measured metric scale.
+Vocabulary and pose-graph stages remain in the workspace, but the seed poses and
+depth share the original VGGT coordinate system; pose-graph corrections are not
+applied independently to the depth seeds.
+
+Native optimized output is preserved in `pycusfm/workspace/ba_raw/`. A validator
+checks reciprocal observations, positive depth and reprojection error, retaining
+tracks with at least three observations within 3 pixels. It writes the report's
+COLMAP reconstruction to `pycusfm/workspace/sparse/`, excluding unsupported cameras.
+This is one BA pass followed by filtering, not GTSfM's complete hierarchical solver.
+
+Native protobuf match import requires `protobuf>=5,<7`, included in the Dockerfile.
+For an already-running container, install it once with:
+
+```bash
+uv pip install 'protobuf>=5,<7'
+```
+
+Matching pairs use spatial radius search around the initialized cameras, rather
+than relying solely on pose-graph loop associations. The starting radius is eight
+median camera steps (rounded upward in working units); temporal/distance minimum
+filters and pair downsampling are disabled. Pose-graph optimization still runs.
+Zero matching tasks or missing match files stop refinement before depth initialization;
+nonempty files alone do not establish that the correspondences are geometrically valid.
+The adapter also checks native match statistics and stops if every task reports
+zero matches per pair.
+
+To investigate a failed refinement without rerunning VGGT, use a small consecutive
+subset of an existing report:
+
+```bash
+python -m stereoforge.geometry.refine_demo --run data/intermediate/geometry_<timestamp> --frames 16 --debug
+```
+
+This writes a new `pycusfm_diagnostic_<timestamp>/` folder within that report,
+preserving the original results. Upstream debug mode requests feature and match
+visualizations. This is a diagnostic run, not a replacement for full-video refinement.
+
+For slow camera motion, use `--frames 16 --frame-step 16` to sample 16 images
+across a longer stretch of the saved sequence. Adjacent images can match well but
+have too little parallax for triangulation. This explicit diagnostic selection
+preserves the selected timestamps, calibration and preview links; full-video
+processing still retains all frames. A native bundle-adjustment failure now stops
+the stage even if its process returns zero, retaining the bundle-adjustment log for inspection.
+
+When metric scale is unknown, the adapter normalizes median camera translation
+to one working unit. The upstream metric-named thresholds then act as explicit
+working-unit priors, not measured meters. Depth-initialized landmarks use the same
+translation scale. This is an initial monocular configuration requiring
+validation on your footage. No scale calibration is inferred from SfM.
+
+After completion, the main viewer links to `pycusfm/index.html`, showing refined
+sparse points and cameras aligned to the VGGT coordinate system for comparison.
+The depth/confidence panels are labeled VGGT references: sparse optimization does
+not refine those dense maps. `pycusfm/comparison.json` records registered-frame
+coverage, missing frames, mean point reprojection error, alignment and trajectory
+difference. Validated COLMAP results are under `pycusfm/workspace/sparse/`.
+`pycusfm/refinement.json` records input units and enabled optimization stages.
+
+The unrefined VGGT report is generated before refinement. Refinement errors or
+interruptions preserve that report and the full `pycusfm/` workspace and logs in
+the published run directory. Its pyCuSFM link opens either the sparse viewer or
+a diagnostic page with the failure and log links. One or two registered cameras
+can be viewed in native cuSFM coordinates, explicitly unaligned; zero cameras
+produce an empty-result diagnostic rather than discarding the run. Missing or
+duplicate records remain visible as errors. A partial result does not establish
+successful geometric refinement.
+
+Full failed-stage logs and exported input metadata are also retained under
+`data/intermediate/failed_refinements/`. Pinhole calibration follows upstream's
+explicit 3×4 projection-matrix schema, with validated dimensions and intrinsics.
+The assistant has not
+run or tested this integration. Reconcile dense depth with refined geometry before
+using the refined cameras for StereoSpace.

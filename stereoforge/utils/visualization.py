@@ -112,6 +112,9 @@ class GeometryReportWriter:
             "contact_sheet_note": "Overview of up to 24 evenly spaced frames; individual PNGs include every frame",
             "provenance": dict(provenance or {}), "frames": records,
         }
+        if provenance and provenance.get("refinement"):
+            metadata["refinement_link"] = "pycusfm/index.html"
+            metadata["refinement_label"] = "View pyCuSFM reconstruction"
         write_json(output / "metadata.json", metadata)
         with Progress("Writing HTML viewer"):
             self._write_viewer(output, metadata, xyz, colors, point_frames)

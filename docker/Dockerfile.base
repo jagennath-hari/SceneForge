@@ -2,7 +2,7 @@
 ARG BASE_FROM=nvidia/cuda:13.2.1-cudnn-devel-ubuntu24.04
 FROM ${BASE_FROM} AS base
 
-COPY --from=ghcr.io/astral-sh/uv:0.12.13 /uv /uvx /usr/local/bin/
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -30,6 +30,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install pip setuptools wheel && \
     uv pip install torch torchvision \
         --index-url https://download.pytorch.org/whl/cu132 && \
-    uv pip install av PyYAML
+    uv pip install av PyYAML tqdm
 
 WORKDIR /workspace/StereoForge

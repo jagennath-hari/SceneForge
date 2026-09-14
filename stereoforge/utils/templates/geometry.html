@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>StereoForge geometry preview</title>
+<style>
+body{background:#101620;color:#e7edf7;font:16px system-ui;margin:24px auto;max-width:1250px;padding:0 20px}
+h1{margin-bottom:8px}p{color:#bcc8da;line-height:1.5}.panels{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+figure{margin:0}img{width:100%;background:#000}figcaption{padding:8px 0}canvas{width:100%;height:480px;background:#070c13;touch-action:none;border:1px solid #334155}
+input{width:65%;vertical-align:middle}pre{white-space:pre-wrap;background:#1b2433;padding:16px}button{padding:8px 16px;margin:8px}a{color:#81c6ff}
+@media(max-width:650px){.panels{grid-template-columns:1fr}canvas{height:320px}}
+</style>
+<h1>StereoForge · geometry preview</h1>
+<p id="summary"></p>
+<label>Frame <input id="frame" type="range" min="0" value="0" step="1"><span id="number"></span></label>
+<div class="panels"><figure><img id="rgb"><figcaption>Processed RGB</figcaption></figure>
+<figure><img id="depth"><figcaption>Depth: yellow near → purple far; black invalid/filtered</figcaption></figure>
+<figure><img id="confidence"><figcaption>Confidence: yellow high → purple low (raw scores)</figcaption></figure></div>
+<pre id="stats"></pre>
+<h2>Reconstructed points and camera trajectory</h2>
+<p>Drag to rotate; scroll to zoom. Cyan line: camera path. Orange: selected camera.
+Camera directions point along +Z. Points are subsampled and may contain outliers or moving objects.</p>
+<button id="reset">Reset view</button><canvas id="cloud"></canvas>
+<p><a href="geometry.npz">Geometry arrays</a> · <a href="metadata.json">Metadata and camera matrices</a> ·
+<a href="point_cloud.ply">Colored point cloud (PLY)</a> · <a href="contact_sheet.jpg">Contact sheet overview</a></p>
+<script id="data" type="application/json">__GEOMETRY_DATA__</script>
+<script>
+const data=JSON.parse(document.getElementById('data').textContent), $=id=>document.getElementById(id);
+$('summary').textContent=`${data.frames.length} frames · Units: ${data.units}. Intrinsics refer to processed images. `+
+  (data.units==='meters'?'Scale supplied by user.':'Metric scale is unestablished; distances are not meters.');
+const slider=$('frame');slider.max=data.frames.length-1;
+const canvas=$('cloud'), ctx=canvas.getContext('2d');
+const cams=data.frames.map(f=>[f.camera_to_world[0][3],f.camera_to_world[1][3],f.camera_to_world[2][3]]);
+const all=data.points.concat(cams), center=[0,1,2].map(a=>{
+ const v=all.map(p=>p[a]).sort((a,b)=>a-b);return v[Math.floor(v.length/2)]||0;
+});
+const radii=all.map(p=>Math.hypot(...p.slice(0,3).map((x,i)=>x-center[i]))).sort((a,b)=>a-b);
+const radius=Math.max(radii[Math.floor(radii.length*.95)]||1,...cams.map(p=>Math.hypot(...p.map((x,i)=>x-center[i]))),1e-5);
+let yaw=0,pitch=-.15,zoom=1;
+function project(point){
+ let [x,y,z]=point.slice(0,3).map((v,i)=>(v-center[i])/radius);
+ const a=x*Math.cos(yaw)+z*Math.sin(yaw), b=-x*Math.sin(yaw)+z*Math.cos(yaw);
+ const c=y*Math.cos(pitch)-b*Math.sin(pitch), d=y*Math.sin(pitch)+b*Math.cos(pitch);
+ const s=Math.min(canvas.width,canvas.height)*.38*zoom;
+ return [canvas.width/2+a*s,canvas.height/2+c*s,d];
+}
+function draw(){
+ canvas.width=canvas.clientWidth*devicePixelRatio;canvas.height=canvas.clientHeight*devicePixelRatio;
+ ctx.clearRect(0,0,canvas.width,canvas.height);
+ const points=data.points.map(p=>({p:project(p),c:p.slice(3)})).sort((a,b)=>b.p[2]-a.p[2]);
+ for(const {p,c} of points){ctx.fillStyle=`rgb(${c.join(',')})`;ctx.fillRect(p[0],p[1],2*devicePixelRatio,2*devicePixelRatio)}
+ ctx.strokeStyle='#51d5e8';ctx.lineWidth=2*devicePixelRatio;ctx.beginPath();
+ cams.forEach((c,i)=>{const p=project(c);if(i===0)ctx.moveTo(p[0],p[1]);else ctx.lineTo(p[0],p[1])});ctx.stroke();
+ cams.forEach((c,i)=>{
+   const p=project(c),pose=data.frames[i].camera_to_world;
+   const end=project(c.map((v,a)=>v+pose[a][2]*radius*.12));
+   ctx.fillStyle=ctx.strokeStyle=i===Number(slider.value)?'#ffad42':'#51d5e8';
+   ctx.beginPath();ctx.arc(p[0],p[1],5*devicePixelRatio,0,2*Math.PI);ctx.fill();
+   ctx.beginPath();ctx.moveTo(p[0],p[1]);ctx.lineTo(end[0],end[1]);ctx.stroke();
+ });
+}
+function update(){const f=data.frames[Number(slider.value)];$('number').textContent=f.frame_index;
+ for(const kind of ['rgb','depth','confidence']){$(kind).src=f.previews[kind];$(kind).alt=`Frame ${f.frame_index} ${kind}`}
+ const fmt=n=>n===null?'no valid depth':Number(n).toPrecision(5);
+ $('stats').textContent=`Source: ${f.source}\nProcessed H×W: ${f.processed_size_hw.join(' × ')}\n`+
+ `Valid: ${(f.valid_fraction*100).toFixed(1)}% | Depth P10 / P50 / P90: ${[f.depth_p10,f.depth_p50,f.depth_p90].map(fmt).join(' / ')} ${data.units}\n`+
+ `Raw confidence threshold: ${fmt(f.confidence_threshold)}\nCamera center: ${cams[Number(slider.value)].map(fmt).join(', ')}`;draw();}
+let previous=null;
+canvas.onpointerdown=e=>{previous=[e.clientX,e.clientY];canvas.setPointerCapture(e.pointerId)};
+canvas.onpointermove=e=>{if(!previous)return;yaw+=(e.clientX-previous[0])*.008;pitch+=(e.clientY-previous[1])*.008;previous=[e.clientX,e.clientY];draw()};
+canvas.onpointerup=canvas.onpointercancel=()=>previous=null;
+canvas.addEventListener('wheel',e=>{e.preventDefault();zoom=Math.min(20,Math.max(.1,zoom*Math.exp(-e.deltaY*.001)));draw()},{passive:false});
+$('reset').onclick=()=>{yaw=0;pitch=-.15;zoom=1;draw()};slider.oninput=update;window.onresize=draw;update();
+</script></html>

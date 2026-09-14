@@ -1,0 +1,22 @@
+# One continuous, uncut recording. Preserve every frame using overlapping sections.
+geometry:
+  device: cuda
+  image_resolution: 512
+  preprocess_mode: balanced
+  max_frames: null  # No artificial frame cap; GPU and host memory still limit size.
+  # cuda uses every GPU visible inside Docker; cuda:0 selects only that device.
+  chunk_max_frames: 64  # Initial upper bound; OOM retries split sections further.
+  chunk_overlap: 8  # Shared frames used to align depth scale and camera poses.
+  gpu_memory_fraction: 0.8  # Starting-size heuristic, not a hard allocator quota.
+  # Upstream selects bf16/fp16 for its aggregator; output heads remain float32.
+  # Scale remains unknown unless --meters-per-unit is explicitly supplied.
+
+preview:
+  # Raw confidence is 1 + exp(logit), NOT a probability in [0,1].
+  # Discard the lowest-scoring 20% of otherwise valid pixels in each frame.
+  confidence_percentile: 20
+  max_points: 24000
+
+refinement:
+  enabled: false
+  backend: pycusfm

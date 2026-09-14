@@ -19,4 +19,6 @@
 **/*.pyc
 **/.cache
 **/.venv
+**/.secrets
+**/.secrets/**
 third_party/pycusfm/pycusfm/x86_cuda12/

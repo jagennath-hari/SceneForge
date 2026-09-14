@@ -18,6 +18,11 @@ HOST_GID="$(id -g)"
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 
+# HF login stores credentials here through the cache bind mount.
+# Restrict directory access before either attaching or starting a container.
+mkdir -p .cache/huggingface
+chmod 700 .cache/huggingface
+
 # Attach to the existing environment without rebuilding.
 if docker ps --format '{{.Names}}' | grep -Fxq "${RUN_CONTAINER}"; then
     echo "Container '${RUN_CONTAINER}' already running. Attaching..."
@@ -39,6 +44,21 @@ declare -A PARENTS=(
 )
 BUILD_SEQUENCE=("${BASE_IMAGE}" "${GEOMETRY_IMAGE}" "${STEREO_IMAGE}" "${PYCUSFM_IMAGE}")
 
+# Optional runtime credential file; never pass its contents to Docker or builds.
+HF_SECRET_ARGS=()
+if [[ -f "${REPO_ROOT}/.secrets/hf_token" ]]; then
+    if [[ ! -s "${REPO_ROOT}/.secrets/hf_token" ]]; then
+        echo "The HF token file is empty: .secrets/hf_token" >&2
+        exit 1
+    fi
+    chmod 700 "${REPO_ROOT}/.secrets"
+    chmod 600 "${REPO_ROOT}/.secrets/hf_token"
+    HF_SECRET_ARGS=(
+        --mount "type=bind,source=${REPO_ROOT}/.secrets/hf_token,target=/run/secrets/hf_token,readonly"
+        --env HF_TOKEN_PATH=/run/secrets/hf_token
+    )
+fi
+
 for image in "${BUILD_SEQUENCE[@]}"; do
     echo "Building '${image}' using parent '${PARENTS[$image]}'..."
     DOCKER_BUILDKIT=1 docker build \
@@ -54,6 +74,7 @@ mkdir -p .cache data weights
 exec docker run -it --rm \
     --name "${RUN_CONTAINER}" \
     --init \
+    "${HF_SECRET_ARGS[@]}" \
     --runtime=nvidia \
     --gpus all \
     --privileged \

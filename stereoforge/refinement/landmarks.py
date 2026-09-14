@@ -5,24 +5,12 @@ from pathlib import Path
 
 import numpy as np
 
+from stereoforge.utils.camera import quaternion_from_rotation
 from stereoforge.utils.artifacts import write_json
 from stereoforge.utils.progress import tracked
-from .cusfm_tracks import NativeMatchesReader, Observation
-from .types import GeometrySequence
+from stereoforge.geometry.types import GeometrySequence
 
-
-def quaternion_from_rotation(rotation: np.ndarray) -> np.ndarray:
-    """Return COLMAP's w,x,y,z quaternion for a world-to-camera rotation."""
-    r = rotation
-    matrix = np.array([
-        [r[0, 0]-r[1, 1]-r[2, 2], r[1, 0]+r[0, 1], r[2, 0]+r[0, 2], r[2, 1]-r[1, 2]],
-        [r[1, 0]+r[0, 1], r[1, 1]-r[0, 0]-r[2, 2], r[2, 1]+r[1, 2], r[0, 2]-r[2, 0]],
-        [r[2, 0]+r[0, 2], r[2, 1]+r[1, 2], r[2, 2]-r[0, 0]-r[1, 1], r[1, 0]-r[0, 1]],
-        [r[2, 1]-r[1, 2], r[0, 2]-r[2, 0], r[1, 0]-r[0, 1], np.trace(r)],
-    ]) / 3
-    _, vectors = np.linalg.eigh(matrix)
-    quaternion = vectors[:, -1][[3, 0, 1, 2]]
-    return quaternion if quaternion[0] >= 0 else -quaternion
+from .tracks import NativeMatchesReader, Observation
 
 
 @dataclass(frozen=True, slots=True)

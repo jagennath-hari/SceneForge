@@ -1,443 +1,177 @@
 # StereoForge
 
-VGGT-Ω geometry → adaptive stereo baseline → StereoSpace right-eye synthesis →
-side-by-side video. pyCuSFM provides optional geometric refinement.
+Geometry-aware stereo video synthesis, starting with **one continuous, uncut
+recording** such as drone footage or a walkthrough.
 
-Current scope: **one continuous, uncut recording**, such as drone footage or a
-walkthrough. Shot detection and edited movies are outside this first version.
+The implemented pipeline is:
 
-Run `bash scripts/build_and_start.sh` to build and enter the environment.
-
-Video extraction is implemented in C++20 under `native/video/`, with a CMake
-library and `stereoforge-extract-frames` executable. `VideoExtractor` uses RAII
-FFmpeg resource owners for decoding, RGB conversion and lossless PNG encoding
-(compression level 1). It preserves decoded timestamps and flushes delayed
-frames at EOF. The Python `VideoFrameSampler` only launches the executable,
-displays progress and reads `input_frames/manifest.json`; it contains no PyAV
-decoder or image-writing loop.
-
-Rebuild and recreate Docker after this change: the geometry Dockerfile compiles
-and installs the executable into `/usr/local/bin`. Native code is copied into
-the image; the whole repository is not mounted. The geometry demo command stays
-the same. These native changes have not been compiled, benchmarked or tested by
-the assistant, and a speedup has not been measured.
-
-For a manual build in an environment with the FFmpeg development packages and
-`nlohmann-json3-dev` installed:
-
-```bash
-cmake -S native/video -B native/video/build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build native/video/build --parallel
-native/video/build/stereoforge-extract-frames --input data/input/forest_road.mp4 --output data/input/native_frames
+```text
+Video → VGGT-Ω dense geometry → ALIKED/LightGlue tracks
+      → VGGT depth-initialized pyCuSFM bundle adjustment → WebGL reports
 ```
 
-The output directory must be empty. Native extraction supports the same optional
-`--start-seconds`, `--duration` and `--frames` selections; it decodes from the
-beginning for a stable timestamp origin. The manifest is published only after
-success. Through the demo, interruption terminates the child and removes the
-staged output. Standalone interrupted extraction can leave partial PNGs; use a
-new or emptied output directory on retry.
+Baseline control, StereoSpace inference and side-by-side video encoding are the
+next stages; the application does not yet generate stereo video. See the
+[StereoForge Architecture Specification](StereoForge%20Architecture%20Specification.md)
+for module responsibilities, camera conventions, limitations and the roadmap.
 
-All Python dependencies share `/opt/stereoforge-venv`, created by uv using
-Ubuntu's Python and already on `PATH`. uv from the `latest` image installs the Python packages;
-the legacy TensorRT components retain their working pip installation in the same
-environment. Both installers use `docker/constraints.txt`. BuildKit caches uv
-and pip downloads, and installed files are independent of those caches.
+## Environment
 
-Add dependency changes to the Dockerfiles and rebuild. This uses `uv pip install`,
-not `uv sync`; a full dependency lockfile has not been generated.
+Initialize the pinned upstream repositories when setting up a checkout:
 
-## First geometry result
+```bash
+git submodule update --init --recursive
+bash scripts/build_and_start.sh
+```
 
-For file-based Hugging Face credentials, create `.secrets/hf_token` on the host
-and paste only your read-only HF token into it (one line, no quotes or `HF_TOKEN=`).
-From the host repository, create the private file and open it in your editor:
+The script builds the CUDA → base → geometry → stereo → pyCuSFM image chain with
+BuildKit and starts an interactive container. If the named container is already
+running, it attaches without rebuilding. Exit/stop it before rebuilding changed
+Dockerfiles or native code. Python source and configuration changes are visible
+through their explicit workspace mounts.
+
+The environment uses the NVIDIA runtime, all visible GPUs, privileged mode,
+host network/PID/IPC, and X11 mounts. It mounts source, configuration, data
+and cache individually. It does not mount the entire repository.
+
+All Python packages share `/opt/stereoforge-venv`. Dependencies are installed with
+uv, except for the existing TensorRT pip installation, and constrained by
+`docker/constraints.txt`. There is no `uv sync` workflow or dependency lockfile.
+Native C++20 video extraction is built in the geometry image. Dependency or native
+changes require an image rebuild; no empty packaging manifest is maintained.
+
+## Checkpoint access
+
+Obtain access to [VGGT-Omega](https://huggingface.co/facebook/VGGT-Omega). On the
+host, put your Hugging Face read token in `.secrets/hf_token` as a single plain
+line. Prepare the private file using:
 
 ```bash
 mkdir -p .secrets
 chmod 700 .secrets
 touch .secrets/hf_token
 chmod 600 .secrets/hf_token
-nano .secrets/hf_token
 ```
 
-The startup script optionally mounts this file read-only at `/run/secrets/hf_token`
-and sets `HF_TOKEN_PATH` to that path. This is a plain Docker bind mount, not a
-Swarm secret. `.secrets/` is excluded from Git and the Docker build context.
-The token stays in a plaintext host file, accessible to your user and root;
-it is not embedded in an image or exposed as a Docker environment-variable value.
+Edit the file locally, then recreate the container so the startup script mounts
+it read-only at `/run/secrets/hf_token`. It sets `HF_TOKEN_PATH`; the token value
+is not placed in build arguments or environment variables. Credentials, data
+and caches are ignored by Git and excluded from the Docker build context.
 
-After creating or replacing the file, stop the existing container and run
-`bash scripts/build_and_start.sh` again so the new mount is used. Then use
-the demo normally; no `hf auth login` is needed. Avoid running
-`hf auth login/logout` with the read-only token mount; edit/remove the host file
-and recreate the container instead. Revoking the token in HF settings invalidates
-it. Cached model downloads still persist independently in `.cache/`.
+The demo uses `vggt_omega_1b_512.pt` from the persistent Hugging Face cache and
+downloads it from the gated model repository if missing. Obtain model access
+approval and use a token belonging to that approved account for the initial
+download. Cached checkpoints are reused without a fresh authorization request.
+No download flag or interactive login is needed. `--checkpoint PATH` remains an
+explicit override for a local checkpoint you are authorized to use; it does not
+perform a Hugging Face access check.
 
-If `.secrets/hf_token` is absent, the interactive login method below still works.
+## Run the geometry pipeline
 
-The demo accepts an ordered folder of images from **one shot**, or an entire
-continuous recording. Every frame is processed by default using overlapping
-sections distributed across visible GPUs. Inputs must contain no cuts. Code and
-configuration are mounted into the running container, so these changes need no
-image rebuild.
-
-Obtain access to the [VGGT-Omega checkpoints](https://huggingface.co/facebook/VGGT-Omega).
-Use the non-text-aligned `vggt_omega_1b_512.pt` checkpoint. Either put it in
-`weights/` on the **host**, or configure HF credentials inside Docker. The demo
-checks `weights/`, then the persistent HF cache without a network request, and
-downloads automatically only when missing. Downloads go to the cache, not the
-read-only `weights/` mount. An explicit `--checkpoint PATH` must exist; a missing
-custom path raises an error instead of substituting a different model.
-
-For credential entry, create a read-only token in your
-[Hugging Face token settings](https://huggingface.co/settings/tokens), then run
-this inside Docker:
-
-```bash
-(
-  umask 077
-  mkdir -p "$HF_HOME"
-  chmod 700 "$HF_HOME"
-  hf auth login
-)
-```
-
-Paste the token only at the CLI's hidden prompt. Answer **No** if asked to add it
-as a Git credential. Do not put the token in a command argument, Dockerfile,
-build argument, source file, or chat. Login stores the token locally in plain
-text under `HF_HOME`; the private directory restricts access by other ordinary
-host users. It is not encrypted and remains accessible to your user and root.
-The existing `.cache/` mount persists login across container restarts and is
-excluded from Git and the Docker build context. Treat it as private when backing
-up or sharing the workspace. The startup script also restricts this directory.
-
-The automatic download uses the saved login and reuses
-the cached checkpoint on later runs. Run `hf auth logout` to remove saved login.
-See the [Hugging Face authentication guide](https://huggingface.co/docs/huggingface_hub/en/quick-start#authentication).
-
-For a folder of PNG/JPEG images in `data/input/frames/`, run inside
-Docker from `/workspace/StereoForge`:
-
-```bash
-python -m stereoforge.geometry.demo \
-  --images data/input/frames
-```
-
-Images are sorted naturally (`frame_2` before `frame_10`), and all are used.
-All input frames must have the same dimensions.
-
-Our sample is `data/input/forest_road.mp4`, copied from the pinned VGGT-Omega
-submodule's `examples/forest_road.mp4`. It is a 30.45-second, 1280×720 aerial
-forest-road clip at approximately 23.976 FPS. Sampled frames across the clip show
-the same continuous scene. Big Buck Bunny has been removed from `data/input/`.
-
-This command processes the whole video, using every decoded frame:
-
-```bash
-python -m stereoforge.geometry.demo \
-  --video data/input/forest_road.mp4
-```
-
-The demo records timestamps and retains every frame (`geometry.max_frames: null`).
-It discovers GPU count and each device's free/total VRAM, then assigns overlapping
-sections using a conservative starting-size estimate. GPUs hold separate model
-copies; their VRAM is not pooled. On CUDA out-of-memory, the worker splits the
-failed section again with overlap and uses smaller sections for subsequent work.
-Successful sections are temporarily saved to disk and merged in temporal order.
-
-Defaults in `configs/default.yaml` use dynamic section sizes (`chunk_max_frames:
-null`), 8 shared frames and a 90% total-VRAM budget per device. Discovery records
-GPU models and memory; an initial estimate also accounts for resolution and GPU
-count. Each GPU then measures peak PyTorch allocations and adjusts its next
-section size, growing conservatively when there is headroom. Workers claim new
-sections dynamically. An optional `chunk_max_frames` supplies an explicit ceiling.
-
-Before each section, the allocator budget subtracts observed non-PyTorch usage
-from 90% of that GPU's total VRAM. This limits PyTorch allocations; other processes
-and non-PyTorch allocations can still change usage. Allocation failures trigger
-smaller retries and prevent immediate regrowth to the failed size. This targets
-memory use, not GPU compute utilization, and cannot guarantee exactly 90% usage.
-Short recordings or remaining sections may use substantially less memory.
-Larger sections reduce alignment boundaries but do not guarantee lower error. Retries stop
-with an error if even 9 frames cannot fit with the default overlap. `--device cuda`
-uses all visible GPUs; `--device cuda:0` selects one. The CPU path uses one worker.
-
-The merger fits scale, rotation and translation using confidence-filtered matching
-pixels in shared frames. Depth and camera poses are transformed together; shared
-frames retain the earlier reconstruction. The first section anchors world
-coordinates and scale. Poor alignment stops the run rather than publishing a
-disconnected reconstruction. `run.json` records device memory snapshots, OOM
-retries, per-section memory peaks/budgets, ranges and alignment transforms/errors. Inspect these and the
-camera trajectory: sequential alignment can accumulate drift or leave seams;
-there is no global optimization or loop closure yet. Moving subjects can also
-produce inconsistent geometry. `--meters-per-unit`, if supplied, calibrates the
-first section's reconstruction scale after alignment.
-
-After all inference workers finish, their models are unloaded and CUDA caches
-are explicitly released before CPU merging begins. A small CUDA context allocation
-can remain until the process exits. Final merging and report export need host RAM proportional to the video,
-plus disk space for extracted frames and temporary predictions.
-
-Terminal progress shows decoded/saved frames, per-GPU completed sections, merging
-and preview generation. Per-GPU status distinguishes model loading, preprocessing,
-inference and saving. The overall `VGGT inference` bar shows unique frames saved
-out of the full sequence, with percentage, elapsed time and an estimated remaining
-time. It advances after each successful section; overlap and retries count only
-once. Individual GPU displays still count sections, since section sizes change
-dynamically. No within-section completion percentage is inferred.
-Elapsed time refreshes during blocking operations; it is not a measurement of
-within-section GPU completion. Decode totals come from video metadata when present;
-unknown totals show a count without a percentage. Redirected output uses periodic
-status logs instead of animated bars. Per-section inference/merge messages and
-detailed per-frame summaries use `--debug`; merge errors remain in `run.json`.
-Initial section-size and upstream DINO model setup messages also require `--debug`.
-`tqdm` is explicitly included in the base Dockerfile; if an older environment
-lacks it, install it inside Docker with `uv pip install tqdm`.
-
-`--frames`, `--duration` and
-`--start-seconds` remain optional diagnostic controls: frames alone takes the
-first N frames, duration alone keeps all frames in that interval, and combining
-frames with duration samples across the interval. None is needed for a full run.
-
-Checkpoint selection and missing-model downloads are automatic; no download flag is needed.
-Use `--checkpoint PATH` for another local checkpoint and match `--resolution` to
-its training resolution (512 by default). Run `--help` for other options.
-Upstream controls mixed precision;
-its geometry heads output float32.
-
-Each run creates a new directory under `data/intermediate/geometry_<timestamp>/`:
-
-| Artifact | Contents |
-| --- | --- |
-| `index.html` | Offline frame slider, RGB/depth/confidence panels, rotatable point cloud and camera trajectory |
-| `contact_sheet.jpg` | Overview of up to 24 evenly spaced frames with depth and confidence previews |
-| `previews/` | Processed RGB, depth and confidence PNGs for every frame |
-| `geometry.npz` | Raw depth/confidence, valid masks, K, camera-to-world, processed RGB, indices and units |
-| `metadata.json` | Per-frame statistics, camera matrices, dimensions, confidence thresholds and visualization scales |
-| `point_cloud.ply` | Subsampled colored world-space points for external 3D viewers |
-| `run.json` | Checkpoint/configuration provenance, frame count and decoded video timestamps |
-| `input_frames/` | Extracted source PNGs when using `--video` |
-
-Open `data/intermediate/geometry_<timestamp>/index.html` from the **host repository**
-in your browser. No server or network connection is needed. Drag to rotate and
-scroll to zoom. Depth previews use one sequence-wide color range: yellow is near,
-purple is far, and black is invalid or filtered. Confidence has a separate shared
-color range with yellow meaning high confidence. The viewer is a diagnostic
-preview, not a fused reconstruction or a stereoscopic output.
-
-The WebGL viewer includes camera frustums, a shared RGB/depth/confidence frame
-timeline, play/pause and playback speed. Drag to orbit, Shift-drag or right-drag
-to pan, and scroll to zoom. Toggle progressive reveal to compare growing geometry
-with the entire reconstruction. Playback uses recorded video timestamps (12 FPS
-for image-folder inputs). It reveals final aligned geometry in frame order; it
-does not represent intermediate optimization states or live inference. The viewer
-is self-contained with no CDN dependencies and needs browser WebGL support.
-
-To upgrade an existing result without rerunning VGGT, run inside Docker:
-
-```bash
-python -m stereoforge.utils.viewer --run data/intermediate/geometry_<timestamp>
-```
-
-Replace the timestamp with your actual result folder. This rewrites `index.html`
-using saved arrays and metadata, sampling up to 240,000 display points by default.
-The original geometry and PLY remain unchanged. Reopen or refresh the HTML on the
-host afterward. New inference reports use the new viewer automatically.
-
-Array conventions:
-
-- `depth`, `confidence`, `valid_mask`: `[N,H,W]` on the **processed** image grid.
-- `processed_rgb`: `[N,H,W,3]` uint8 RGB.
-- `intrinsics`: `[N,3,3]`, in processed-image pixels. Upstream can crop/resize;
-  these intrinsics must not be applied directly to the original image dimensions.
-- `camera_to_world`: `[N,4,4]`, converted from upstream world-to-camera poses.
-  Camera axes are X right, Y down, Z forward; depth is positive camera Z.
-- Confidence preserves upstream's `1 + exp(logit)` scores, not probabilities.
-  By default, the lowest 20% of otherwise-valid scores in each frame are filtered
-  for previews and statistics. Raw predictions in the NPZ remain unchanged.
-- Depth and translations are labeled `reconstruction_units` by default. Supply
-  `--meters-per-unit` only with an independently known calibration; it scales
-  both depth and camera translations. Separate inference runs are not aligned.
-
-`data/`, `weights/`, caches and Python bytecode are ignored by Git; `.gitkeep`
-files remain trackable. No inference, checkpoint download, or tests were run while
-implementing this milestone; the commands above are for validation in your container.
-
-## Python structure
-
-The CLI command and output filenames remain the same after the refactor.
-Responsibilities are separated into a small set of typed components:
-
-| Component | Responsibility |
-| --- | --- |
-| `GeometryConfig`, `PreviewConfig`, `DemoConfig` | Frozen, validated settings; reject malformed YAML and unknown geometry/preview keys |
-| `DemoRequest`, `GeometryDemoRunner` | Validate a run, resolve a checkpoint, coordinate inference and publish outputs |
-| C++ `VideoExtractor` | Native FFmpeg decoding, RGB/PNG conversion, timestamps and frame manifest |
-| `VideoFrameSampler` | Launch the native executable and relay its progress/manifest to Python |
-| `VGGTOmegaGeometryEstimator` | Lazy model loading, sequence inference, camera conversion and model cleanup |
-| `AdaptiveGeometryEstimator` | GPU discovery, overlapping sections, smaller OOM retries and ordered merging |
-| `SimilarityTransform`, `align_overlap` | Robust shared-pixel registration and consistent depth/pose transforms |
-| `FrameGeometry`, `GeometrySequence` | Tensor shapes, coordinate conventions, units and source metadata |
-| `GeometryReportWriter` | Export arrays, image previews, sampled points and the offline HTML report |
-
-The tensor math remains in typed functions. The HTML viewer is a separate
-template under `stereoforge/utils/templates/`. No new Python dependencies were
-added. Frozen dataclasses prevent field reassignment; tensor contents remain
-mutable and should be treated as read-only by consumers.
-
-Runs are written into a temporary sibling directory and published by rename only
-after the report completes. Failed/interrupted runs clean up their temporary
-outputs; existing nonempty output directories are never overwritten. Checkpoint
-caches are independent and remain available for retries. Add `--debug` for a
-traceback; ordinary errors report actionable messages, including GPU memory
-exhaustion and denied checkpoint access.
-
-The same flow is usable from Python without argument parsing:
-
-```python
-from pathlib import Path
-
-from stereoforge.geometry.config import DemoConfig
-from stereoforge.geometry.runner import DemoRequest, GeometryDemoRunner
-
-config = DemoConfig.from_yaml(Path("configs/default.yaml"))
-request = DemoRequest(
-    images=Path("data/input/frames"),
-    checkpoint=Path("weights/vggt_omega_1b_512.pt"),
-    output=Path("data/intermediate/geometry_example"),
-)
-result = GeometryDemoRunner(config).run(request)
-print(result.output / "index.html")
-```
-
-The full-video changes have not been executed or tested by the assistant.
-Run the command above to validate them in your container.
-
-Next milestone: inspect the full sequence's geometry, then implement adaptive
-baseline control and temporal smoothing, followed by StereoSpace and SBS encoding.
-Adaptive sections and alignment now provide the full-video path; their quality
-must be validated on your footage. Shot detection is outside this scope.
-pyCuSFM now runs before report publication by default. Set `refinement.enabled:
-false` in `configs/default.yaml` for a VGGT-only run.
-
-## Monocular refinement with ALIKED
-
-The same demo command now performs VGGT inference, releases its GPU models, then
-runs pyCuSFM before publishing the reports. The stages are ALIKED extraction,
-vocabulary building, pose-graph optimization, feature matching, VGGT depth-based
-landmark initialization, and standalone bundle adjustment. Each native stage has a progress display and a log under
-`pycusfm/`. The feature-model assets come from the pinned upstream installation;
-TensorRT engines are built by upstream in a writable persistent cache keyed by
-ONNX content, GPU model and TensorRT version. First use can take longer.
-
-The pipeline uses only ALIKED extraction and the ALIKED-specific LightGlue
-matcher. `refinement.feature_type` must be `aliked`. Only this model family is
-copied into the runtime model cache. Each run creates a new workspace for
-features, vocabulary and matches.
-
-Run the complete VGGT → pyCuSFM geometry pipeline inside Docker:
+Inside Docker, with your continuous video under `data/input/`:
 
 ```bash
 python -m stereoforge.geometry.demo --video data/input/forest_road.mp4
 ```
 
-The default configuration enables refinement and retains every video frame.
-VGGT downloads its checkpoint automatically if needed. After inference and CPU
-merging, pyCuSFM runs with ALIKED. Open the new run's `index.html` for VGGT and
-follow **View pyCuSFM reconstruction** for the sparse refinement or its diagnostic
-report. Completion of individual native processes does not guarantee a valid
-reconstruction; inspect registered-frame coverage and refinement status.
-
-For this single physical camera, the initialized COLMAP model contains camera
-poses, per-frame PINHOLE intrinsics, and observed sparse landmarks. No camera rig
-calibration is introduced. The standalone native bundle adjuster controls its
-intrinsic optimization policy; optimized intrinsics are read back from its export.
-Every input frame is exported to feature extraction and distance-based selection is disabled;
-frames that fail reconstruction are listed as unregistered, never silently
-assigned a refined pose.
-
-Matched ALIKED observations are assembled into multi-frame tracks. Entire tracks
-with competing keypoints in one image are rejected. Tracks need at least three
-valid observations. Each initial 3D point is a confidence-weighted average of VGGT
-depth unprojections in a common coordinate system. Observations inconsistent with
-the seed geometry by more than 14 pixels are removed before optimization.
-
-`initialized_sparse/` stores this input as reciprocal COLMAP image/point tracks;
-`initialization.json` records retained tracks and unsupported frames. The pipeline
-then invokes the bundled `bundle_adjustment_runner`, with robust Cauchy loss and
-the first camera fixed, without re-triangulation. Depth supplies initial values;
-it is not a persistent depth constraint and does not add measured metric scale.
-Vocabulary and pose-graph stages remain in the workspace, but the seed poses and
-depth share the original VGGT coordinate system; pose-graph corrections are not
-applied independently to the depth seeds.
-
-Native optimized output is preserved in `pycusfm/workspace/ba_raw/`. A validator
-checks reciprocal observations, positive depth and reprojection error, retaining
-tracks with at least three observations within 3 pixels. It writes the report's
-COLMAP reconstruction to `pycusfm/workspace/sparse/`, excluding unsupported cameras.
-This is one BA pass followed by filtering, not GTSfM's complete hierarchical solver.
-
-Native protobuf match import requires `protobuf>=5,<7`, included in the Dockerfile.
-For an already-running container, install it once with:
+For a naturally ordered image folder:
 
 ```bash
-uv pip install 'protobuf>=5,<7'
+python -m stereoforge.geometry.demo --images data/input/frames
 ```
 
-Matching pairs use spatial radius search around the initialized cameras, rather
-than relying solely on pose-graph loop associations. The starting radius is eight
-median camera steps (rounded upward in working units); temporal/distance minimum
-filters and pair downsampling are disabled. Pose-graph optimization still runs.
-Zero matching tasks or missing match files stop refinement before depth initialization;
-nonempty files alone do not establish that the correspondences are geometrically valid.
-The adapter also checks native match statistics and stops if every task reports
-zero matches per pair.
+Every frame is retained by default. VGGT distributes overlapping sections across
+visible GPUs with adaptive memory budgets, then unloads its models before CPU
+merging. ALIKED refinement follows. Set `refinement.enabled: false` in
+`configs/default.yaml` for VGGT only. ALIKED is the only supported feature family.
 
-To investigate a failed refinement without rerunning VGGT, use a small consecutive
-subset of an existing report:
+Optional diagnostic flags include `--frames`, `--start-seconds`, `--duration`,
+`--device cuda:0`, `--output`, and `--debug`. Frame/time selections are explicit;
+they are not required for full-video processing. Only use `--meters-per-unit`
+when scale is independently calibrated.
+
+## Inspect results
+
+Open the new host-side `data/intermediate/geometry_<timestamp>/index.html`.
+The self-contained WebGL viewer displays VGGT points, trajectory, camera frustums,
+RGB/depth/confidence previews and progressive playback. Playback uses the saved
+reconstruction; it is not a live inference display.
+
+Follow **View pyCuSFM reconstruction** for the validated sparse result or a
+failure report. VGGT provides dense depth; pyCuSFM provides sparse landmarks and
+optimized cameras. The sparse viewer's depth previews remain VGGT references.
+Missing refined cameras are reported explicitly and are not filled with VGGT
+poses labeled as refined.
+
+Useful artifacts inside each run:
+
+| Path | Contents |
+|---|---|
+| `geometry.npz`, `metadata.json`, `run.json` | Dense arrays, camera data and provenance |
+| `previews/`, `contact_sheet.jpg`, `point_cloud.ply` | Dense inspection artifacts |
+| `pycusfm/initialization.json` | Track/landmark counts and unsupported frames |
+| `pycusfm/initialized_sparse/` | Readable depth-initialized COLMAP model |
+| `pycusfm/initialized_binary/` | Binary input used to bypass the native text-import bug |
+| `pycusfm/workspace/ba_raw/` | Unmodified bundle-adjustment output |
+| `pycusfm/workspace/sparse/` | Validated sparse COLMAP model |
+| `pycusfm/refinement.json`, `pycusfm/comparison.json` | Refinement settings and coverage/quality statistics |
+| `pycusfm/*.log` | Native stage logs |
+
+Refinement failures preserve completed VGGT results and diagnostics. A successful
+native process exit does not by itself establish a valid reconstruction. Partial
+coverage remains partial; full coverage is not an accuracy guarantee. Dense depth
+and refined cameras still need geometric reconciliation before stereo synthesis.
+
+## Recover without repeating the full pipeline
+
+Refine a selection from saved VGGT geometry:
 
 ```bash
-python -m stereoforge.geometry.refine_demo --run data/intermediate/geometry_<timestamp> --frames 16 --debug
+python -m stereoforge.geometry.refine_demo \
+  --run data/intermediate/geometry_<timestamp> \
+  --frames 16 --frame-step 16 --debug
 ```
 
-This writes a new `pycusfm_diagnostic_<timestamp>/` folder within that report,
-preserving the original results. Upstream debug mode requests feature and match
-visualizations. This is a diagnostic run, not a replacement for full-video refinement.
+This creates a new `pycusfm_diagnostic_<timestamp>/` folder. Frame spacing is a
+diagnostic tool to cover more camera motion; full-video processing retains all
+frames.
 
-For slow camera motion, use `--frames 16 --frame-step 16` to sample 16 images
-across a longer stretch of the saved sequence. Adjacent images can match well but
-have too little parallax for triangulation. This explicit diagnostic selection
-preserves the selected timestamps, calibration and preview links; full-video
-processing still retains all frames. A native bundle-adjustment failure now stops
-the stage even if its process returns zero, retaining the bundle-adjustment log for inspection.
+Retry only BA from a full run's saved initialized landmarks:
 
-When metric scale is unknown, the adapter normalizes median camera translation
-to one working unit. The upstream metric-named thresholds then act as explicit
-working-unit priors, not measured meters. Depth-initialized landmarks use the same
-translation scale. This is an initial monocular configuration requiring
-validation on your footage. No scale calibration is inferred from SfM.
+```bash
+python -m stereoforge.geometry.ba_demo \
+  --run data/intermediate/geometry_<timestamp>
+```
 
-After completion, the main viewer links to `pycusfm/index.html`, showing refined
-sparse points and cameras aligned to the VGGT coordinate system for comparison.
-The depth/confidence panels are labeled VGGT references: sparse optimization does
-not refine those dense maps. `pycusfm/comparison.json` records registered-frame
-coverage, missing frames, mean point reprojection error, alignment and trajectory
-difference. Validated COLMAP results are under `pycusfm/workspace/sparse/`.
-`pycusfm/refinement.json` records input units and enabled optimization stages.
+If that BA completed but report generation failed, reuse its optimized output:
 
-The unrefined VGGT report is generated before refinement. Refinement errors or
-interruptions preserve that report and the full `pycusfm/` workspace and logs in
-the published run directory. Its pyCuSFM link opens either the sparse viewer or
-a diagnostic page with the failure and log links. One or two registered cameras
-can be viewed in native cuSFM coordinates, explicitly unaligned; zero cameras
-produce an empty-result diagnostic rather than discarding the run. Missing or
-duplicate records remain visible as errors. A partial result does not establish
-successful geometric refinement.
+```bash
+python -m stereoforge.geometry.ba_demo \
+  --run data/intermediate/geometry_<timestamp> \
+  --ba-result data/intermediate/geometry_<timestamp>/pycusfm_ba_<timestamp>
+```
 
-Full failed-stage logs and exported input metadata are also retained under
-`data/intermediate/failed_refinements/`. Pinhole calibration follows upstream's
-explicit 3×4 projection-matrix schema, with validated dimensions and intrinsics.
-The assistant has not
-run or tested this integration. Reconcile dense depth with refined geometry before
-using the refined cameras for StereoSpace.
+Both commands create a new `pycusfm_ba_<timestamp>/` report. Open its `index.html`
+directly; previous results remain intact. The validator restores filenames from
+stable image IDs after checking observation coordinates and camera associations.
+
+To refresh only the existing VGGT viewer from its saved arrays:
+
+```bash
+python -m stereoforge.utils.viewer --run data/intermediate/geometry_<timestamp>
+```
+
+Current Dockerfiles include `protobuf>=5,<7` for native match import. Older running
+containers can install it with `uv pip install 'protobuf>=5,<7'` before refinement.
+
+## Source organization
+
+- `geometry/`: dense geometry, GPU scheduling, orchestration and existing CLI commands.
+- `refinement/`: ALIKED tracks, depth-seeded native BA, COLMAP exchange and sparse reports.
+- `video/` and `native/video/`: Python process adapter and C++ FFmpeg extraction.
+- `utils/`: shared camera conversions, progress, artifacts and visualization.
+
+Future stages belong in the architecture roadmap until implemented. Package
+initializers describe real packages; empty helper scripts, test files and future
+modules are deliberately absent. Builds, tests and inference remain user-run in
+the current development workflow.

@@ -12,9 +12,10 @@ import numpy as np
 import torch
 from tqdm.contrib.logging import logging_redirect_tqdm
 
+from stereoforge.refinement.pycusfm import CuSFMRefiner
+from stereoforge.refinement.report import write_refinement_report, write_refinement_status
+
 from .config import DemoConfig
-from .cusfm import CuSFMRefiner
-from .cusfm_report import write_refinement_report, write_refinement_status
 from .types import FrameGeometry, GeometrySequence
 
 

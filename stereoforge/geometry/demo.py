@@ -26,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--duration", type=float, help="Optional diagnostic segment duration; default is through EOF")
     parser.add_argument("--frames", type=int, help="Optional diagnostic frame count; default is all frames")
     parser.add_argument("--config", type=Path, default=ROOT / "configs/default.yaml")
-    parser.add_argument("--checkpoint", type=Path, help="Explicit local checkpoint; otherwise use weights/cache or download automatically")
+    parser.add_argument("--checkpoint", type=Path, help="Explicit authorized local checkpoint; otherwise use the Hugging Face cache or gated download")
     # Accept old commands without requiring a separate download mode.
     parser.add_argument("--download-checkpoint", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--output", type=Path, help="New/empty output folder; defaults to a timestamped run")

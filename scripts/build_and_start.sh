@@ -70,7 +70,7 @@ for image in "${BUILD_SEQUENCE[@]}"; do
 done
 
 # Start an interactive environment with only the essential host directories.
-mkdir -p .cache data weights
+mkdir -p .cache data
 exec docker run -it --rm \
     --name "${RUN_CONTAINER}" \
     --init \
@@ -96,6 +96,5 @@ exec docker run -it --rm \
     --mount "type=bind,source=${REPO_ROOT}/stereoforge,target=/workspace/StereoForge/stereoforge" \
     --mount "type=bind,source=${REPO_ROOT}/configs,target=/workspace/StereoForge/configs,readonly" \
     --mount "type=bind,source=${REPO_ROOT}/data,target=/workspace/StereoForge/data" \
-    --mount "type=bind,source=${REPO_ROOT}/weights,target=/workspace/StereoForge/weights,readonly" \
     --mount "type=bind,source=${REPO_ROOT}/.cache,target=/home/stereoforge/.cache" \
     "${RUN_IMAGE}" /bin/bash

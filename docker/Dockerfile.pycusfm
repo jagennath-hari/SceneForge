@@ -69,8 +69,7 @@ RUN if ! getent group "${USER_GID}" >/dev/null; then \
         useradd --uid "${USER_UID}" --gid "${USER_GID}" \
             --home-dir /home/stereoforge --shell /bin/bash stereoforge; \
     fi && \
-    mkdir -p /home/stereoforge/.cache /workspace/StereoForge/data \
-        /workspace/StereoForge/weights && \
+    mkdir -p /home/stereoforge/.cache /workspace/StereoForge/data && \
     chown -R "${USER_UID}:${USER_GID}" /home/stereoforge /workspace/StereoForge
 
 # Include source defaults so the image also contains the project without mounts.

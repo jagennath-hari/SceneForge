@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .cusfm_report import rotation_from_quaternion
+from stereoforge.utils.camera import rotation_from_quaternion
 
 
 class ColmapOutputValidator:
@@ -32,13 +32,23 @@ class ColmapOutputValidator:
                 raise ValueError("Invalid optimized camera intrinsics")
             cameras[identifier] = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
             camera_lines[identifier] = line
-        # Only names actually supplied to BA are allowed back into the result.
-        expected_names = set()
+        # The standalone exporter synthesizes frame_<IMAGE_ID>.jpg. Preserve
+        # identity via the COLMAP ID, then verify the measurement ordering before
+        # restoring our original source filename. Never infer identity from order.
+        expected_images = {}
         with (initialized / "images.txt").open() as stream:
             while line := stream.readline():
                 if line.strip() and not line.startswith("#"):
-                    expected_names.add(line.split()[-1])
-                    stream.readline()
+                    fields = line.split()
+                    identifier = int(fields[0])
+                    if len(fields) != 10 or identifier in expected_images:
+                        raise ValueError("Malformed or duplicate initialized image")
+                    values = stream.readline().split()
+                    if len(values) % 3:
+                        raise ValueError("Malformed initialized observations")
+                    uv = np.array([(float(values[i]), float(values[i+1]))
+                                   for i in range(0, len(values), 3)]).reshape(-1, 2)
+                    expected_images[identifier] = (int(fields[8]), fields[9], uv)
         images = {}
         with candidates[0].open() as stream:
             while line := stream.readline():
@@ -48,8 +58,13 @@ class ColmapOutputValidator:
                 if len(fields) != 10:
                     raise ValueError("Malformed optimized COLMAP image")
                 identifier, camera_id = int(fields[0]), int(fields[8])
-                if identifier in images or camera_id not in cameras or fields[9] not in expected_names:
-                    raise ValueError("Unknown or duplicate optimized image/camera")
+                if identifier in images or identifier not in expected_images:
+                    raise ValueError(f"Unknown or duplicate optimized image ID: {identifier}")
+                expected_camera, source_name, source_uv = expected_images[identifier]
+                if camera_id not in cameras or camera_id != expected_camera:
+                    raise ValueError(f"Optimized image {identifier} has unexpected camera ID {camera_id}")
+                if fields[9] not in (source_name, f"frame_{identifier}.jpg"):
+                    raise ValueError(f"Unexpected optimized filename for image {identifier}: {fields[9]}")
                 rotation = rotation_from_quaternion(list(map(float, fields[1:5])))
                 translation = np.array(list(map(float, fields[5:8])))
                 if not np.isfinite(translation).all():
@@ -62,7 +77,13 @@ class ColmapOutputValidator:
                     raise ValueError("Malformed optimized observations")
                 observations = [(float(values[i]), float(values[i+1]), int(values[i+2]))
                                 for i in range(0, len(values), 3)]
-                images[identifier] = (line.strip(), camera_id, rotation, translation, observations)
+                optimized_uv = np.array([(u, v) for u, v, _ in observations]).reshape(-1, 2)
+                if optimized_uv.shape != source_uv.shape or not np.allclose(
+                    optimized_uv, source_uv, atol=1e-3, rtol=0
+                ):
+                    raise ValueError(f"Optimized observation coordinates/order changed for image {identifier}")
+                fields[9] = source_name
+                images[identifier] = (" ".join(fields), camera_id, rotation, translation, observations)
         points = []
         seen = set()
         claimed_observations = set()

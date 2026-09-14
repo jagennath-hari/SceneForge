@@ -12,13 +12,13 @@ from stereoforge.utils.validation import require_finite, require_integer
 from stereoforge.utils.progress import Progress
 from stereoforge.utils.visualization import GeometryReportWriter
 from stereoforge.video.sampling import VideoFrameSampler
+from stereoforge.refinement.pycusfm import CuSFMRefiner
+from stereoforge.refinement.report import write_refinement_report, write_refinement_status
 
 from .config import DemoConfig
 from .inputs import select_image_paths, validate_image_paths
 from .types import DepthUnits
 from .adaptive import AdaptiveGeometryEstimator
-from .cusfm import CuSFMRefiner
-from .cusfm_report import write_refinement_report, write_refinement_status
 
 LOGGER = logging.getLogger(__name__)
 CHECKPOINT_NAME = "vggt_omega_1b_512.pt"
@@ -160,9 +160,6 @@ class GeometryDemoRunner:
             if not request.checkpoint.is_file():
                 raise FileNotFoundError(f"Explicit checkpoint not found: {request.checkpoint}")
             return request.checkpoint
-        local = Path(__file__).resolve().parents[2] / "weights" / CHECKPOINT_NAME
-        if local.is_file():
-            return local
         if self.config.geometry.image_resolution != 512:
             raise ValueError("The automatic checkpoint requires resolution 512; supply --checkpoint for another model")
         from huggingface_hub import hf_hub_download

@@ -8,6 +8,7 @@ import re
 
 import numpy as np
 
+from stereoforge.utils.camera import rotation_from_quaternion
 from stereoforge.utils.artifacts import write_json
 from stereoforge.utils.visualization import GeometryReportWriter
 
@@ -26,17 +27,6 @@ def write_refinement_status(directory: Path, message: str, status: str = "failed
         f'<p>Status: {html.escape(status)}</p><pre>{html.escape(message)}</pre>'
         f'<h2>Stage logs</h2><ul>{links}</ul>', encoding="utf-8")
     return summary
-
-
-def rotation_from_quaternion(values: list[float]) -> np.ndarray:
-    quaternion = np.asarray(values, dtype=np.float64)
-    norm = np.linalg.norm(quaternion)
-    if not np.isfinite(norm) or norm < 1e-12:
-        raise ValueError("Invalid COLMAP quaternion")
-    w, x, y, z = quaternion / norm
-    return np.array([[1-2*y*y-2*z*z, 2*x*y-2*z*w, 2*x*z+2*y*w],
-                     [2*x*y+2*z*w, 1-2*x*x-2*z*z, 2*y*z-2*x*w],
-                     [2*x*z-2*y*w, 2*y*z+2*x*w, 1-2*x*x-2*y*y]])
 
 
 def write_refinement_report(directory: Path, original: dict, max_points: int) -> dict:

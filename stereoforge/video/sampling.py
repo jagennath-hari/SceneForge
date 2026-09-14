@@ -48,7 +48,7 @@ class VideoFrameSampler:
         if self.count is not None:
             command.extend(("--frames", str(self.count)))
         # stderr remains visible; stdout contains only the native progress protocol.
-        with Progress("Decoding video (C++)", unit="frame") as progress:
+        with Progress("Decoding video", unit="frame") as progress:
             process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True, start_new_session=True)
             try:
                 assert process.stdout is not None

@@ -51,7 +51,7 @@ class GeometryConfig:
 @dataclass(frozen=True, slots=True)
 class PreviewConfig:
     confidence_percentile: float = 20.0
-    max_points: int = 24000
+    max_points: int = 240000
 
     def __post_init__(self) -> None:
         require_finite("preview.confidence_percentile", self.confidence_percentile)

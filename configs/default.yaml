@@ -15,7 +15,7 @@ preview:
   # Raw confidence is 1 + exp(logit), NOT a probability in [0,1].
   # Discard the lowest-scoring 20% of otherwise valid pixels in each frame.
   confidence_percentile: 20
-  max_points: 24000
+  max_points: 240000
 
 refinement:
   enabled: false

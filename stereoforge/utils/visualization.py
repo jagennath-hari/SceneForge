@@ -96,7 +96,7 @@ class GeometryReportWriter:
             self._write_arrays(sequence, arrays, output)
         records = self._write_previews(sequence, arrays, output, depth_range, confidence_range)
         with Progress("Exporting point cloud"):
-            xyz, colors = self._sample_points(arrays)
+            xyz, colors, point_frames = self._sample_points(arrays)
             self._write_ply(output / "point_cloud.ply", xyz, colors)
         metadata: dict[str, Any] = {
             "format_version": 1, "units": sequence.units,
@@ -114,7 +114,7 @@ class GeometryReportWriter:
         }
         write_json(output / "metadata.json", metadata)
         with Progress("Writing HTML viewer"):
-            self._write_viewer(output, metadata, xyz, colors)
+            self._write_viewer(output, metadata, xyz, colors, point_frames)
         return metadata
 
     @staticmethod
@@ -171,11 +171,12 @@ class GeometryReportWriter:
         sheet.save(output / "contact_sheet.jpg", quality=90)
         return records
 
-    def _sample_points(self, arrays: GeometryArrays) -> tuple[NDArray[np.float64], ByteArray]:
+    def _sample_points(self, arrays: GeometryArrays) -> tuple[NDArray[np.float64], ByteArray, NDArray[np.int64]]:
         rng = np.random.default_rng(0)
         per_frame, remainder = divmod(self.config.max_points, len(arrays.depth))
         points: list[NDArray[np.float64]] = []
         colors: list[ByteArray] = []
+        frame_ids: list[NDArray[np.int64]] = []
         for i in range(len(arrays.depth)):
             indices = np.flatnonzero(arrays.valid[i])
             budget = per_frame + (i < remainder)
@@ -189,7 +190,8 @@ class GeometryReportWriter:
             finite = np.isfinite(world_points).all(axis=1)
             points.append(world_points[finite])
             colors.append(arrays.rgb[i, yy, xx][finite])
-        return np.concatenate(points), np.concatenate(colors)
+            frame_ids.append(np.full(int(finite.sum()), i, dtype=np.int64))
+        return np.concatenate(points), np.concatenate(colors), np.concatenate(frame_ids)
 
     @staticmethod
     def _write_ply(path: Path, xyz: NDArray[np.float64], colors: ByteArray) -> None:
@@ -204,8 +206,10 @@ class GeometryReportWriter:
     @staticmethod
     def _write_viewer(
         output: Path, metadata: Mapping[str, Any], xyz: NDArray[np.float64], colors: ByteArray,
+        point_frames: NDArray[np.int64],
     ) -> None:
         payload = dict(metadata)
+        payload["point_frames"] = point_frames.tolist()
         payload["points"] = np.column_stack([xyz, colors]).round(5).tolist()
         embedded = json.dumps(payload, allow_nan=False).replace("<", "\\u003c")
         template = Path(__file__).with_name("templates") / "geometry.html"

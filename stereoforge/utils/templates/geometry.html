@@ -1,72 +1,121 @@
 <!doctype html>
-<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>StereoForge geometry preview</title>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>StereoForge · Reconstruction</title>
 <style>
-body{background:#101620;color:#e7edf7;font:16px system-ui;margin:24px auto;max-width:1250px;padding:0 20px}
-h1{margin-bottom:8px}p{color:#bcc8da;line-height:1.5}.panels{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
-figure{margin:0}img{width:100%;background:#000}figcaption{padding:8px 0}canvas{width:100%;height:480px;background:#070c13;touch-action:none;border:1px solid #334155}
-input{width:65%;vertical-align:middle}pre{white-space:pre-wrap;background:#1b2433;padding:16px}button{padding:8px 16px;margin:8px}a{color:#81c6ff}
-@media(max-width:650px){.panels{grid-template-columns:1fr}canvas{height:320px}}
-</style>
-<h1>StereoForge · geometry preview</h1>
-<p id="summary"></p>
-<label>Frame <input id="frame" type="range" min="0" value="0" step="1"><span id="number"></span></label>
-<div class="panels"><figure><img id="rgb"><figcaption>Processed RGB</figcaption></figure>
-<figure><img id="depth"><figcaption>Depth: yellow near → purple far; black invalid/filtered</figcaption></figure>
-<figure><img id="confidence"><figcaption>Confidence: yellow high → purple low (raw scores)</figcaption></figure></div>
-<pre id="stats"></pre>
-<h2>Reconstructed points and camera trajectory</h2>
-<p>Drag to rotate; scroll to zoom. Cyan line: camera path. Orange: selected camera.
-Camera directions point along +Z. Points are subsampled and may contain outliers or moving objects.</p>
-<button id="reset">Reset view</button><canvas id="cloud"></canvas>
-<p><a href="geometry.npz">Geometry arrays</a> · <a href="metadata.json">Metadata and camera matrices</a> ·
-<a href="point_cloud.ply">Colored point cloud (PLY)</a> · <a href="contact_sheet.jpg">Contact sheet overview</a></p>
+:root{color-scheme:dark;font:14px system-ui;background:#0b1017;color:#e3edf5}body{max-width:1600px;margin:auto;padding:24px}h1{font-size:25px;margin:0}h2{font-size:15px}p{color:#98aabd;line-height:1.5}header,.toolbar,.timeline{display:flex;align-items:center;gap:16px;flex-wrap:wrap}header{justify-content:space-between;margin-bottom:20px}.badge{color:#68dfc4;border:1px solid #285a51;padding:6px 12px;border-radius:20px}.workspace{display:grid;grid-template-columns:minmax(0,3fr) minmax(260px,1fr);gap:18px}.stage{position:relative;background:#060a10;border:1px solid #233344;border-radius:12px;overflow:hidden}canvas{display:block;width:100%;height:65vh;min-height:360px;touch-action:none}.overlay{position:absolute;left:18px;top:14px;pointer-events:none;color:#9ab1c5}.legend{position:absolute;left:18px;bottom:12px;font-size:12px;color:#a6bbcb}.sidebar{background:#111b26;padding:16px;border-radius:12px;min-width:0}figure{margin:0 0 12px}img{display:block;width:100%;max-height:200px;object-fit:contain;background:#05090e}figcaption{color:#a1b4c5;font-size:12px;margin:6px 0}.toolbar,.timeline{padding:14px 0}button,select{background:#172637;color:#edf6ff;border:1px solid #34495e;border-radius:6px;padding:8px 12px;cursor:pointer}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #62dec3}input[type=range]{accent-color:#62dec3}#frame{flex:1;min-width:160px}#stats{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;color:#adbfcc}a{color:#79cafa}#error{color:#ffb19c;white-space:pre-wrap}label{display:flex;align-items:center;gap:6px}.notes{font-size:12px} @media(max-width:850px){.workspace{grid-template-columns:1fr}.sidebar{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}#stats{grid-column:1/-1}canvas{height:52vh}}
+</style></head>
+<body>
+<header><div><h1>StereoForge</h1><p id="summary"></p></div><span class="badge">VGGT-Ω · Reconstruction</span></header>
+<div class="workspace"><section>
+<div class="stage"><canvas id="cloud" aria-label="Interactive reconstruction. Drag to orbit, Shift-drag to pan, scroll to zoom." tabindex="0"></canvas><div class="overlay" id="scene-label"></div><div class="legend">Cyan · camera trajectory　 Amber · selected camera</div></div>
+<div id="error" role="alert"></div>
+<div class="timeline"><button id="play" aria-label="Play reconstruction">Play</button><button id="previous" aria-label="Previous frame">‹</button><input id="frame" aria-label="Frame timeline" type="range" min="0" value="0" step="1"><button id="next" aria-label="Next frame">›</button><span id="number"></span><select id="speed" aria-label="Playback speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></div>
+<div class="toolbar"><label><input id="progressive" type="checkbox" checked>Progressive reveal</label><label><input id="cameras" type="checkbox" checked>Cameras</label><label>Point size <input id="size" type="range" min="1" max="6" value="2" step="0.5"></label><button id="reset">Reset view</button></div>
+<p class="notes">Drag to orbit · Shift-drag or right-drag to pan · Scroll to zoom. Playback reveals the final aligned geometry in video-frame order. It does not replay inference or optimization history. Points are sampled; dense surfaces are not fused.</p>
+</section><aside class="sidebar"><figure><img id="rgb" alt="Selected RGB frame"><figcaption>Processed RGB</figcaption></figure><figure><img id="depth" alt="Selected depth map"><figcaption>Depth · yellow near, purple far</figcaption></figure><figure><img id="confidence" alt="Selected confidence map"><figcaption>Confidence · yellow high</figcaption></figure><pre id="stats"></pre></aside></div>
+<p><a href="geometry.npz">Geometry arrays</a> · <a href="metadata.json">Metadata</a> · <a href="point_cloud.ply">Point cloud</a> · <a href="contact_sheet.jpg">Contact sheet</a></p>
 <script id="data" type="application/json">__GEOMETRY_DATA__</script>
 <script>
-const data=JSON.parse(document.getElementById('data').textContent), $=id=>document.getElementById(id);
-$('summary').textContent=`${data.frames.length} frames · Units: ${data.units}. Intrinsics refer to processed images. `+
-  (data.units==='meters'?'Scale supplied by user.':'Metric scale is unestablished; distances are not meters.');
-const slider=$('frame');slider.max=data.frames.length-1;
-const canvas=$('cloud'), ctx=canvas.getContext('2d');
-const cams=data.frames.map(f=>[f.camera_to_world[0][3],f.camera_to_world[1][3],f.camera_to_world[2][3]]);
-const all=data.points.concat(cams), center=[0,1,2].map(a=>{
- const v=all.map(p=>p[a]).sort((a,b)=>a-b);return v[Math.floor(v.length/2)]||0;
-});
-const radii=all.map(p=>Math.hypot(...p.slice(0,3).map((x,i)=>x-center[i]))).sort((a,b)=>a-b);
-const radius=Math.max(radii[Math.floor(radii.length*.95)]||1,...cams.map(p=>Math.hypot(...p.map((x,i)=>x-center[i]))),1e-5);
-let yaw=0,pitch=-.15,zoom=1;
-function project(point){
- let [x,y,z]=point.slice(0,3).map((v,i)=>(v-center[i])/radius);
- const a=x*Math.cos(yaw)+z*Math.sin(yaw), b=-x*Math.sin(yaw)+z*Math.cos(yaw);
- const c=y*Math.cos(pitch)-b*Math.sin(pitch), d=y*Math.sin(pitch)+b*Math.cos(pitch);
- const s=Math.min(canvas.width,canvas.height)*.38*zoom;
- return [canvas.width/2+a*s,canvas.height/2+c*s,d];
+'use strict';
+const data=JSON.parse(document.getElementById('data').textContent);
+const $=id=>document.getElementById(id);
+class ReconstructionViewer {
+ constructor(){
+  this.frames=data.frames;this.index=0;this.playing=false;this.lastTick=0;this.playTime=0;
+  this.canvas=$('cloud');this.gl=this.canvas.getContext('webgl',{antialias:true,alpha:false});
+  if(!this.gl)throw Error('WebGL is unavailable. Enable browser hardware acceleration to use the 3D viewer.');
+  const cameras=this.frames.map(f=>f.camera_to_world.slice(0,3).map(r=>r[3]));
+  const values=data.points.map(p=>p.slice(0,3)).concat(cameras);
+  const quantile=(a,q)=>{a.sort((x,y)=>x-y);return a[Math.floor((a.length-1)*q)]||0;};
+  this.center=[0,1,2].map(k=>quantile(values.map(p=>p[k]),.5));
+  this.radius=Math.max(1e-6,quantile(values.map(p=>Math.hypot(...p.map((v,k)=>v-this.center[k]))),.95),...cameras.map(p=>Math.hypot(...p.map((v,k)=>v-this.center[k]))));
+  this.normalize=p=>p.map((v,k)=>(v-this.center[k])/this.radius);
+  this.cameras=cameras.map(this.normalize);this.yaw=0;this.pitch=-.3;this.zoom=1;this.pan=[0,0];
+  const times=data.provenance?.video_timestamps_seconds;
+  this.times=times?.length===this.frames.length?times.map(t=>t-times[0]):this.frames.map((_,i)=>i/12);
+  this.initGL();this.makeGeometry();this.controls();this.update();
+  requestAnimationFrame(t=>this.animate(t));
+ }
+ initGL(){
+  const gl=this.gl;
+  const shader=(type,source)=>{const s=gl.createShader(type);gl.shaderSource(s,source);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(s));return s;};
+  const vertex=shader(gl.VERTEX_SHADER,`attribute vec3 position;attribute vec3 color;attribute float frame;
+   uniform vec2 angles;uniform vec2 pan;uniform float zoom;uniform float aspect;uniform float pointSize;uniform float limit;
+   varying vec3 rgb;varying float visible;
+   void main(){float cy=cos(angles.x),sy=sin(angles.x),cp=cos(angles.y),sp=sin(angles.y);
+    vec3 p=vec3(cy*position.x+sy*position.z,position.y,-sy*position.x+cy*position.z);
+    p=vec3(p.x,cp*p.y-sp*p.z,sp*p.y+cp*p.z);
+    gl_Position=vec4((p.x*zoom+pan.x)/aspect,-p.y*zoom+pan.y,p.z/1000.0,1.0);
+    gl_PointSize=pointSize;rgb=color;visible=frame<=limit?1.0:0.0;}`);
+  const fragment=shader(gl.FRAGMENT_SHADER,`precision mediump float;varying vec3 rgb;varying float visible;uniform bool roundPoints;
+   void main(){if(visible<.5)discard;if(roundPoints && distance(gl_PointCoord,vec2(.5))>.5)discard;gl_FragColor=vec4(rgb,1.0);}`);
+  this.program=gl.createProgram();gl.attachShader(this.program,vertex);gl.attachShader(this.program,fragment);gl.linkProgram(this.program);
+  if(!gl.getProgramParameter(this.program,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(this.program));
+  gl.deleteShader(vertex);gl.deleteShader(fragment);gl.useProgram(this.program);
+  this.attributes={};for(const name of ['position','color','frame'])this.attributes[name]=gl.getAttribLocation(this.program,name);
+  this.uniforms={};for(const name of ['angles','pan','zoom','aspect','pointSize','limit','roundPoints'])this.uniforms[name]=gl.getUniformLocation(this.program,name);
+  gl.enable(gl.DEPTH_TEST);gl.clearColor(.025,.04,.065,1);
+ }
+ buffer(vertices){const gl=this.gl,b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(vertices),gl.STATIC_DRAW);return {buffer:b,count:vertices.length/7};}
+ makeGeometry(){
+  const points=[];data.points.forEach((p,i)=>points.push(...this.normalize(p.slice(0,3)),...p.slice(3,6).map(c=>c/255),data.point_frames[i]));this.points=this.buffer(points);
+  const lines=[],frustums=[];this.cameraOffsets=[];
+  const vertex=(list,p,c,i)=>list.push(...p,...c,i);
+  const edge=(list,a,b,c,i)=>{vertex(list,a,c,i);vertex(list,b,c,i);};
+  this.frames.forEach((f,i)=>{
+   if(i)edge(lines,this.cameras[i-1],this.cameras[i],[.2,.8,.88],i);
+   const k=f.intrinsics,m=f.camera_to_world,[h,w]=f.processed_size_hw,d=.045;
+   const world=([u,v])=>{const y=(v-k[1][2])/k[1][1],x=(u-k[0][2]-k[0][1]*y)/k[0][0];return m.slice(0,3).map((r,a)=>this.cameras[i][a]+d*(r[0]*x+r[1]*y+r[2]));};
+   const corners=[[0,0],[w,0],[w,h],[0,h]].map(world);this.cameraOffsets.push(frustums.length/7);
+   for(let j=0;j<4;j++){edge(frustums,this.cameras[i],corners[j],[.3,.65,.7],i);edge(frustums,corners[j],corners[(j+1)%4],[.3,.65,.7],i);}
+  });
+  this.path=this.buffer(lines);this.frustums=this.buffer(frustums);this.frustumVertices=frustums;this.highlight=this.buffer([]);
+ }
+ drawBuffer(object,mode,round=false,first=0,count=object.count){
+  const gl=this.gl;gl.bindBuffer(gl.ARRAY_BUFFER,object.buffer);
+  for(const [name,size,offset] of [['position',3,0],['color',3,12],['frame',1,24]]){const a=this.attributes[name];gl.enableVertexAttribArray(a);gl.vertexAttribPointer(a,size,gl.FLOAT,false,28,offset);}
+  gl.uniform1i(this.uniforms.roundPoints,round);gl.drawArrays(mode,first,count);
+ }
+ draw(){
+  const gl=this.gl,dpr=Math.min(devicePixelRatio,2),w=Math.round(this.canvas.clientWidth*dpr),h=Math.round(this.canvas.clientHeight*dpr);
+  if(this.canvas.width!==w||this.canvas.height!==h){this.canvas.width=w;this.canvas.height=h;}
+  gl.viewport(0,0,w,h);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  gl.uniform2f(this.uniforms.angles,this.yaw,this.pitch);gl.uniform2fv(this.uniforms.pan,this.pan);gl.uniform1f(this.uniforms.zoom,this.zoom*.7);
+  gl.uniform1f(this.uniforms.aspect,w/h);gl.uniform1f(this.uniforms.pointSize,Number($('size').value)*dpr);
+  gl.uniform1f(this.uniforms.limit,$('progressive').checked?this.index:this.frames.length);
+  this.drawBuffer(this.points,gl.POINTS,true);
+  if($('cameras').checked){this.drawBuffer(this.path,gl.LINES);this.drawBuffer(this.frustums,gl.LINES);gl.disable(gl.DEPTH_TEST);this.drawBuffer(this.highlight,gl.LINES);gl.enable(gl.DEPTH_TEST);}
+ }
+ update(){
+  const f=this.frames[this.index];$('frame').value=this.index;$('number').textContent=`${this.index+1} / ${this.frames.length}`;
+  $('scene-label').textContent=`${$('progressive').checked?'Revealing frames':'Full reconstruction'} · ${this.times[this.index].toFixed(2)} s`;
+  for(const kind of ['rgb','depth','confidence'])$(kind).src=f.previews[kind];
+  $('stats').textContent=`Frame ${f.frame_index}\nValid depth: ${(f.valid_fraction*100).toFixed(1)}%\nMedian depth: ${f.depth_p50===null?'unavailable':f.depth_p50.toPrecision(4)}\nUnits: ${data.units}\nProcessed: ${f.processed_size_hw[1]} × ${f.processed_size_hw[0]}\n${f.source}`;
+  const start=this.cameraOffsets[this.index]*7,selected=this.frustumVertices.slice(start,start+16*7);
+  for(let i=0;i<selected.length;i+=7){selected[i+3]=1;selected[i+4]=.65;selected[i+5]=.2;}
+  this.gl.bindBuffer(this.gl.ARRAY_BUFFER,this.highlight.buffer);this.gl.bufferData(this.gl.ARRAY_BUFFER,new Float32Array(selected),this.gl.DYNAMIC_DRAW);this.highlight.count=16;this.draw();
+ }
+ select(i){this.index=Math.max(0,Math.min(this.frames.length-1,i));this.playTime=this.times[this.index];this.update();}
+ controls(){
+  $('frame').max=this.frames.length-1;$('frame').oninput=()=>this.select(Number($('frame').value));
+  $('play').onclick=()=>{if(this.index===this.frames.length-1)this.select(0);this.playing=!this.playing;$('play').textContent=this.playing?'Pause':'Play';};
+  $('previous').onclick=()=>this.select(this.index-1);$('next').onclick=()=>this.select(this.index+1);
+  for(const id of ['progressive','cameras','size'])$(id).oninput=()=>this.update();
+  $('reset').onclick=()=>{this.yaw=0;this.pitch=-.3;this.zoom=1;this.pan=[0,0];this.draw();};
+  let pointer=null;this.canvas.oncontextmenu=e=>e.preventDefault();
+  this.canvas.onpointerdown=e=>{pointer={x:e.clientX,y:e.clientY,pan:e.shiftKey||e.button===2};this.canvas.setPointerCapture(e.pointerId);};
+  this.canvas.onpointermove=e=>{if(!pointer)return;const dx=e.clientX-pointer.x,dy=e.clientY-pointer.y;if(pointer.pan){this.pan[0]+=dx/this.canvas.clientHeight*2;this.pan[1]-=dy/this.canvas.clientHeight*2;}else{this.yaw+=dx*.007;this.pitch=Math.max(-Math.PI/2,Math.min(Math.PI/2,this.pitch+dy*.007));}pointer.x=e.clientX;pointer.y=e.clientY;this.draw();};
+  this.canvas.onpointerup=this.canvas.onpointercancel=this.canvas.onlostpointercapture=()=>{pointer=null;};
+  this.canvas.addEventListener('wheel',e=>{e.preventDefault();this.zoom=Math.max(.05,Math.min(100,this.zoom*Math.exp(-e.deltaY*.001)));this.draw();},{passive:false});
+  window.addEventListener('resize',()=>this.draw());
+  this.canvas.addEventListener('webglcontextlost',e=>{e.preventDefault();this.playing=false;$('error').textContent='Graphics context lost. Reload this page to restore the viewer.';});
+ }
+ animate(time){const dt=this.lastTick?Math.min((time-this.lastTick)/1000,.25):0;this.lastTick=time;
+  if(this.playing){this.playTime+=dt*Number($('speed').value);let i=this.index;while(i+1<this.frames.length&&this.times[i+1]<=this.playTime)i++;if(i!==this.index){this.index=i;this.update();}if(i===this.frames.length-1){this.playing=false;$('play').textContent='Play';}}
+  requestAnimationFrame(t=>this.animate(t));
+ }
 }
-function draw(){
- canvas.width=canvas.clientWidth*devicePixelRatio;canvas.height=canvas.clientHeight*devicePixelRatio;
- ctx.clearRect(0,0,canvas.width,canvas.height);
- const points=data.points.map(p=>({p:project(p),c:p.slice(3)})).sort((a,b)=>b.p[2]-a.p[2]);
- for(const {p,c} of points){ctx.fillStyle=`rgb(${c.join(',')})`;ctx.fillRect(p[0],p[1],2*devicePixelRatio,2*devicePixelRatio)}
- ctx.strokeStyle='#51d5e8';ctx.lineWidth=2*devicePixelRatio;ctx.beginPath();
- cams.forEach((c,i)=>{const p=project(c);if(i===0)ctx.moveTo(p[0],p[1]);else ctx.lineTo(p[0],p[1])});ctx.stroke();
- cams.forEach((c,i)=>{
-   const p=project(c),pose=data.frames[i].camera_to_world;
-   const end=project(c.map((v,a)=>v+pose[a][2]*radius*.12));
-   ctx.fillStyle=ctx.strokeStyle=i===Number(slider.value)?'#ffad42':'#51d5e8';
-   ctx.beginPath();ctx.arc(p[0],p[1],5*devicePixelRatio,0,2*Math.PI);ctx.fill();
-   ctx.beginPath();ctx.moveTo(p[0],p[1]);ctx.lineTo(end[0],end[1]);ctx.stroke();
- });
-}
-function update(){const f=data.frames[Number(slider.value)];$('number').textContent=f.frame_index;
- for(const kind of ['rgb','depth','confidence']){$(kind).src=f.previews[kind];$(kind).alt=`Frame ${f.frame_index} ${kind}`}
- const fmt=n=>n===null?'no valid depth':Number(n).toPrecision(5);
- $('stats').textContent=`Source: ${f.source}\nProcessed H×W: ${f.processed_size_hw.join(' × ')}\n`+
- `Valid: ${(f.valid_fraction*100).toFixed(1)}% | Depth P10 / P50 / P90: ${[f.depth_p10,f.depth_p50,f.depth_p90].map(fmt).join(' / ')} ${data.units}\n`+
- `Raw confidence threshold: ${fmt(f.confidence_threshold)}\nCamera center: ${cams[Number(slider.value)].map(fmt).join(', ')}`;draw();}
-let previous=null;
-canvas.onpointerdown=e=>{previous=[e.clientX,e.clientY];canvas.setPointerCapture(e.pointerId)};
-canvas.onpointermove=e=>{if(!previous)return;yaw+=(e.clientX-previous[0])*.008;pitch+=(e.clientY-previous[1])*.008;previous=[e.clientX,e.clientY];draw()};
-canvas.onpointerup=canvas.onpointercancel=()=>previous=null;
-canvas.addEventListener('wheel',e=>{e.preventDefault();zoom=Math.min(20,Math.max(.1,zoom*Math.exp(-e.deltaY*.001)));draw()},{passive:false});
-$('reset').onclick=()=>{yaw=0;pitch=-.15;zoom=1;draw()};slider.oninput=update;window.onresize=draw;update();
-</script></html>
+$('summary').textContent=`${data.frames.length} frames · ${data.points.length.toLocaleString()} sampled points · ${data.units==='meters'?'Calibrated meters':'Scale uncalibrated'}`;
+try{new ReconstructionViewer();}catch(error){$('error').textContent=error.message;}
+</script></body></html>

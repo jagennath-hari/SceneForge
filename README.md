@@ -226,6 +226,25 @@ purple is far, and black is invalid or filtered. Confidence has a separate share
 color range with yellow meaning high confidence. The viewer is a diagnostic
 preview, not a fused reconstruction or a stereoscopic output.
 
+The WebGL viewer includes camera frustums, a shared RGB/depth/confidence frame
+timeline, play/pause and playback speed. Drag to orbit, Shift-drag or right-drag
+to pan, and scroll to zoom. Toggle progressive reveal to compare growing geometry
+with the entire reconstruction. Playback uses recorded video timestamps (12 FPS
+for image-folder inputs). It reveals final aligned geometry in frame order; it
+does not represent intermediate optimization states or live inference. The viewer
+is self-contained with no CDN dependencies and needs browser WebGL support.
+
+To upgrade an existing result without rerunning VGGT, run inside Docker:
+
+```bash
+python -m stereoforge.utils.viewer --run data/intermediate/geometry_<timestamp>
+```
+
+Replace the timestamp with your actual result folder. This rewrites `index.html`
+using saved arrays and metadata, sampling up to 240,000 display points by default.
+The original geometry and PLY remain unchanged. Reopen or refresh the HTML on the
+host afterward. New inference reports use the new viewer automatically.
+
 Array conventions:
 
 - `depth`, `confidence`, `valid_mask`: `[N,H,W]` on the **processed** image grid.

@@ -263,12 +263,17 @@ either demo. The implementation uses pinned
 [LightGlue-ONNX](https://github.com/fabio-sim/LightGlue-ONNX/tree/d12b4ba1632f558234e3f084e1f3d8bdf9147890)
 models from the `third_party/lightglue-onnx` submodule with two separate static
 ONNX exports. Docker copies the checked-out source, preserving the Git pin.
-The matcher adapter calls upstream's public forward method; its only additional
-work is input assembly/normalization and padding sparse matches into fixed-size
-native outputs. It does not implement attention, assignment or match filtering.
+The matcher adapter invokes upstream's projection, attention and assignment
+modules at fixed depth, then performs dense mutual-match filtering with the same
+criterion as upstream. It retains one output slot per source keypoint instead of
+constructing a variable-length match list. All model inputs and outputs have
+fixed dimensions; exports containing NonZero are rejected.
 Export uses upstream's Dynamo/opset-20 settings, with optimization disabled,
 inline weights, and integer-division translation to avoid FP16 index overflow.
-ONNX validation runs before cache publication and TensorRT construction. A new
+A post-export compatibility pass inlines local functions, folds constant
+expressions and materializes Constant nodes as initializers. It rejects reduction
+axes that remain nonconstant before TensorRT construction. ONNX validation runs
+before cache publication and TensorRT construction. A new
 export contract key prevents reuse of graphs from the legacy exporter.
 Python prepares and caches engines;
 C++ performs frame inference using TensorRT 10.13.3.9. ORB remains the default.
@@ -302,7 +307,12 @@ floating-point arithmetic to FP32; external floating tensors use the selected
 precision while indices stay INT32. This is not INT8
 quantization, and matching accuracy must still be measured. Engine caches include
 precision and runtime/GPU identities plus engine hashes. Build optimization level
-is 5, workspace cap is 12 GiB, existing sparse weights are enabled, available
+is 5. Before each engine build, free and total VRAM are queried on that GPU.
+The tactic budget is free VRAM minus max(10% of total VRAM, 1 GiB); workspace
+receives half that allowance, leaving room for weights and build overhead.
+Limits are recorded in each engine's `.build.json`; they do not impose a hard
+process-wide CUDA cap or reserve memory upfront. Builder resources are released
+before engine inspection. Existing sparse weights are enabled, available
 legacy/edge-mask/JIT tactic sources are enabled, and the full runtime is used.
 Tactic shared-memory limits retain the device maximum; no DLA fallback is needed.
 The runner spin-waits on completion events and caches up to 32 graph executables

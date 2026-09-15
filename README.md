@@ -152,10 +152,13 @@ and exports compatible ONNX files once rather than loading an incompatible graph
 
 LightGlue-ONNX is pinned as the `third_party/lightglue-onnx` Git submodule and
 copied into Docker. Initialize it with `git submodule update --init --recursive`
-when updating an existing checkout. The adapter calls upstream's public matcher;
-it only assembles the two cached inputs and pads match outputs for the native
-fixed-size buffers. Export follows upstream's Dynamo/opset-20 settings, including
-its integer-division translation for TensorRT. Both ONNX files are checked before
+when updating an existing checkout. The adapter uses upstream attention and
+assignment modules, then applies mutual-match filtering directly into fixed-size
+buffers. It avoids the upstream variable-length match list and its NonZero
+allocation. Inputs and outputs have fixed dimensions; adaptive depth is disabled. Export follows upstream's Dynamo/opset-20 settings, including
+its integer-division translation for TensorRT. A compatibility pass folds constant
+shape expressions and materializes ONNX initializers for reduction axes required
+by TensorRT 10.13. Both ONNX files are checked before
 cache publication or engine building. The export contract version invalidates
 older graphs; no manual cache deletion is required.
 
@@ -171,9 +174,15 @@ detections and `match_threshold` filters LightGlue confidence. Selection thresho
 in the learned config are initial values, **not yet calibrated or benchmarked**.
 ORB remains the default and pyCuSFM still uses ALIKED.
 
-The TensorRT build uses optimization level 5, a 12 GiB workspace cap, available
+The TensorRT build uses optimization level 5, VRAM-based memory limits, available
 cuBLAS/cuBLASLt/cuDNN/edge-mask/JIT tactics, existing-weight sparsity, and the full
-runtime. Shared-memory tactic limits stay at the GPU's hardware maximum. It does
+runtime. Before each engine build, the selected GPU's free and total VRAM are
+queried. The tactic budget is free VRAM minus a reserve of 10% of total VRAM
+(at least 1 GiB); operation workspace is capped at half that budget to leave room
+for weights, activations and build overhead. These are pool limits, not a hard
+process-wide memory cap or an upfront allocation. Each engine's `.build.json`
+records the chosen byte limits. Builder objects are released before engine
+inspection. Shared-memory tactic limits stay at the GPU's hardware maximum. It does
 not force sparsity into dense weights or force normalization/softmax into FP16.
 The C++ runner uses spin waits and caches up to 32 CUDA graphs by tensor addresses;
 unsupported capture falls back to normal enqueue. Reusable frame slots keep GPU

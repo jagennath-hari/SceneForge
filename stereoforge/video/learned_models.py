@@ -6,7 +6,7 @@ Python is used only for export/build. Frame extraction and matching run in C++.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import fcntl
 import hashlib
 import json
@@ -40,8 +40,8 @@ class LightGlueExport(nn.Module):
 
     Separate frame inputs bind to retained device allocations. Avoid
     data-dependent NonZero output allocations in the native runtime. The
-    upstream matcher owns attention, assignment and mutual-match filtering.
-    This adapter only normalizes/assembles inputs and pads the sparse outputs.
+    upstream modules own attention and assignment. This adapter performs dense
+    mutual-match filtering without constructing a variable-length match list.
     C++ applies the configured confidence threshold and detector validity mask.
     """
 
@@ -58,15 +58,45 @@ class LightGlueExport(nn.Module):
                 points1: torch.Tensor, descriptors1: torch.Tensor) -> tuple[torch.Tensor, ...]:
         keypoints = 2 * torch.cat((points0, points1), dim=0) / self.canvas - 1
         descriptors = torch.cat((descriptors0, descriptors1), dim=0)
-        matches, scores = self.matcher(keypoints, descriptors)
-        # Upstream returns [M, (pair, source, target)] for the single image pair.
-        # Retain the native fixed-N contract without reimplementing matching.
-        source_indices = matches[:, 1].unsqueeze(0)
-        target_indices = matches[:, 2].to(torch.int32).unsqueeze(0)
-        dense_indices = torch.full((1, points0.shape[1]), -1, dtype=torch.int32, device=points0.device)
-        dense_scores = torch.zeros((1, points0.shape[1]), dtype=scores.dtype, device=scores.device)
-        return (dense_indices.scatter(1, source_indices, target_indices),
-                dense_scores.scatter(1, source_indices, scores.unsqueeze(0)))
+        descriptors = self.matcher.input_proj(descriptors)
+        encodings = self.matcher.posenc(keypoints)
+        for transformer in self.matcher.transformers:
+            descriptors = transformer(descriptors, encodings)
+        scores = self.matcher.log_assignment[-1](descriptors)
+        # Equivalent to upstream filter_matches, retaining one slot per source
+        # keypoint instead of compacting with torch.where(condition)/NonZero.
+        forward = scores.max(dim=2)
+        reverse = scores.max(dim=1)
+        source = torch.arange(points0.shape[1], device=points0.device).unsqueeze(0)
+        confidence = forward.values.exp()
+        valid = (source == reverse.indices.gather(1, forward.indices)) & (confidence > 0)
+        return (torch.where(valid, forward.indices, -1).to(torch.int32),
+                torch.where(valid, confidence, 0.0))
+
+
+@dataclass(frozen=True, slots=True)
+class BuildMemoryBudget:
+    """Per-device build limits, not a reservation or a process-wide CUDA cap."""
+
+    total_bytes: int
+    free_bytes: int
+    reserve_bytes: int
+    tactic_bytes: int
+    workspace_bytes: int
+
+    @classmethod
+    def current_device(cls) -> BuildMemoryBudget:
+        torch.cuda.empty_cache()
+        free, total = torch.cuda.mem_get_info()
+        reserve = max((total + 9) // 10, 1 << 30)
+        available = ((free - reserve) // (1 << 20)) * (1 << 20)
+        if available < 1 << 30:
+            raise RuntimeError("Insufficient free GPU memory for engine building after reserving 10% "
+                               "of total VRAM (at least 1 GiB). Free GPU memory and retry.")
+        # Leave half the build allowance outside operation workspace for weights,
+        # activations and optimizer overhead. Pools are not additive reservations.
+        workspace = (available // 2 // (1 << 20)) * (1 << 20)
+        return cls(total, free, reserve, available, workspace)
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,7 +136,7 @@ class LearnedModelCache:
                     "torch": torch.__version__, "tensorrt": trt.__version__, "devices": devices,
                     "features": self.features, "width": self.width, "height": self.height,
                     "precision": self.precision, "onnx": self._onnx_identity(),
-                    "build": {"optimization_level": 5, "workspace_mib": 12288,
+                    "build": {"optimization_level": 5, "memory_policy": "free_minus_max_10pct_total_1gib_workspace_half_v1",
                               "tactic_shared_memory": "device_maximum", "sparsity": "existing_weights_only",
                               "float_io": self.precision, "indices_io": "int32", "runtime": "full"}}
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
@@ -124,8 +154,11 @@ class LearnedModelCache:
                 for index in range(len(devices)):
                     with torch.cuda.device(index):
                         for name in ("superpoint", "lightglue"):
-                            progress.status(f"building {name} {self.precision} engine for cuda:{index}; first use only")
-                            self._build(onnx_directory / f"{name}.onnx", temporary / f"{name}_{index}.engine")
+                            budget = BuildMemoryBudget.current_device()
+                            progress.status(f"building {name} {self.precision} for cuda:{index}; "
+                                            f"workspace {budget.workspace_bytes / (1 << 30):.1f} GiB, "
+                                            f"tactics {budget.tactic_bytes / (1 << 30):.1f} GiB")
+                            self._build(onnx_directory / f"{name}.onnx", temporary / f"{name}_{index}.engine", budget)
                 hashes = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in temporary.glob("*.engine")}
                 (temporary / "manifest.json").write_text(json.dumps({"identity": identity, "sha256": hashes}, indent=2))
                 if destination.exists():
@@ -141,7 +174,7 @@ class LearnedModelCache:
 
     def _onnx_identity(self) -> dict:
         # Precision, TensorRT, driver and GPU identities deliberately do not affect ONNX.
-        return {"upstream": UPSTREAM_REVISION, "contract": "upstream_forward_dynamo_v3",
+        return {"upstream": UPSTREAM_REVISION, "contract": "upstream_modules_dynamo_v5_static_dense_matches",
                 "exporter": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                 "torch": torch.__version__, "features": self.features,
                 "width": self.width, "height": self.height}
@@ -193,7 +226,6 @@ class LearnedModelCache:
             return False
 
     def _export(self, directory: Path) -> None:
-        import onnx
         from onnxscript import opset20 as onnx_op
 
         # Match lightglue_dynamo/cli.py's Dynamo export, including its integer
@@ -220,9 +252,75 @@ class LearnedModelCache:
         # Validate exports before publishing the ONNX cache or building either
         # engine. These checks execute only when the user runs preparation.
         for name in ("superpoint.onnx", "lightglue.onnx"):
-            onnx.checker.check_model(str(directory / name), full_check=True)
+            self._prepare_tensorrt_onnx(directory / name)
 
-    def _build(self, source: Path, destination: Path) -> None:
+    @staticmethod
+    def _prepare_tensorrt_onnx(path: Path) -> None:
+        """Materialize constant shape expressions required by TensorRT 10.13.
+
+        This changes graph representation, not upstream model math. In particular,
+        a constant axis may pass through Reshape/Cast in Dynamo exports, which
+        TensorRT's reduction importer otherwise treats as an execution tensor.
+        """
+        import numpy as np
+        import onnx
+        from onnx import inliner, numpy_helper
+        from onnxscript import optimizer
+
+        model = inliner.inline_local_functions(onnx.load(str(path)))
+        # Use the ONNX constant evaluator, not a collection of algebraic model
+        # rewrites. No image data or model inference is needed for this pass.
+        optimizer.fold_constants(model)
+
+        def materialize(graph: onnx.GraphProto, inherited: set[str]) -> None:
+            constants = inherited - {value.name for value in graph.input}
+            constants |= {value.name for value in graph.initializer}
+            kept = []
+            for node in graph.node:
+                tensor = None
+                if node.domain in ("", "ai.onnx") and node.op_type == "Constant" and len(node.output) == 1:
+                    for attribute in node.attribute:
+                        if attribute.name == "value" and attribute.type == onnx.AttributeProto.TENSOR:
+                            tensor = onnx.TensorProto()
+                            tensor.CopyFrom(attribute.t)
+                        elif attribute.name in ("value_int", "value_ints", "value_float", "value_floats"):
+                            value = onnx.helper.get_attribute_value(attribute)
+                            dtype = np.int64 if attribute.name.startswith("value_int") else np.float32
+                            tensor = numpy_helper.from_array(np.asarray(value, dtype=dtype))
+                    if tensor is not None:
+                        tensor.name = node.output[0]
+                        graph.initializer.append(tensor)
+                        constants.add(tensor.name)
+                if tensor is None:
+                    kept.append(node)
+            del graph.node[:]
+            graph.node.extend(kept)
+            for node in graph.node:
+                if node.domain in ("", "ai.onnx") and node.op_type == "NonZero":
+                    raise RuntimeError(f"{path.name}: data-dependent NonZero is not allowed in fixed-shape models")
+                if node.domain in ("", "ai.onnx") and node.op_type.startswith("Reduce") and len(node.input) > 1:
+                    axes = node.input[1]
+                    if axes and axes not in constants:
+                        raise RuntimeError(
+                            f"{path.name}: {node.name or node.op_type} still has nonconstant axes '{axes}'. "
+                            "TensorRT requires initializer axes; ONNX was not published.")
+                for attribute in node.attribute:
+                    if attribute.type == onnx.AttributeProto.GRAPH:
+                        materialize(attribute.g, constants)
+                    elif attribute.type == onnx.AttributeProto.GRAPHS:
+                        for child in attribute.graphs:
+                            materialize(child, constants)
+
+        materialize(model.graph, set())
+        onnx.checker.check_model(model, full_check=True)
+        for value in (*model.graph.input, *model.graph.output):
+            shape = value.type.tensor_type.shape
+            if not shape.dim or any(not dim.HasField("dim_value") or dim.dim_value <= 0 for dim in shape.dim):
+                raise RuntimeError(f"{path.name}: {value.name} must have fixed positive dimensions")
+        onnx.save_model(model, str(path), save_as_external_data=False)
+
+    def _serialize_engine(self, source: Path, budget: BuildMemoryBudget) -> bytes:
+        """Keep builder objects scoped separately from engine inspection."""
         import tensorrt as trt
         logger = trt.Logger(trt.Logger.WARNING)
         with trt.Builder(logger) as builder, builder.create_network(0) as network, \
@@ -230,6 +328,10 @@ class LearnedModelCache:
             if not parser.parse_from_file(str(source)):
                 errors = "\n".join(str(parser.get_error(index)) for index in range(parser.num_errors))
                 raise RuntimeError(f"TensorRT could not parse {source.name}:\n{errors}")
+            for tensor in [network.get_input(i) for i in range(network.num_inputs)] + [
+                    network.get_output(i) for i in range(network.num_outputs)]:
+                if not tensor.shape or any(dimension <= 0 for dimension in tensor.shape):
+                    raise RuntimeError(f"{source.name}: {tensor.name} has nonstatic shape {tensor.shape}")
             # TensorRT 10.13 still supports these weak-typing controls. Keep
             # this exact deprecation quiet only during configuration; unrelated
             # warnings and all parser/builder diagnostics remain visible.
@@ -268,7 +370,8 @@ class LearnedModelCache:
                     raise RuntimeError("TensorRT rejected the requested tactic sources")
                 # TACTIC_SHARED_MEMORY defaults to the device maximum per block.
                 # An 800 MiB cap cannot increase the hardware's shared memory.
-                config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 12288 << 20)
+                config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, budget.workspace_bytes)
+                config.set_memory_pool_limit(trt.MemoryPoolType.TACTIC_DRAM, budget.tactic_bytes)
                 config.set_flag(trt.BuilderFlag.SPARSE_WEIGHTS)  # Only exploit existing 2:4 sparsity; never prune weights.
                 for index in range(network.num_inputs):
                     tensor = network.get_input(index)
@@ -283,24 +386,33 @@ class LearnedModelCache:
             serialized = builder.build_serialized_network(network, config)
             if serialized is None:
                 raise RuntimeError(f"TensorRT engine build failed for {source.name}; see diagnostics above")
-            payload = bytes(serialized)
-            # Inspect the built artifact, not just the requested builder flags.
-            # This validates I/O types without running model inference.
-            with trt.Runtime(logger) as runtime:
-                engine = runtime.deserialize_cuda_engine(payload)
-                if engine is None:
-                    raise RuntimeError("Cannot inspect the built TensorRT engine")
-                io_types = {}
-                for index in range(engine.num_io_tensors):
-                    name = engine.get_tensor_name(index)
-                    actual = engine.get_tensor_dtype(name)
-                    expected = trt.int32 if name == "indices" else (trt.float16 if self.precision == "fp16" else trt.float32)
-                    if actual != expected:
-                        raise RuntimeError(f"Engine I/O mismatch for {name}: {actual}, expected {expected}")
-                    io_types[name] = {"dtype": str(actual), "shape": list(engine.get_tensor_shape(name))}
-                del engine
-            destination.write_bytes(payload)
-            destination.with_suffix(".io.json").write_text(json.dumps(io_types, indent=2))
+            return bytes(serialized)
+
+    def _build(self, source: Path, destination: Path, budget: BuildMemoryBudget) -> None:
+        import tensorrt as trt
+        # Returning from the helper releases builder/parser/network references
+        # before loading the engine for inspection. No inference is performed.
+        payload = self._serialize_engine(source, budget)
+        logger = trt.Logger(trt.Logger.WARNING)
+        with trt.Runtime(logger) as runtime:
+            engine = runtime.deserialize_cuda_engine(payload)
+            if engine is None:
+                raise RuntimeError("Cannot inspect the built TensorRT engine")
+            io_types = {}
+            for index in range(engine.num_io_tensors):
+                name = engine.get_tensor_name(index)
+                actual = engine.get_tensor_dtype(name)
+                expected = trt.int32 if name == "indices" else (trt.float16 if self.precision == "fp16" else trt.float32)
+                if actual != expected:
+                    raise RuntimeError(f"Engine I/O mismatch for {name}: {actual}, expected {expected}")
+                shape = list(engine.get_tensor_shape(name))
+                if not shape or any(dimension <= 0 for dimension in shape):
+                    raise RuntimeError(f"Engine I/O must be static: {name} has shape {shape}")
+                io_types[name] = {"dtype": str(actual), "shape": shape}
+            del engine
+        destination.write_bytes(payload)
+        destination.with_suffix(".io.json").write_text(json.dumps(io_types, indent=2))
+        destination.with_suffix(".build.json").write_text(json.dumps(asdict(budget), indent=2))
 
 
 def main() -> int:

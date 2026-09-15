@@ -138,6 +138,7 @@ std::size_t VideoExtractor::extract_once(const ProgressCallback& progress, bool 
     int source_width = 0;
     int source_height = 0;
     bool used_cuda = false;
+    std::size_t decoded_frames = 0;
     std::optional<double> origin;
     if (stream->start_time != AV_NOPTS_VALUE) origin = stream->start_time * av_q2d(stream->time_base);
     if (section) origin = section->origin * av_q2d(stream->time_base);
@@ -166,6 +167,7 @@ std::size_t VideoExtractor::extract_once(const ProgressCallback& progress, bool 
             decode_check(result, hardware_enabled, "Decode frame");
             if (frame->flags & AV_FRAME_FLAG_CORRUPT) throw std::runtime_error("Corrupt video frame");
             if (frame->best_effort_timestamp == AV_NOPTS_VALUE) throw std::runtime_error("Frame has no timestamp");
+            const std::size_t source_index = decoded_frames++;
             const double absolute = frame->best_effort_timestamp * av_q2d(stream->time_base);
             if (!origin) origin = absolute;
             const double timestamp = absolute - *origin;
@@ -194,7 +196,7 @@ std::size_t VideoExtractor::extract_once(const ProgressCallback& progress, bool 
                 name << "frame_" << std::setfill('0') << std::setw(6) << records.size() << ".png";
                 pending.push_back(writers.submit(std::move(output), this->options_.output / name.str(), records.size()));
                 records.push_back({{"file", name.str()}, {"timestamp_seconds", timestamp},
-                                   {"timestamp_ticks", frame->best_effort_timestamp}});
+                                   {"timestamp_ticks", frame->best_effort_timestamp}, {"source_frame_index", source_index}});
                 while (!pending.empty() && pending.front().wait_for(std::chrono::seconds(0)) == std::future_status::ready)
                     complete_one();
                 if (this->options_.count && records.size() == *this->options_.count) finished = true;

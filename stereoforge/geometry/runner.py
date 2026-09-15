@@ -34,9 +34,11 @@ class DemoRequest:
     frame_count: int | None = None
     start_seconds: float | None = None
     duration: float | None = None
+    all_frames: bool = False
+    keyframe_config: Path | None = None
 
     def __post_init__(self) -> None:
-        for name in ("output", "checkpoint", "images", "video"):
+        for name in ("output", "checkpoint", "images", "video", "keyframe_config"):
             value = getattr(self, name)
             if value is not None:
                 object.__setattr__(self, name, Path(value).expanduser().resolve())
@@ -91,23 +93,27 @@ class GeometryDemoRunner:
             timestamps: tuple[float, ...] | None = None
             video_extraction: dict[str, Any] | None = None
             if request.video is not None:
-                LOGGER.info("Decoding continuous video; all frames are retained unless selection options are supplied")
+                LOGGER.info("Preparing continuous video; %s", "using all candidate frames" if request.all_frames else "selecting ORB/RANSAC keyframes")
                 sampler = VideoFrameSampler(request.start_seconds or 0.0, request.duration, request.frame_count,
-                                            max_edge=3 * self.config.geometry.image_resolution)
+                                            max_edge=3 * self.config.geometry.image_resolution, keyframes=not request.all_frames,
+                                            keyframe_config=request.keyframe_config or Path(__file__).resolve().parents[2] / "configs/keyframes.json")
                 sampled = sampler.sample(request.video, staging / "input_frames")
                 image_paths, timestamps = sampled.paths, sampled.timestamps_seconds
+                LOGGER.info("Selected %d geometry frames from %d decoded candidates", len(image_paths), sampled.candidate_frame_count)
                 video_extraction = {
                     "source_size_wh": sampled.source_size, "working_size_wh": sampled.working_size,
                     "decoder": sampled.decoder, "max_edge": sampler.max_edge,
+                    "keyframes": sampler.keyframes, "candidate_frame_count": sampled.candidate_frame_count,
+                    "source_frame_indices": sampled.source_frame_indices,
                     "note": "Working images are resized; intrinsics describe VGGT processed images, not source video pixels",
                 }
-                with Progress("Validating decoded images"):
+                with Progress("Validating geometry images"):
                     validate_image_paths(image_paths)
             geometry = self.config.geometry
             if geometry.max_frames is not None and len(image_paths) > geometry.max_frames:
                 raise ValueError(
-                    f"Decoded {len(image_paths)} frames, exceeding configured max_frames={geometry.max_frames}. "
-                    "Set max_frames: null to allow the complete clip. No frames were dropped."
+                    f"Selected {len(image_paths)} geometry frames, exceeding configured max_frames={geometry.max_frames}. "
+                    "Set max_frames: null to process all selected geometry frames."
                 )
             LOGGER.info("Inferring geometry for all %d selected frames using adaptive overlapping sections and %s",
                         len(image_paths), checkpoint.name)
@@ -130,7 +136,7 @@ class GeometryDemoRunner:
                               "requested_frames": request.frame_count},
                 "inference_mode": "adaptive_overlapping_sections",
                 "reconstruction": reconstruction,
-                "frame_index_note": "Indices are local to the selected sequence, not original video frames",
+                "frame_index_note": "Geometry indices are local; video_extraction.source_frame_indices maps them to displayed source-video frames",
             }
             if self.config.refinement.enabled:
                 provenance["refinement"] = {"status": "pending"}

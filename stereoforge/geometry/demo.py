@@ -1,4 +1,4 @@
-"""Reconstruct every frame with adaptive GPU sections and export a geometry report."""
+"""Reconstruct selected keyframes with adaptive GPU sections and export a geometry report."""
 
 from __future__ import annotations
 
@@ -21,10 +21,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--images", type=Path, help="Naturally sorted images from ONE shot")
-    source.add_argument("--video", type=Path, help="Continuous video; defaults to every frame through EOF")
+    source.add_argument("--video", type=Path, help="Continuous video; selects ORB/RANSAC keyframes before geometry")
     parser.add_argument("--start-seconds", type=float, help="Optional diagnostic start time; defaults to beginning")
     parser.add_argument("--duration", type=float, help="Optional diagnostic segment duration; default is through EOF")
-    parser.add_argument("--frames", type=int, help="Optional diagnostic frame count; default is all frames")
+    parser.add_argument("--frames", type=int, help="Optional candidate frame count before keyframe selection")
+    parser.add_argument("--all-frames", action="store_true", help="Disable video keyframe selection for diagnostics")
+    parser.add_argument("--keyframe-config", type=Path, help="ORB/RANSAC settings; defaults to configs/keyframes.json")
     parser.add_argument("--config", type=Path, default=ROOT / "configs/default.yaml")
     parser.add_argument("--checkpoint", type=Path, help="Explicit authorized local checkpoint; otherwise use the Hugging Face cache or gated download")
     # Accept old commands without requiring a separate download mode.
@@ -57,6 +59,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             images=None if args.video else args.images or ROOT / "data/input/frames",
             video=args.video,
             frame_count=args.frames, start_seconds=args.start_seconds, duration=args.duration,
+            all_frames=args.all_frames, keyframe_config=args.keyframe_config,
         )
         with logging_redirect_tqdm():
             result = GeometryDemoRunner(config).run(request)

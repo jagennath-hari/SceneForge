@@ -18,6 +18,7 @@ The application currently performs:
 ```text
 Continuous video or ordered image folder
     → decoded RGB frames and timestamps
+    → native ORB/RANSAC visual keyframe selection (video inputs)
     → adaptive multi-GPU VGGT-Ω inference
     → CPU alignment and merging
     → saved dense geometry and source previews
@@ -224,8 +225,35 @@ VGGT inference uses the visible CUDA devices, estimating per-device capacity and
 adapting overlapping section sizes from memory measurements. The target budget is
 90% of each GPU's VRAM, accounting for other allocations; VRAM is not pooled and
 90% utilization is not guaranteed. OOM retries reduce section sizes while retaining
-all selected frames. Explicit diagnostic selections are the only intentional
-frame reduction.
+all selected geometry frames. Video inputs intentionally reduce candidates to
+visual keyframes before VGGT; `--all-frames` bypasses this for diagnostics.
+
+Keyframe selection is a separate native pass over the decoded cache. ORB runs in
+bounded parallel CPU workers, with a single timestamp-ordered matcher/decision
+consumer across all decoder sections. Features are compared to the last accepted
+keyframe using mutual nearest-neighbor Hamming ratio matches, then RANSAC with
+fundamental and homography models. The stronger model's support is checked against
+minimum inliers, inlier ratio and coverage of a 4 × 4 grid in both views. Homography
+support allows planar/rotation-dominated footage; image movement is not interpreted
+as metric translation or guaranteed parallax. Repeated patterns and moving objects
+can still produce incorrect geometrically consistent matches.
+
+Sharpness and feature-count gates reject poor candidates. A keyframe is accepted
+when inlier support falls relative to the best support since the current anchor,
+or normalized image displacement grows sufficiently, subject to minimum spacing.
+A buffered last reliable candidate bridges sudden loss; each subsequent match is
+recomputed against the updated anchor. A sustained inability to connect frames is
+reported as a tracking break and stops geometry. First/last usable views are retained;
+fewer than three connected keyframes is an explicit diagnostic outcome. Thresholds
+are initial tunable values in `configs/keyframes.json`, not validated guarantees.
+
+`FeatureExtractor` and `FeatureMatcher` interfaces permit later learned frontends
+without changing selection policy. The selector saves acceptance reasons and
+per-candidate metrics, with original displayed-frame indices/timestamps preserved
+through renumbering into a run. Candidate PNGs remain cached; only selected frames
+enter VGGT, reports and pyCuSFM. ORB selection does not replace ALIKED refinement.
+Future full-rate stereo output must recover poses and suitable depth for intervening
+frames; pose interpolation alone does not supply that geometry.
 
 Section results are spooled to CPU/disk. Models are unloaded and CUDA caches
 released before CPU merging. Robust Sim(3) fits shared-frame depth geometry,
@@ -279,7 +307,8 @@ field compatibility must be revisited when the pinned pyCuSFM binaries change.
 
 A full run publishes `data/intermediate/geometry_<timestamp>/` containing:
 
-- `input_frames/`: decoded images and timestamps for video inputs.
+- `input_frames/`: selected geometry images and a manifest with original indices,
+  timestamps and keyframe-selection decisions for video inputs.
 - `geometry.npz`, `metadata.json`, `run.json`: merged VGGT arrays and provenance.
 - `previews/`, `contact_sheet.jpg`: source image/depth/confidence inspection.
 - `index.html`: entry point to the final pyCuSFM viewer or diagnostic page.

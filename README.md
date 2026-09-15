@@ -6,7 +6,7 @@ recording** such as drone footage or a walkthrough.
 The implemented pipeline is:
 
 ```text
-Video → VGGT-Ω dense geometry → ALIKED/LightGlue tracks
+Video → ORB/RANSAC keyframes → VGGT-Ω dense geometry → ALIKED/LightGlue tracks
       → VGGT depth-initialized pyCuSFM bundle adjustment → WebGL reports
 ```
 
@@ -80,10 +80,35 @@ For a naturally ordered image folder:
 python -m stereoforge.geometry.demo --images data/input/frames
 ```
 
-Every frame is retained by default. VGGT distributes overlapping sections across
+Video inputs now use visual keyframes by default. VGGT distributes overlapping sections across
 visible GPUs with adaptive memory budgets, then unloads its models before CPU
 merging. ALIKED refinement follows. Set `refinement.enabled: false` in
-`configs/default.yaml` for VGGT only. ALIKED is the only supported feature family.
+`configs/default.yaml` for VGGT only. ALIKED is the only supported refinement feature family.
+
+The native selector extracts ORB features in bounded parallel CPU workers, then
+makes decisions in timestamp order against the **last accepted keyframe**. Mutual
+Hamming ratio matching is verified with fundamental-matrix and homography RANSAC.
+Inlier support, spatial coverage, sharpness, overlap retention and image movement
+control selection. A recent reliable frame can bridge a sudden overlap loss;
+unresolved tracking breaks stop geometry rather than silently joining disconnected
+views. RANSAC provides geometric filtering, not a guarantee that every match is correct.
+ORB is only the selection frontend; pyCuSFM continues to use ALIKED.
+
+Tune the initial thresholds in `configs/keyframes.json`, or supply another file
+with `--keyframe-config`. These defaults have not been calibrated on Barn. Use
+`--all-frames` to bypass selection for diagnostics. `--frames` limits video
+candidates **before** keyframe selection, so the resulting keyframe count can be
+smaller. Image-folder inputs are treated as already selected and are unchanged.
+
+This first implementation finishes parallel decoding into the persistent cache,
+then performs parallel feature extraction and ordered selection. It still caches
+all candidate PNGs; only selected images are linked into a run and passed to VGGT,
+geometry reports and pyCuSFM. Selection results are cached separately by selector
+binary and settings. `input_frames/manifest.json` records acceptance reasons,
+per-candidate match metrics, original displayed-frame indices and timestamps.
+Failed selections retain their JSON diagnostic in the decoded cache. At least
+three connected keyframes are required. The original video is retained; full-rate
+stereo rendering will require geometry/poses for intervening frames in a later stage.
 
 Video extraction uses NVIDIA NVDEC when the codec/profile and installed FFmpeg
 support it, with CPU fallback. A CUDA area resizer reduces supported decoded

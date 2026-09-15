@@ -222,6 +222,7 @@ std::optional<std::size_t> ParallelExtractor::extract(const VideoExtractor::Prog
                 std::filesystem::rename(workspace / std::to_string(device) / frame.at("file").get<std::string>(),
                                         this->options_.output / name.str());
                 frame["file"] = name.str();
+                frame["source_frame_index"] = records.size();
                 records.push_back(std::move(frame));
             }
         }

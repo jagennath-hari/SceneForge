@@ -1,0 +1,15 @@
+{
+  "features": 2000,
+  "feature_edge": 960,
+  "min_features": 120,
+  "min_inliers": 40,
+  "descriptor_ratio": 0.75,
+  "ransac_pixels": 2.0,
+  "min_inlier_ratio": 0.30,
+  "min_coverage": 0.25,
+  "retention": 0.65,
+  "motion": 0.035,
+  "min_sharpness": 20.0,
+  "min_interval": 0.20,
+  "tracking_timeout": 2.0
+}

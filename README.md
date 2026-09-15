@@ -179,7 +179,9 @@ cuBLAS/cuBLASLt/cuDNN/edge-mask/JIT tactics, existing-weight sparsity, and the f
 runtime. Before each engine build, the selected GPU's free and total VRAM are
 queried. The tactic budget is free VRAM minus a reserve of 10% of total VRAM
 (at least 1 GiB); operation workspace is capped at half that budget to leave room
-for weights, activations and build overhead. These are pool limits, not a hard
+for weights, activations and build overhead. Both limits are rounded down to
+powers of two for TensorRT's pool validation and read back before building to
+check that TensorRT accepted them. These are pool limits, not a hard
 process-wide memory cap or an upfront allocation. Each engine's `.build.json`
 records the chosen byte limits. Builder objects are released before engine
 inspection. Shared-memory tactic limits stay at the GPU's hardware maximum. It does

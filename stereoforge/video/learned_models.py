@@ -95,8 +95,11 @@ class BuildMemoryBudget:
                                "of total VRAM (at least 1 GiB). Free GPU memory and retry.")
         # Leave half the build allowance outside operation workspace for weights,
         # activations and optimizer overhead. Pools are not additive reservations.
-        workspace = (available // 2 // (1 << 20)) * (1 << 20)
-        return cls(total, free, reserve, available, workspace)
+        # TensorRT's pool-size validation requires powers of two in the deployed
+        # runtime. Round down, never above the available-memory allowance.
+        tactic = 1 << (available.bit_length() - 1)
+        workspace = 1 << ((available // 2).bit_length() - 1)
+        return cls(total, free, reserve, tactic, workspace)
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,7 +139,7 @@ class LearnedModelCache:
                     "torch": torch.__version__, "tensorrt": trt.__version__, "devices": devices,
                     "features": self.features, "width": self.width, "height": self.height,
                     "precision": self.precision, "onnx": self._onnx_identity(),
-                    "build": {"optimization_level": 5, "memory_policy": "free_minus_max_10pct_total_1gib_workspace_half_v1",
+                    "build": {"optimization_level": 5, "memory_policy": "free_minus_max_10pct_total_1gib_workspace_half_pow2_v2",
                               "tactic_shared_memory": "device_maximum", "sparsity": "existing_weights_only",
                               "float_io": self.precision, "indices_io": "int32", "runtime": "full"}}
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
@@ -370,8 +373,15 @@ class LearnedModelCache:
                     raise RuntimeError("TensorRT rejected the requested tactic sources")
                 # TACTIC_SHARED_MEMORY defaults to the device maximum per block.
                 # An 800 MiB cap cannot increase the hardware's shared memory.
-                config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, budget.workspace_bytes)
-                config.set_memory_pool_limit(trt.MemoryPoolType.TACTIC_DRAM, budget.tactic_bytes)
+                for pool, limit in ((trt.MemoryPoolType.WORKSPACE, budget.workspace_bytes),
+                                    (trt.MemoryPoolType.TACTIC_DRAM, budget.tactic_bytes)):
+                    config.set_memory_pool_limit(pool, limit)
+                    # TensorRT may log and ignore invalid limits without raising.
+                    # Do not proceed with a silently retained default budget.
+                    actual_limit = config.get_memory_pool_limit(pool)
+                    if actual_limit != limit:
+                        raise RuntimeError(f"TensorRT rejected {pool} limit {limit} bytes; "
+                                           f"configured limit is {actual_limit} bytes")
                 config.set_flag(trt.BuilderFlag.SPARSE_WEIGHTS)  # Only exploit existing 2:4 sparsity; never prune weights.
                 for index in range(network.num_inputs):
                     tensor = network.get_input(index)

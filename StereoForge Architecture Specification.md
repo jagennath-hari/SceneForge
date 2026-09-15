@@ -310,6 +310,8 @@ precision and runtime/GPU identities plus engine hashes. Build optimization leve
 is 5. Before each engine build, free and total VRAM are queried on that GPU.
 The tactic budget is free VRAM minus max(10% of total VRAM, 1 GiB); workspace
 receives half that allowance, leaving room for weights and build overhead.
+Both limits are rounded down to powers of two and read back from TensorRT;
+a rejected limit stops preparation instead of silently using a default.
 Limits are recorded in each engine's `.build.json`; they do not impose a hard
 process-wide CUDA cap or reserve memory upfront. Builder resources are released
 before engine inspection. Existing sparse weights are enabled, available

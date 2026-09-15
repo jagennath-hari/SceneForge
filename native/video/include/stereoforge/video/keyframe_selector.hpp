@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <vector>
+#include <string>
 
 namespace stereoforge::video {
 
@@ -26,6 +27,8 @@ struct MatchQuality final {
     double coverage{};
     double displacement{};  // Median pixel displacement / image diagonal; not 3D parallax.
     bool homography{false};
+    std::vector<cv::DMatch> correspondences;
+    std::vector<char> inlier_mask;
 };
 
 struct KeyframeOptions final {
@@ -80,11 +83,15 @@ private:
 class KeyframeSelector final {
 public:
     using ProgressCallback = std::function<void(std::size_t, std::size_t, std::size_t)>;
+    // Called in timestamp order on the main thread; false requests a clean stop.
+    using DebugCallback = std::function<bool(const FrameFeatures* reference,
+        const FrameFeatures& candidate, const MatchQuality&, const std::string& decision,
+        std::size_t selected)>;
     explicit KeyframeSelector(KeyframeOptions options, ExtractorFactory factory = {},
                               std::unique_ptr<FeatureMatcher> matcher = {});
     // Writes a result even for tracking breaks, so diagnostics survive failure.
     [[nodiscard]] bool run(const std::filesystem::path& directory, const std::filesystem::path& output,
-                           const ProgressCallback& progress = {});
+                           const ProgressCallback& progress = {}, const DebugCallback& debug = {});
 private:
     KeyframeOptions options_;
     ExtractorFactory factory_;

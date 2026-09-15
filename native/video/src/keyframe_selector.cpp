@@ -90,7 +90,7 @@ KeyframeSelector::KeyframeSelector(KeyframeOptions options, ExtractorFactory fac
 }
 
 bool KeyframeSelector::run(const std::filesystem::path& directory, const std::filesystem::path& output,
-                           const ProgressCallback& progress) {
+                           const ProgressCallback& progress, const DebugCallback& debug) {
     std::ifstream input(directory / "manifest.json");
     input.exceptions(std::ios::failbit | std::ios::badbit);
     nlohmann::json manifest;
@@ -111,6 +111,7 @@ bool KeyframeSelector::run(const std::filesystem::path& directory, const std::fi
     nlohmann::json selected = nlohmann::json::array();
     nlohmann::json decisions = nlohmann::json::array();
     bool tracking_break = false;
+    bool interrupted = false;
     const std::function<bool(const MatchQuality&)> reliable = [this](const MatchQuality& quality) {
         return quality.inliers >= static_cast<std::size_t>(this->options_.min_inliers) &&
                quality.ratio >= this->options_.min_inlier_ratio && quality.coverage >= this->options_.min_coverage;
@@ -127,6 +128,9 @@ bool KeyframeSelector::run(const std::filesystem::path& directory, const std::fi
     if (progress) progress(0, frames.size(), 0);
     for (std::size_t index = 0; index < frames.size(); ++index) {
         FrameFeatures current = features.next();
+        std::optional<FrameFeatures> reference;
+        if (debug) reference = anchor;
+        MatchQuality quality;
         nlohmann::json decision{{"candidate_index", index}, {"timestamp_seconds", current.timestamp},
             {"features", current.points.size()}, {"sharpness", current.sharpness}};
         const bool usable = current.points.size() >= static_cast<std::size_t>(this->options_.min_features) &&
@@ -137,12 +141,13 @@ bool KeyframeSelector::run(const std::filesystem::path& directory, const std::fi
             last_good = current;
             decision["decision"] = "first_usable";
         } else {
-            MatchQuality quality = this->matcher_->match(*anchor, current);
+            quality = this->matcher_->match(*anchor, current);
             if (!reliable(quality) && last_good && last_good->index > anchor->index) {
                 accept(*last_good, "before_tracking_loss");
                 decision["bridge_candidate_index"] = last_good->index;
                 quality = this->matcher_->match(*anchor, current);
             }
+            if (debug) reference = anchor;
             decision["reference_candidate_index"] = anchor->index;
             decision["matches"] = quality.matches;
             decision["inliers"] = quality.inliers;
@@ -165,16 +170,18 @@ bool KeyframeSelector::run(const std::filesystem::path& directory, const std::fi
             tracking_break = true;
             decision["decision"] = "tracking_break";
         }
+        if (debug && !debug(reference ? &*reference : nullptr, current, quality,
+                            decision.at("decision").get<std::string>(), selected.size())) interrupted = true;
         decisions.push_back(std::move(decision));
         if (progress) progress(index + 1, frames.size(), selected.size());
-        if (tracking_break) break;
+        if (tracking_break || interrupted) break;
     }
-    if (!tracking_break && last_good && anchor && last_good->index != anchor->index) accept(*last_good, "last_usable");
-    const bool success = !tracking_break && selected.size() >= 3;
+    if (!interrupted && !tracking_break && last_good && anchor && last_good->index != anchor->index) accept(*last_good, "last_usable");
+    const bool success = !interrupted && !tracking_break && selected.size() >= 3;
     if (progress) progress(decisions.size(), frames.size(), selected.size());
     manifest["candidate_frame_count"] = frames.size();
     manifest["frames"] = std::move(selected);
-    manifest["keyframe_selection"] = {{"status", tracking_break ? "tracking_break" : (success ? "complete" : "insufficient_keyframes")},
+    manifest["keyframe_selection"] = {{"status", interrupted ? "interrupted" : (tracking_break ? "tracking_break" : (success ? "complete" : "insufficient_keyframes"))},
         {"frontend", "ORB + mutual ratio matching + RANSAC"}, {"decisions", std::move(decisions)}};
     const std::filesystem::path temporary = output.string() + ".tmp";
     std::ofstream report(temporary);

@@ -58,10 +58,12 @@ MatchQuality OrbRansacMatcher::match(const FrameFeatures& reference, const Frame
         const std::vector<cv::DMatch>& back = reverse.at(best.trainIdx);
         if (back.size() != 2 || back[0].trainIdx != best.queryIdx ||
             back[0].distance >= this->options_.descriptor_ratio * back[1].distance) continue;
+        result.correspondences.push_back(best);
         a.push_back(reference.points.at(best.queryIdx).pt);
         b.push_back(candidate.points.at(best.trainIdx).pt);
     }
     result.matches = a.size();
+    result.inlier_mask.assign(a.size(), 0);
     if (a.size() < 8) return result;
     cv::Mat fundamental_mask, homography_mask;
     const cv::Mat fundamental = cv::findFundamentalMat(a, b, cv::FM_RANSAC,
@@ -78,6 +80,7 @@ MatchQuality OrbRansacMatcher::match(const FrameFeatures& reference, const Frame
     std::vector<double> movement;
     for (std::size_t index = 0; index < a.size(); ++index) {
         if (!mask.ptr<unsigned char>()[index]) continue;
+        result.inlier_mask[index] = 1;
         const int ax = std::clamp(static_cast<int>(a[index].x * 4 / reference.size.width), 0, 3);
         const int ay = std::clamp(static_cast<int>(a[index].y * 4 / reference.size.height), 0, 3);
         const int bx = std::clamp(static_cast<int>(b[index].x * 4 / candidate.size.width), 0, 3);

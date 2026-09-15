@@ -247,6 +247,16 @@ reported as a tracking break and stops geometry. First/last usable views are ret
 fewer than three connected keyframes is an explicit diagnostic outcome. Thresholds
 are initial tunable values in `configs/keyframes.json`, not validated guarantees.
 
+`python -m stereoforge.video.keyframe_demo --video VIDEO` runs selection alone
+with an OpenCV desktop window. A main-thread observer displays the actual reference,
+candidate, mutual descriptor matches, RANSAC mask, and decision without repeating
+matching or changing selection order. Feature workers remain bounded while paused.
+Space toggles playback, N steps, O toggles outliers, and Q/Esc saves an interrupted
+diagnostic. The standalone native selector exposes the same window via
+`--debug-view`. Debug reports remain separate from the production selection cache;
+they include partial outcomes and do not require three selected frames to inspect.
+No geometry models are loaded by this diagnostic command.
+
 `FeatureExtractor` and `FeatureMatcher` interfaces permit later learned frontends
 without changing selection policy. The selector saves acceptance reasons and
 per-candidate metrics, with original displayed-frame indices/timestamps preserved

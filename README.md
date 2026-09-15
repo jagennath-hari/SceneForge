@@ -94,6 +94,30 @@ unresolved tracking breaks stop geometry rather than silently joining disconnect
 views. RANSAC provides geometric filtering, not a guarantee that every match is correct.
 ORB is only the selection frontend; pyCuSFM continues to use ALIKED.
 
+To inspect keyframe selection alone, rebuild the Docker environment after native
+code changes, then run inside the container with the desktop display forwarded:
+
+```bash
+python -m stereoforge.video.keyframe_demo --video data/input/barn.mp4
+```
+
+This opens an OpenCV window, initially paused. **N** steps to the next candidate,
+**Space** plays/pauses, **O** toggles rejected matches, and **Q/Esc** quits and saves
+a partial report. The left image is the reference used for the decision; the right
+is the candidate. Green lines are RANSAC inliers; red lines (optional) are rejected
+descriptor matches. Captions show the decision, feature count, sharpness, inlier
+support, coverage, and motion. Playback is processing-paced, not video-rate.
+If selection inserts a bridge keyframe, the displayed reference is that bridge.
+The final usable endpoint may also be accepted when selection finishes.
+
+No VGGT or pyCuSFM runs. Decoding reuses its cache, but selection always runs again.
+Results go under `data/intermediate/keyframes_*/selection.json`; candidate images
+are retained there as hard links when possible. `interrupted`, `tracking_break`,
+and `insufficient_keyframes` are diagnostic statuses, not successful reconstructions.
+Use `--input PATH_TO_DECODED_FRAMES` instead of `--video` to reuse a directory with
+its native `manifest.json` directly. Use all candidate frames, not an already
+filtered geometry run, when evaluating selection thresholds.
+
 Tune the initial thresholds in `configs/keyframes.json`, or supply another file
 with `--keyframe-config`. These defaults have not been calibrated on Barn. Use
 `--all-frames` to bypass selection for diagnostics. `--frames` limits video

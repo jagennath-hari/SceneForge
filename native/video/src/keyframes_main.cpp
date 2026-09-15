@@ -1,4 +1,6 @@
 #include "stereoforge/video/keyframe_selector.hpp"
+#include "stereoforge/video/keyframe_debug_view.hpp"
+#include <cstdlib>
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <iostream>
@@ -9,8 +11,10 @@
 int main(int argc, char** argv) {
     try {
         std::filesystem::path input, output, config;
+        bool debug_view = false;
         for (int index = 1; index < argc; ++index) {
             const std::string key = argv[index];
+            if (key == "--debug-view") { debug_view = true; continue; }
             if (++index == argc) throw std::invalid_argument("Missing value for " + key);
             if (key == "--input") input = argv[index];
             else if (key == "--output") output = argv[index];
@@ -45,10 +49,26 @@ int main(int argc, char** argv) {
         // Parallelism is owned by the bounded feature pool, not nested OpenCV pools.
         cv::setNumThreads(1);
         stereoforge::video::KeyframeSelector selector(options);
+        std::unique_ptr<stereoforge::video::KeyframeDebugView> viewer;
+        stereoforge::video::KeyframeSelector::DebugCallback debug;
+        if (debug_view) {
+            if (!std::getenv("DISPLAY") && !std::getenv("WAYLAND_DISPLAY"))
+                throw std::runtime_error("Debug window needs a desktop display; start Docker with X11 forwarding");
+            viewer = std::make_unique<stereoforge::video::KeyframeDebugView>(input);
+            debug = [&viewer](const stereoforge::video::FrameFeatures* reference,
+                const stereoforge::video::FrameFeatures& candidate, const stereoforge::video::MatchQuality& quality,
+                const std::string& decision, std::size_t selected) {
+                return viewer->show(reference, candidate, quality, decision, selected);
+            };
+        }
         const bool success = selector.run(input, output, [](std::size_t processed, std::size_t total, std::size_t selected) {
             std::cout << nlohmann::json{{"saved", processed}, {"total", total}, {"timestamp_seconds", nullptr},
                 {"stage", "ORB + RANSAC | " + std::to_string(selected) + " keyframes"}}.dump() << std::endl;
-        });
+        }, debug);
+        if (debug_view) {
+            std::cerr << "Debug session saved. Inspect keyframe_selection.status in " << output << '\n';
+            return 0;  // Partial/interrupted diagnostics are valid debug results, never a production cache.
+        }
         if (!success) std::cerr << "Keyframe selection is not connected or has fewer than three usable keyframes. Report: " << output << '\n';
         return success ? 0 : 2;
     } catch (const std::exception& error) {

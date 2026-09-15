@@ -34,11 +34,8 @@ RUN git init /tmp/tensorrt-headers && \
     git -C /tmp/tensorrt-headers fetch --depth 1 origin b8db91e15be2cae4465ac17fab19e0f969e45407 && \
     git -C /tmp/tensorrt-headers checkout --detach FETCH_HEAD && \
     cp -r /tmp/tensorrt-headers/include /opt/tensorrt/include && rm -rf /tmp/tensorrt-headers
-# Export adapters import upstream directly; avoid resolving its unrelated runtime stack.
-RUN git init /opt/third_party/lightglue-onnx && \
-    git -C /opt/third_party/lightglue-onnx remote add origin https://github.com/fabio-sim/LightGlue-ONNX.git && \
-    git -C /opt/third_party/lightglue-onnx fetch --depth 1 origin d12b4ba1632f558234e3f084e1f3d8bdf9147890 && \
-    git -C /opt/third_party/lightglue-onnx checkout --detach FETCH_HEAD
+# The repository gitlink pins the exact upstream implementation used by export.
+COPY third_party/lightglue-onnx/ /opt/third_party/lightglue-onnx/
 ENV PYTHONPATH=/opt/third_party/lightglue-onnx
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install 'onnx>=1.17,<2' 'onnxscript>=0.3,<1'

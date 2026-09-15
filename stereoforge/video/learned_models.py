@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import warnings
 
 import torch
 from torch import nn
@@ -39,8 +40,9 @@ class LightGlueExport(nn.Module):
 
     Separate frame inputs bind to retained device allocations. Avoid
     data-dependent NonZero output allocations in the native runtime. The
-    learned assignment and mutual nearest selection are unchanged; C++ applies
-    the configurable confidence threshold and detector validity mask afterward.
+    upstream matcher owns attention, assignment and mutual-match filtering.
+    This adapter only normalizes/assembles inputs and pads the sparse outputs.
+    C++ applies the configured confidence threshold and detector validity mask.
     """
 
     def __init__(self, width: int, height: int) -> None:
@@ -49,24 +51,22 @@ class LightGlueExport(nn.Module):
         from lightglue_dynamo.models.lightglue import LightGlue
         self.matcher = LightGlue(
             url="https://github.com/cvg/LightGlue/releases/download/v0.1_arxiv/superpoint_lightglue.pth",
-            depth_confidence=-1, width_confidence=-1,
+            depth_confidence=-1, width_confidence=-1, filter_threshold=0.0,
         ).eval()
 
     def forward(self, points0: torch.Tensor, descriptors0: torch.Tensor,
                 points1: torch.Tensor, descriptors1: torch.Tensor) -> tuple[torch.Tensor, ...]:
         keypoints = 2 * torch.cat((points0, points1), dim=0) / self.canvas - 1
         descriptors = torch.cat((descriptors0, descriptors1), dim=0)
-        encoded = self.matcher.posenc(keypoints)
-        features = self.matcher.input_proj(descriptors)
-        for layer in self.matcher.transformers:
-            features = layer(features, encoded)
-        assignments = self.matcher.log_assignment[-1](features)
-        values, targets = assignments.max(dim=2)
-        sources = assignments.argmax(dim=1)
-        reference = torch.arange(targets.shape[1], device=targets.device).expand_as(targets)
-        mutual = sources.gather(1, targets) == reference
-        indices = torch.where(mutual, targets, -torch.ones_like(targets))
-        return indices.int(), values.exp()
+        matches, scores = self.matcher(keypoints, descriptors)
+        # Upstream returns [M, (pair, source, target)] for the single image pair.
+        # Retain the native fixed-N contract without reimplementing matching.
+        source_indices = matches[:, 1].unsqueeze(0)
+        target_indices = matches[:, 2].to(torch.int32).unsqueeze(0)
+        dense_indices = torch.full((1, points0.shape[1]), -1, dtype=torch.int32, device=points0.device)
+        dense_scores = torch.zeros((1, points0.shape[1]), dtype=scores.dtype, device=scores.device)
+        return (dense_indices.scatter(1, source_indices, target_indices),
+                dense_scores.scatter(1, source_indices, scores.unsqueeze(0)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +141,7 @@ class LearnedModelCache:
 
     def _onnx_identity(self) -> dict:
         # Precision, TensorRT, driver and GPU identities deliberately do not affect ONNX.
-        return {"upstream": UPSTREAM_REVISION, "contract": "split_device_v2",
+        return {"upstream": UPSTREAM_REVISION, "contract": "upstream_forward_dynamo_v3",
                 "exporter": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                 "torch": torch.__version__, "features": self.features,
                 "width": self.width, "height": self.height}
@@ -193,18 +193,34 @@ class LearnedModelCache:
             return False
 
     def _export(self, directory: Path) -> None:
-        # Export static inputs with standard ONNX operators, without ORT-specific
-        # attention fusions. TensorRT parses these directly. No FP16/FP8 approximation.
+        import onnx
+        from onnxscript import opset20 as onnx_op
+
+        # Match lightglue_dynamo/cli.py's Dynamo export, including its integer
+        # division translation. Flattened pixel indices must not pass through
+        # FP16 arithmetic (values above 65504 would overflow).
+        def translate_integer_div(self: object, other: object, rounding_mode: str | None = None) -> object:
+            if rounding_mode not in {"floor", "trunc"}:
+                raise ValueError(f"Unsupported integer division mode: {rounding_mode}")
+            return onnx_op.Div(self, other)
+
+        export_options = {"opset_version": 20, "dynamo": True, "optimize": False,
+                          "external_data": False,
+                          "custom_translation_table": {torch.ops.aten.div.Tensor_mode: translate_integer_div}}
         with torch.inference_mode():
             torch.onnx.export(SuperPointExport(self.features).eval(),
                               (torch.zeros(1, 1, self.height, self.width),), directory / "superpoint.onnx",
                               input_names=["image"], output_names=["keypoints", "scores", "descriptors"],
-                              opset_version=17, dynamo=False)
+                              **export_options)
             torch.onnx.export(LightGlueExport(self.width, self.height).eval(),
                               (torch.zeros(1, self.features, 2), torch.zeros(1, self.features, 256),
                                torch.zeros(1, self.features, 2), torch.zeros(1, self.features, 256)),
                               directory / "lightglue.onnx", input_names=["points0", "descriptors0", "points1", "descriptors1"],
-                              output_names=["indices", "confidence"], opset_version=17, dynamo=False)
+                              output_names=["indices", "confidence"], **export_options)
+        # Validate exports before publishing the ONNX cache or building either
+        # engine. These checks execute only when the user runs preparation.
+        for name in ("superpoint.onnx", "lightglue.onnx"):
+            onnx.checker.check_model(str(directory / name), full_check=True)
 
     def _build(self, source: Path, destination: Path) -> None:
         import tensorrt as trt
@@ -214,46 +230,56 @@ class LearnedModelCache:
             if not parser.parse_from_file(str(source)):
                 errors = "\n".join(str(parser.get_error(index)) for index in range(parser.num_errors))
                 raise RuntimeError(f"TensorRT could not parse {source.name}:\n{errors}")
-            config.clear_flag(trt.BuilderFlag.TF32)
-            if self.precision == "fp16":
-                config.set_flag(trt.BuilderFlag.FP16)
-                config.set_flag(trt.BuilderFlag.OBEY_PRECISION_CONSTRAINTS)
-                # Keep sensitive normalization/score arithmetic in FP32. External
-                # tensors use the selected precision; integer indices retain INT32.
-                sensitive = {trt.LayerType.REDUCE, trt.LayerType.SOFTMAX, trt.LayerType.NORMALIZATION,
-                             trt.LayerType.ELEMENTWISE, trt.LayerType.UNARY}
-                for index in range(network.num_layers):
-                    layer = network.get_layer(index)
-                    if layer.type in sensitive and any(
-                            layer.get_output(out).dtype == trt.float32 for out in range(layer.num_outputs)):
-                        layer.precision = trt.float32
-                        for out in range(layer.num_outputs):
-                            if layer.get_output(out).dtype == trt.float32:
-                                layer.set_output_type(out, trt.float32)
-            # Equivalent build settings to the aggressive trtexec profile. Runtime
-            # graph capture/spin waiting are handled by the C++ execution path.
-            config.builder_optimization_level = 5
-            sources = config.get_tactic_sources()
-            for name in ("CUBLAS", "CUBLAS_LT", "CUDNN", "EDGE_MASK_CONVOLUTIONS", "JIT_CONVOLUTIONS"):
-                source_type = getattr(trt.TacticSource, name, None)
-                if source_type is not None:
-                    sources |= 1 << int(source_type)
-            if not config.set_tactic_sources(sources):
-                raise RuntimeError("TensorRT rejected the requested tactic sources")
-            # TACTIC_SHARED_MEMORY defaults to the device maximum per block.
-            # An 800 MiB cap cannot increase the hardware's shared memory.
-            config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 12288 << 20)
-            config.set_flag(trt.BuilderFlag.SPARSE_WEIGHTS)  # Only exploit existing 2:4 sparsity; never prune weights.
-            for index in range(network.num_inputs):
-                tensor = network.get_input(index)
-                if tensor.dtype == trt.float32 and self.precision == "fp16":
-                    tensor.dtype = trt.float16
-                tensor.allowed_formats = 1 << int(trt.TensorFormat.LINEAR)
-            for index in range(network.num_outputs):
-                tensor = network.get_output(index)
-                if tensor.dtype == trt.float32 and self.precision == "fp16":
-                    tensor.dtype = trt.float16
-                tensor.allowed_formats = 1 << int(trt.TensorFormat.LINEAR)
+            # TensorRT 10.13 still supports these weak-typing controls. Keep
+            # this exact deprecation quiet only during configuration; unrelated
+            # warnings and all parser/builder diagnostics remain visible.
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"Use Deprecated in TensorRT 10\.12\. Superseded by strong typing\. instead\.",
+                    category=DeprecationWarning,
+                    module=r"^(?:__main__|stereoforge\.video\.learned_models)$",
+                )
+                config.clear_flag(trt.BuilderFlag.TF32)
+                if self.precision == "fp16":
+                    config.set_flag(trt.BuilderFlag.FP16)
+                    config.set_flag(trt.BuilderFlag.OBEY_PRECISION_CONSTRAINTS)
+                    # Keep sensitive normalization/score arithmetic in FP32. External
+                    # tensors use the selected precision; integer indices retain INT32.
+                    sensitive = {trt.LayerType.REDUCE, trt.LayerType.SOFTMAX, trt.LayerType.NORMALIZATION,
+                                 trt.LayerType.ELEMENTWISE, trt.LayerType.UNARY}
+                    for index in range(network.num_layers):
+                        layer = network.get_layer(index)
+                        if layer.type in sensitive and any(
+                                layer.get_output(out).dtype == trt.float32 for out in range(layer.num_outputs)):
+                            layer.precision = trt.float32
+                            for out in range(layer.num_outputs):
+                                if layer.get_output(out).dtype == trt.float32:
+                                    layer.set_output_type(out, trt.float32)
+                # Equivalent build settings to the aggressive trtexec profile. Runtime
+                # graph capture/spin waiting are handled by the C++ execution path.
+                config.builder_optimization_level = 5
+                sources = config.get_tactic_sources()
+                for name in ("CUBLAS", "CUBLAS_LT", "CUDNN", "EDGE_MASK_CONVOLUTIONS", "JIT_CONVOLUTIONS"):
+                    source_type = getattr(trt.TacticSource, name, None)
+                    if source_type is not None:
+                        sources |= 1 << int(source_type)
+                if not config.set_tactic_sources(sources):
+                    raise RuntimeError("TensorRT rejected the requested tactic sources")
+                # TACTIC_SHARED_MEMORY defaults to the device maximum per block.
+                # An 800 MiB cap cannot increase the hardware's shared memory.
+                config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 12288 << 20)
+                config.set_flag(trt.BuilderFlag.SPARSE_WEIGHTS)  # Only exploit existing 2:4 sparsity; never prune weights.
+                for index in range(network.num_inputs):
+                    tensor = network.get_input(index)
+                    if tensor.dtype == trt.float32 and self.precision == "fp16":
+                        tensor.dtype = trt.float16
+                    tensor.allowed_formats = 1 << int(trt.TensorFormat.LINEAR)
+                for index in range(network.num_outputs):
+                    tensor = network.get_output(index)
+                    if tensor.dtype == trt.float32 and self.precision == "fp16":
+                        tensor.dtype = trt.float16
+                    tensor.allowed_formats = 1 << int(trt.TensorFormat.LINEAR)
             serialized = builder.build_serialized_network(network, config)
             if serialized is None:
                 raise RuntimeError(f"TensorRT engine build failed for {source.name}; see diagnostics above")

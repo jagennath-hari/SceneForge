@@ -9,6 +9,8 @@
 !third_party/stereospace/**
 !third_party/pycusfm/
 !third_party/pycusfm/**
+!third_party/lightglue-onnx/
+!third_party/lightglue-onnx/**
 !stereoforge/
 !stereoforge/**
 !configs/
@@ -28,3 +30,5 @@ native/**/build/
 third_party/pycusfm/pycusfm/x86_cuda12/
 # The application only uses ALIKED and its matching LightGlue models.
 third_party/pycusfm/pycusfm/models/superpoint_lightglue/
+
+third_party/lightglue-onnx/weights/

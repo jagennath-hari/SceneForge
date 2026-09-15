@@ -150,6 +150,16 @@ failures preserve the completed ONNX cache. Our separate model interfaces differ
 from the upstream combined ONNX release, so preparation downloads upstream weights
 and exports compatible ONNX files once rather than loading an incompatible graph.
 
+LightGlue-ONNX is pinned as the `third_party/lightglue-onnx` Git submodule and
+copied into Docker. Initialize it with `git submodule update --init --recursive`
+when updating an existing checkout. The adapter calls upstream's public matcher;
+it only assembles the two cached inputs and pads match outputs for the native
+fixed-size buffers. Export follows upstream's Dynamo/opset-20 settings, including
+its integer-division translation for TensorRT. Both ONNX files are checked before
+cache publication or engine building. The export contract version invalidates
+older graphs; no manual cache deletion is required.
+
+
 The learned backend uses one SuperPoint worker per visible GPU when GPU 0 can
 access its peers, cached reference features, and ordered LightGlue matching on
 GPU 0. Without peer access it uses GPU 0 for both stages. It starts with mixed FP16, 1024

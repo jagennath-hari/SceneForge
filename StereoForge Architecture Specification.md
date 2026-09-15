@@ -261,7 +261,16 @@ No geometry models are loaded by this diagnostic command.
 frontend selected with `--keyframe-config configs/keyframes_superpoint.json` in
 either demo. The implementation uses pinned
 [LightGlue-ONNX](https://github.com/fabio-sim/LightGlue-ONNX/tree/d12b4ba1632f558234e3f084e1f3d8bdf9147890)
-models with two separate static ONNX exports. Python prepares and caches engines;
+models from the `third_party/lightglue-onnx` submodule with two separate static
+ONNX exports. Docker copies the checked-out source, preserving the Git pin.
+The matcher adapter calls upstream's public forward method; its only additional
+work is input assembly/normalization and padding sparse matches into fixed-size
+native outputs. It does not implement attention, assignment or match filtering.
+Export uses upstream's Dynamo/opset-20 settings, with optimization disabled,
+inline weights, and integer-division translation to avoid FP16 index overflow.
+ONNX validation runs before cache publication and TensorRT construction. A new
+export contract key prevents reuse of graphs from the legacy exporter.
+Python prepares and caches engines;
 C++ performs frame inference using TensorRT 10.13.3.9. ORB remains the default.
 
 SuperPoint takes grayscale [0,1] images resized with preserved aspect ratio and

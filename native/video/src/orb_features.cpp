@@ -41,6 +41,7 @@ FrameFeatures OrbFeatureExtractor::extract(const std::filesystem::path& path, st
     result.size = image.size();
     result.sharpness = deviation[0] * deviation[0];
     this->orb_->detectAndCompute(image, cv::noArray(), result.points, result.descriptors);
+    result.feature_count = result.points.size();
     return result;
 }
 OrbRansacMatcher::OrbRansacMatcher(KeyframeOptions options) : options_(std::move(options)) {}
@@ -51,7 +52,6 @@ MatchQuality OrbRansacMatcher::match(const FrameFeatures& reference, const Frame
     std::vector<std::vector<cv::DMatch>> forward, reverse;
     this->matcher_.knnMatch(reference.descriptors, candidate.descriptors, forward, 2);
     this->matcher_.knnMatch(candidate.descriptors, reference.descriptors, reverse, 2);
-    std::vector<cv::Point2f> a, b;
     for (const std::vector<cv::DMatch>& pair : forward) {
         if (pair.size() != 2 || pair[0].distance >= this->options_.descriptor_ratio * pair[1].distance) continue;
         const cv::DMatch& best = pair[0];
@@ -59,17 +59,26 @@ MatchQuality OrbRansacMatcher::match(const FrameFeatures& reference, const Frame
         if (back.size() != 2 || back[0].trainIdx != best.queryIdx ||
             back[0].distance >= this->options_.descriptor_ratio * back[1].distance) continue;
         result.correspondences.push_back(best);
-        a.push_back(reference.points.at(best.queryIdx).pt);
-        b.push_back(candidate.points.at(best.trainIdx).pt);
+    }
+    return verifyMatches(reference, candidate, std::move(result.correspondences), this->options_);
+}
+MatchQuality verifyMatches(const FrameFeatures& reference, const FrameFeatures& candidate,
+    std::vector<cv::DMatch> matches, const KeyframeOptions& options) {
+    MatchQuality result;
+    result.correspondences = std::move(matches);
+    std::vector<cv::Point2f> a, b;
+    for (const cv::DMatch& match : result.correspondences) {
+        a.push_back(reference.points.at(match.queryIdx).pt);
+        b.push_back(candidate.points.at(match.trainIdx).pt);
     }
     result.matches = a.size();
     result.inlier_mask.assign(a.size(), 0);
     if (a.size() < 8) return result;
     cv::Mat fundamental_mask, homography_mask;
     const cv::Mat fundamental = cv::findFundamentalMat(a, b, cv::FM_RANSAC,
-        this->options_.ransac_pixels, 0.999, 2000, fundamental_mask);
+        options.ransac_pixels, 0.999, 2000, fundamental_mask);
     const cv::Mat homography = cv::findHomography(a, b, cv::RANSAC,
-        this->options_.ransac_pixels, homography_mask, 2000, 0.999);
+        options.ransac_pixels, homography_mask, 2000, 0.999);
     const int f_count = fundamental.empty() ? 0 : cv::countNonZero(fundamental_mask);
     const int h_count = homography.empty() ? 0 : cv::countNonZero(homography_mask);
     // Homography supports planar facades/pure rotation; neither model proves parallax.

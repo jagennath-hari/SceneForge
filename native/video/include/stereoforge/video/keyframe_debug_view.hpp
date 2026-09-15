@@ -7,7 +7,7 @@
 namespace stereoforge::video {
 class KeyframeDebugView final {
 public:
-    explicit KeyframeDebugView(const std::filesystem::path& directory);
+    explicit KeyframeDebugView(const std::filesystem::path& directory, const std::string& frontend);
     ~KeyframeDebugView();
     KeyframeDebugView(const KeyframeDebugView&) = delete;
     KeyframeDebugView& operator=(const KeyframeDebugView&) = delete;

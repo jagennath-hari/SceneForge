@@ -257,8 +257,59 @@ diagnostic. The standalone native selector exposes the same window via
 they include partial outcomes and do not require three selected frames to inspect.
 No geometry models are loaded by this diagnostic command.
 
-`FeatureExtractor` and `FeatureMatcher` interfaces permit later learned frontends
-without changing selection policy. The selector saves acceptance reasons and
+`FeatureExtractor` and `FeatureMatcher` also support an optional SuperPoint/LightGlue
+frontend selected with `--keyframe-config configs/keyframes_superpoint.json` in
+either demo. The implementation uses pinned
+[LightGlue-ONNX](https://github.com/fabio-sim/LightGlue-ONNX/tree/d12b4ba1632f558234e3f084e1f3d8bdf9147890)
+models with two separate static ONNX exports. Python prepares and caches engines;
+C++ performs frame inference using TensorRT 10.13.3.9. ORB remains the default.
+
+SuperPoint takes grayscale [0,1] images resized with preserved aspect ratio and
+bottom/right padding to a fixed canvas. It outputs pixel keypoints, scores, and
+256-dimensional descriptors. FP16 engine builds use FP16 floating-point I/O;
+match indices use INT32. The fixed top-K slots remain aligned, while
+weak detections and padding are excluded from feature counts and accepted matches.
+LightGlue binds separate reference/candidate device buffers directly, then applies
+`2 * xy / [canvas_width, canvas_height] - 1` and pair assembly within the graph,
+matching this upstream implementation.
+The export retains the full fixed-depth network and learned assignment, returning
+fixed-size mutual match indices and confidences. C++ filters confidence and applies
+the same pixel-space RANSAC/coverage/motion checks used by ORB. There is no claim
+that learned matching eliminates false correspondences or repeated-structure ambiguity.
+
+One bounded extraction worker runs per visible GPU when peer access to GPU 0 is
+available; otherwise both stages use GPU 0. Acceptance remains sequential against
+the last accepted reference. Shared frame ownership retains pooled device buffers,
+which prevents reuse while queued or held as an anchor. Same-device descriptor
+handoff binds the original SuperPoint output allocation; cross-device handoff
+uses a cached peer mirror without host staging. Small metadata returns to CPU
+for RANSAC. Input PNG decoding still occurs on CPU, with one pinned upload;
+CUDA area resampling/normalization/padding writes directly into the model input.
+The GPU sharpness stencil uses a shared tile with halo, unconditional block
+barriers, warp reductions and two global statistics atomics per block. This is
+not a streaming NVDEC integration and not end-to-end zero-copy from video. The supplied config selects mixed FP16; FP32 remains selectable. TF32 stays disabled.
+FP16 builds constrain reductions, softmax, normalization, elementwise and unary
+floating-point arithmetic to FP32; external floating tensors use the selected
+precision while indices stay INT32. This is not INT8
+quantization, and matching accuracy must still be measured. Engine caches include
+precision and runtime/GPU identities plus engine hashes. Build optimization level
+is 5, workspace cap is 12 GiB, existing sparse weights are enabled, available
+legacy/edge-mask/JIT tactic sources are enabled, and the full runtime is used.
+Tactic shared-memory limits retain the device maximum; no DLA fallback is needed.
+The runner spin-waits on completion events and caches up to 32 graph executables
+per context keyed by buffer addresses, with warm inference before capture and
+ordinary enqueue fallback on unsupported capture. Models keep fixed shapes;
+pooled output slots allow graph reuse without changing retained tensor ownership.
+`python -m stereoforge.video.learned_models` prepares the models independently;
+`--onnx-only` exports without a GPU, and `--precision fp32` builds a reference.
+Missing upstream weights are downloaded and exported into our split ONNX contract.
+A separate hashed ONNX cache survives engine-build failures and is reused across
+precisions/devices. The CLI override does not change the demo configuration.
+Models are prepared on first use or explicitly, not during Docker build.
+The debugger identifies the frontend; thresholds still require footage-based
+calibration. This backend does not change pyCuSFM's ALIKED configuration.
+
+The selector saves acceptance reasons and
 per-candidate metrics, with original displayed-frame indices/timestamps preserved
 through renumbering into a run. Candidate PNGs remain cached; only selected frames
 enter VGGT, reports and pyCuSFM. ORB selection does not replace ALIKED refinement.

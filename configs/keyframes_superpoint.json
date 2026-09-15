@@ -1,0 +1,19 @@
+{
+  "frontend": "superpoint_lightglue",
+  "precision": "fp16",
+  "features": 1024,
+  "model_width": 960,
+  "model_height": 544,
+  "detector_threshold": 0.005,
+  "match_threshold": 0.1,
+  "min_features": 120,
+  "min_inliers": 60,
+  "ransac_pixels": 2.0,
+  "min_inlier_ratio": 0.4,
+  "min_coverage": 0.25,
+  "retention": 0.65,
+  "motion": 0.035,
+  "min_sharpness": 20.0,
+  "min_interval": 0.2,
+  "tracking_timeout": 2.0
+}

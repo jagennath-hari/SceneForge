@@ -9,13 +9,14 @@
 #include <stdexcept>
 
 namespace stereoforge::video {
-KeyframeDebugView::KeyframeDebugView(const std::filesystem::path& directory) : directory_(directory) {
+KeyframeDebugView::KeyframeDebugView(const std::filesystem::path& directory, const std::string& frontend) : directory_(directory) {
     std::ifstream input(this->directory_ / "manifest.json");
     input.exceptions(std::ios::badbit | std::ios::failbit);
     nlohmann::json manifest;
     input >> manifest;
     for (const nlohmann::json& frame : manifest.at("frames"))
         this->files_.push_back(frame.at("file").get<std::string>());
+    this->title_ += " | " + frontend;
     cv::namedWindow(this->title_, cv::WINDOW_NORMAL);
     cv::resizeWindow(this->title_, 1440, 700);
 }
@@ -63,7 +64,7 @@ bool KeyframeDebugView::show(const FrameFeatures* reference, const FrameFeatures
             << " | " << (quality.inliers == 0 ? "no verified model" : (quality.homography ? "H" : "F"));
         std::ostringstream candidate_label;
         candidate_label << std::fixed << std::setprecision(2) << "Candidate " << candidate.index
-            << " @ " << candidate.timestamp << "s | features " << candidate.points.size()
+            << " @ " << candidate.timestamp << "s | features " << candidate.feature_count
             << " | sharpness " << candidate.sharpness;
         const std::vector<std::string> lines{
             (reference ? "Reference keyframe " + std::to_string(reference->index) : "No reference yet")

@@ -101,7 +101,91 @@ code changes, then run inside the container with the desktop display forwarded:
 python -m stereoforge.video.keyframe_demo --video data/input/barn.mp4
 ```
 
-This opens an OpenCV window, initially paused. **N** steps to the next candidate,
+To compare **SuperPoint + LightGlue + RANSAC**, use:
+
+```bash
+python -m stereoforge.video.keyframe_demo --video data/input/barn.mp4 \
+    --keyframe-config configs/keyframes_superpoint.json
+```
+
+After inspecting selection, the same configuration works end to end:
+
+```bash
+python -m stereoforge.geometry.demo --video data/input/barn.mp4 \
+    --keyframe-config configs/keyframes_superpoint.json
+```
+
+Rebuild Docker for the native backend and export dependencies. First use downloads
+the SuperPoint and matching LightGlue weights, exports separate ONNX models, and
+builds local TensorRT engines. This preparation can take several minutes; progress
+reports the current export/build stage. Engines persist under
+`.cache/stereoforge/keyframes/`, keyed by model settings, adapter, GPU identity,
+and runtime versions. The existing TensorRT 10.13.3.9 version is retained.
+
+Prepare models separately before opening the debugger (inside Docker):
+
+```bash
+python -m stereoforge.video.learned_models
+```
+
+The supplied config selects `"precision": "fp16"`. This builds mixed-FP16 TensorRT
+engines for each visible GPU, using FP16 floating-point I/O and FP32 sensitive
+arithmetic. Match indices remain INT32 so all configured keypoint indices are exact. It is
+reduced-precision optimization, not calibrated INT8 quantization. Accuracy and
+speed still need comparison against FP32 on real frames.
+
+```bash
+# Download missing weights and export/cache only ONNX; no GPU is needed.
+python -m stereoforge.video.learned_models --onnx-only
+
+# Build an FP32 reference from the same cached ONNX models.
+python -m stereoforge.video.learned_models --precision fp32
+```
+
+Set `precision` in the demo's config to the precision you want it to use. A CLI
+build override does not modify that config. ONNX files have a separate cache
+under `.cache/stereoforge/keyframes/onnx/`; precision and GPU changes reuse them.
+Both ONNX and engine caches use hashes, locks, and atomic publication. Engine-build
+failures preserve the completed ONNX cache. Our separate model interfaces differ
+from the upstream combined ONNX release, so preparation downloads upstream weights
+and exports compatible ONNX files once rather than loading an incompatible graph.
+
+The learned backend uses one SuperPoint worker per visible GPU when GPU 0 can
+access its peers, cached reference features, and ordered LightGlue matching on
+GPU 0. Without peer access it uses GPU 0 for both stages. It starts with mixed FP16, 1024
+keypoints, and a 960 × 544 model canvas. Images retain their aspect ratio and are
+padded on the bottom/right; padding and weak detections cannot become RANSAC
+matches. `model_width`/`model_height` control that canvas; `feature_edge` and
+`descriptor_ratio` apply only to ORB. `detector_threshold` filters SuperPoint
+detections and `match_threshold` filters LightGlue confidence. Selection thresholds
+in the learned config are initial values, **not yet calibrated or benchmarked**.
+ORB remains the default and pyCuSFM still uses ALIKED.
+
+The TensorRT build uses optimization level 5, a 12 GiB workspace cap, available
+cuBLAS/cuBLASLt/cuDNN/edge-mask/JIT tactics, existing-weight sparsity, and the full
+runtime. Shared-memory tactic limits stay at the GPU's hardware maximum. It does
+not force sparsity into dense weights or force normalization/softmax into FP16.
+The C++ runner uses spin waits and caches up to 32 CUDA graphs by tensor addresses;
+unsupported capture falls back to normal enqueue. Reusable frame slots keep GPU
+allocations and addresses stable across candidates. No speedup is claimed before
+profiling on the target machine.
+
+Floating-point SuperPoint outputs bind directly to separate LightGlue reference
+and candidate inputs on the same GPU. Descriptors never round-trip through host
+memory. For another extraction GPU, a peer copy creates a retained GPU-0 mirror
+once per frame; this is **not** zero-copy across GPUs. TensorRT still performs its
+internal pair assembly/normalization as part of the LightGlue graph.
+
+Cached PNGs are decoded on the CPU and uploaded once through pinned memory. CUDA
+area resizing, normalization, and padding write directly to SuperPoint's input.
+A shared-memory Laplacian stencil and warp reductions compute sharpness on GPU;
+small keypoint/score/statistic and match arrays return to CPU for RANSAC/debugging.
+This removes intermediate tensor transfers, but is **not** a fully device-only
+NVDEC-to-SuperPoint video path: the existing decoded-PNG cache boundary remains.
+The area resize and FP16 sharpness path can slightly change threshold decisions.
+
+
+The standalone commands open an OpenCV window, initially paused. **N** steps to the next candidate,
 **Space** plays/pauses, **O** toggles rejected matches, and **Q/Esc** quits and saves
 a partial report. The left image is the reference used for the decision; the right
 is the candidate. Green lines are RANSAC inliers; red lines (optional) are rejected
@@ -110,7 +194,8 @@ support, coverage, and motion. Playback is processing-paced, not video-rate.
 If selection inserts a bridge keyframe, the displayed reference is that bridge.
 The final usable endpoint may also be accepted when selection finishes.
 
-No VGGT or pyCuSFM runs. Decoding reuses its cache, but selection always runs again.
+The standalone debugger does not run VGGT or pyCuSFM. Decoding reuses its cache,
+but selection always runs again.
 Results go under `data/intermediate/keyframes_*/selection.json`; candidate images
 are retained there as hard links when possible. `interrupted`, `tracking_break`,
 and `insufficient_keyframes` are diagnostic statuses, not successful reconstructions.

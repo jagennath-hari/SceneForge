@@ -11,13 +11,17 @@
 
 namespace stereoforge::video {
 
+class DeviceFeatures;
+
 struct FrameFeatures final {
     std::size_t index{};
     double timestamp{};
     cv::Size size;
     double sharpness{};
+    std::size_t feature_count{};
     std::vector<cv::KeyPoint> points;
     cv::Mat descriptors;
+    std::shared_ptr<DeviceFeatures> device_features;
 };
 
 struct MatchQuality final {
@@ -45,6 +49,8 @@ struct KeyframeOptions final {
     double min_sharpness{20.0};
     double min_interval{0.20};
     double tracking_timeout{2.0};
+    std::string frontend{"orb"};
+    unsigned workers{0};  // Zero chooses the bounded CPU default.
     void validate() const;
 };
 
@@ -71,6 +77,9 @@ private:
     int edge_;
     cv::Ptr<cv::ORB> orb_;
 };
+[[nodiscard]] MatchQuality verifyMatches(const FrameFeatures& reference, const FrameFeatures& candidate,
+    std::vector<cv::DMatch> matches, const KeyframeOptions& options);
+
 class OrbRansacMatcher final : public FeatureMatcher {
 public:
     explicit OrbRansacMatcher(KeyframeOptions options);

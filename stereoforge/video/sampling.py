@@ -124,13 +124,15 @@ class VideoFrameSampler:
         if executable is None:
             raise RuntimeError("Native keyframe selector is missing; stop the container and rebuild the Docker environment")
         config = Path(self.keyframe_config).read_bytes()
-        signature = hashlib.sha256(Path(executable).read_bytes() + config).hexdigest()
+        model_args = self.model_arguments(Path(self.keyframe_config))
+        model_identity = ((Path(model_args[1]) / "manifest.json").read_bytes() if model_args else b"")
+        signature = hashlib.sha256(Path(executable).read_bytes() + config + model_identity).hexdigest()
         output = cache / f"keyframes_{signature}.json"
         progress.bar.set_description("Selecting keyframes")
         progress.description = "Selecting keyframes"
         if not output.is_file():
             self._run_process([executable, "--input", str(cache), "--output", str(output),
-                               "--config", str(self.keyframe_config)], progress, "Keyframe selection")
+                               "--config", str(self.keyframe_config), *model_args], progress, "Keyframe selection")
         document = json.loads(output.read_text(encoding="utf-8"))
         status = document.get("keyframe_selection", {}).get("status")
         if status != "complete":
@@ -149,8 +151,19 @@ class VideoFrameSampler:
                 raise ValueError("Keyframe selection changed a source frame index")
             previous = index
         document["keyframe_selection"]["settings"] = json.loads(config)
+        if model_identity:
+            document["keyframe_selection"]["model_manifest"] = json.loads(model_identity)
         progress.status(f"reusing selection: {len(document['frames'])} keyframes")
         return document
+
+    @staticmethod
+    def model_arguments(config: Path) -> list[str]:
+        settings = json.loads(config.read_text(encoding="utf-8"))
+        if settings.get("frontend", "orb") != "superpoint_lightglue":
+            return []
+        # ORB remains independent of model export and PyTorch imports.
+        from stereoforge.video.learned_models import LearnedModelCache
+        return ["--models", str(LearnedModelCache.from_settings(settings).prepare())]
 
     @staticmethod
     def _source_identity(video: Path) -> dict[str, str | int]:

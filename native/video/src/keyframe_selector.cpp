@@ -16,9 +16,9 @@ namespace stereoforge::video {
 namespace {
 class OrderedFeatures final {
 public:
-    OrderedFeatures(const std::filesystem::path& directory, const nlohmann::json& frames, ExtractorFactory factory) :
+    OrderedFeatures(const std::filesystem::path& directory, const nlohmann::json& frames, ExtractorFactory factory, unsigned workers) :
         directory_(directory), frames_(frames), factory_(std::move(factory)),
-        capacity_(2 * std::clamp(std::thread::hardware_concurrency(), 1u, 8u)) {
+        capacity_(2 * (workers ? workers : std::clamp(std::thread::hardware_concurrency(), 1u, 8u))) {
         try {
             for (unsigned index = 0; index < this->capacity_ / 2; ++index)
                 this->workers_.emplace_back([this] { this->work(); });
@@ -105,7 +105,7 @@ bool KeyframeSelector::run(const std::filesystem::path& directory, const std::fi
             throw std::runtime_error("Invalid candidate paths or timestamps");
         previous_time = timestamp;
     }
-    OrderedFeatures features(directory, frames, this->factory_);
+    OrderedFeatures features(directory, frames, this->factory_, this->options_.workers);
     std::optional<FrameFeatures> anchor, last_good;
     std::size_t best_inliers = 0;
     nlohmann::json selected = nlohmann::json::array();
@@ -132,8 +132,8 @@ bool KeyframeSelector::run(const std::filesystem::path& directory, const std::fi
         if (debug) reference = anchor;
         MatchQuality quality;
         nlohmann::json decision{{"candidate_index", index}, {"timestamp_seconds", current.timestamp},
-            {"features", current.points.size()}, {"sharpness", current.sharpness}};
-        const bool usable = current.points.size() >= static_cast<std::size_t>(this->options_.min_features) &&
+            {"features", current.feature_count}, {"sharpness", current.sharpness}};
+        const bool usable = current.feature_count >= static_cast<std::size_t>(this->options_.min_features) &&
                             current.sharpness >= this->options_.min_sharpness;
         if (!usable) decision["decision"] = "reject_quality";
         else if (!anchor) {
@@ -182,7 +182,7 @@ bool KeyframeSelector::run(const std::filesystem::path& directory, const std::fi
     manifest["candidate_frame_count"] = frames.size();
     manifest["frames"] = std::move(selected);
     manifest["keyframe_selection"] = {{"status", interrupted ? "interrupted" : (tracking_break ? "tracking_break" : (success ? "complete" : "insufficient_keyframes"))},
-        {"frontend", "ORB + mutual ratio matching + RANSAC"}, {"decisions", std::move(decisions)}};
+        {"frontend", this->options_.frontend + " + RANSAC"}, {"decisions", std::move(decisions)}};
     const std::filesystem::path temporary = output.string() + ".tmp";
     std::ofstream report(temporary);
     report.exceptions(std::ios::badbit | std::ios::failbit);

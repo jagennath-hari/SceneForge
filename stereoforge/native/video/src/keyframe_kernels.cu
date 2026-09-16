@@ -14,34 +14,89 @@ template <> __device__ float readValue(__half value) { return __half2float(value
 template <typename T> __device__ T writeValue(float value) { return static_cast<T>(value); }
 template <> __device__ __half writeValue(float value) { return __float2half_rn(value); }
 
-// Warp lanes follow adjacent output columns. Area integration prevents aliasing
-// during downsampling. No block barrier is needed: each lane owns its output and
-// the read-only source has no inter-thread dependency or reusable stencil here.
-template <typename T>
-__global__ void resizeNormalize(const unsigned char* source, int source_width, int source_height,
-    T* output, int width, int height, int canvas_width, int canvas_height) {
-    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= canvas_width || y >= canvas_height) return;
-    float rgb[3]{};
-    if (x < width && y < height) {
-        const float scale_x = static_cast<float>(source_width) / width;
-        const float scale_y = static_cast<float>(source_height) / height;
-        const float left = x * scale_x, right = (x + 1) * scale_x;
-        const float top = y * scale_y, bottom = (y + 1) * scale_y;
-        for (int sy = static_cast<int>(floorf(top)); sy < static_cast<int>(ceilf(bottom)) && sy < source_height; ++sy) {
-            const float wy = fminf(bottom, sy + 1.0f) - fmaxf(top, static_cast<float>(sy));
-            for (int sx = static_cast<int>(floorf(left)); sx < static_cast<int>(ceilf(right)) && sx < source_width; ++sx) {
-                const float wx = fminf(right, sx + 1.0f) - fmaxf(left, static_cast<float>(sx));
-                const std::size_t offset = (static_cast<std::size_t>(sy) * source_width + sx) * 3;
-                for (int channel = 0; channel < 3; ++channel)
-                    rgb[channel] += source[offset + 2 - channel] * wx * wy;
+// Keys cubic convolution, a=-0.5 (Catmull-Rom). Widening the support
+// by the downsampling ratio supplies the low-pass filter for antialiasing.
+__device__ float cubicWeight(float distance) {
+    const float x = fabsf(distance);
+    if (x < 1.0f) return ((1.5f*x - 2.5f)*x)*x + 1.0f;
+    if (x < 2.0f) return ((-0.5f*x + 2.5f)*x - 4.0f)*x + 2.0f;
+    return 0.0f;
+}
+
+// Each warp owns one source row and 32 adjacent output columns. Cooperatively
+// load bounded 128-pixel strips, including the cubic halo. Chunking keeps shared
+// memory bounded even for large reduction ratios. All 256 lanes reach both
+// barriers on every iteration, including partial image blocks.
+__global__ void bicubicHorizontal(const unsigned char* source, int source_width, int source_height,
+    float* intermediate, int width) {
+    __shared__ float tile[8][128];
+    const int lane = threadIdx.x, row = threadIdx.y;
+    const int origin_x = blockIdx.x*32, y = blockIdx.y*8 + row;
+    const int x = origin_x + lane, channel = blockIdx.z;
+    const float scale = static_cast<float>(source_width)/width;
+    const float support = fmaxf(scale, 1.0f);
+    const float center = (x+0.5f)*scale - 0.5f;
+    const int first = static_cast<int>(ceilf((origin_x+0.5f)*scale - 0.5f - 2*support));
+    const int last = static_cast<int>(floorf((min(origin_x+31,width-1)+0.5f)*scale - 0.5f + 2*support));
+    const int tap_first = static_cast<int>(ceilf(center-2*support));
+    const int tap_last = static_cast<int>(floorf(center+2*support));
+    float sum = 0, weights = 0;
+    for (int base = first; base <= last; base += 128) {
+        for (int i = lane; i < 128; i += 32) {
+            const int sx = min(max(base+i,0),source_width-1);
+            tile[row][i] = y < source_height ? source[(static_cast<std::size_t>(y)*source_width+sx)*3+2-channel]/255.0f : 0;
+        }
+        __syncthreads();
+        if (x < width && y < source_height) {
+            for (int sx = max(base,tap_first); sx <= min(base+127,tap_last); ++sx) {
+                const float weight = cubicWeight((sx-center)/support);
+                sum = fmaf(weight, tile[row][sx-base], sum);
+                weights += weight;
             }
         }
-        for (int channel = 0; channel < 3; ++channel) rgb[channel] /= 255.0f * scale_x * scale_y;
+        __syncthreads();
     }
-    for (int channel = 0; channel < 3; ++channel)
-        output[(channel * canvas_height + y) * canvas_width + x] = writeValue<T>(rgb[channel]);
+    if (x < width && y < source_height)
+        intermediate[(static_cast<std::size_t>(channel)*source_height+y)*width+x] = sum/weights;
+}
+
+// Adjacent lanes load/store adjacent columns. Eight output rows reuse shared
+// 32-row strips; the extra shared column avoids a power-of-two row pitch.
+// Intermediate values remain FP32 and unclipped until the second pass so cubic
+// negative lobes are retained. Only the final RGB values are clamped to [0,1].
+template <typename T>
+__global__ void bicubicVertical(const float* intermediate, int source_height, T* output,
+    int width, int height, int canvas_width, int canvas_height) {
+    __shared__ float tile[32][33];
+    const int lane = threadIdx.x, row = threadIdx.y;
+    const int x = blockIdx.x*32+lane, origin_y = blockIdx.y*8;
+    const int y = origin_y+row, channel = blockIdx.z;
+    const float scale = static_cast<float>(source_height)/height;
+    const float support = fmaxf(scale,1.0f);
+    const float center = (y+0.5f)*scale - 0.5f;
+    const int first = static_cast<int>(ceilf((origin_y+0.5f)*scale - 0.5f - 2*support));
+    const int last = static_cast<int>(floorf((min(origin_y+7,height-1)+0.5f)*scale - 0.5f + 2*support));
+    const int tap_first = static_cast<int>(ceilf(center-2*support));
+    const int tap_last = static_cast<int>(floorf(center+2*support));
+    float sum = 0, weights = 0;
+    for (int base = first; base <= last; base += 32) {
+        for (int i = row; i < 32; i += 8) {
+            const int sy = min(max(base+i,0),source_height-1);
+            tile[i][lane] = x < width ? intermediate[(static_cast<std::size_t>(channel)*source_height+sy)*width+x] : 0;
+        }
+        __syncthreads();
+        if (x < width && y < height) {
+            for (int sy = max(base,tap_first); sy <= min(base+31,tap_last); ++sy) {
+                const float weight = cubicWeight((sy-center)/support);
+                sum = fmaf(weight,tile[sy-base][lane],sum);
+                weights += weight;
+            }
+        }
+        __syncthreads();
+    }
+    if (x < width && y < height)
+        output[(static_cast<std::size_t>(channel)*canvas_height+y)*canvas_width+x] =
+            writeValue<T>(fminf(1.0f,fmaxf(0.0f,sum/weights)));
 }
 __device__ int reflect(int value, int size) {
     if (size <= 1) return 0;
@@ -118,11 +173,11 @@ __global__ void keypointStatistics(const T* points, const T* scores, int count,
     }
 }
 template <typename T>
-void launch(const unsigned char* pixels, int sw, int sh, void* output, int width, int height,
+void launch(const float* intermediate, int sh, void* output, int width, int height,
     int cw, int ch, float* statistics, cudaStream_t stream) {
     const dim3 block(32, 8);
-    resizeNormalize<<<dim3((cw + 31) / 32, (ch + 7) / 8), block, 0, stream>>>(
-        pixels, sw, sh, static_cast<T*>(output), width, height, cw, ch);
+    bicubicVertical<<<dim3((width + 31) / 32, (height + 7) / 8, 3), block, 0, stream>>>(
+        intermediate, sh, static_cast<T*>(output), width, height, cw, ch);
     check(cudaGetLastError());
     sharpness<<<dim3((width + 31) / 32, (height + 7) / 8), block, 0, stream>>>(
         static_cast<T*>(output), width, height, cw, ch, statistics);
@@ -130,12 +185,21 @@ void launch(const unsigned char* pixels, int sw, int sh, void* output, int width
 }
 }
 void prepareRgbImage(const unsigned char* pixels, int sw, int sh, void* tensor, bool half,
-    int width, int height, int cw, int ch, float* statistics, cudaStream_t stream) {
-    if (!pixels || !tensor || !statistics || sw < width || sh < height || width < 1 || height < 1 || cw < width || ch < height)
+    int width, int height, int cw, int ch, float* intermediate, std::size_t intermediate_bytes,
+    float* statistics, cudaStream_t stream) {
+    if (!pixels || !tensor || !statistics || !intermediate || sw < width || sh < height ||
+        width < 1 || height < 1 || cw < width || ch < height ||
+        sw > 65536 || sh > 65536 || cw > 4096 || ch > 4096)
         throw std::invalid_argument("Invalid preprocessing dimensions or pointers");
+    const std::size_t required = static_cast<std::size_t>(width)*sh*3*sizeof(float);
+    if (intermediate_bytes < required) throw std::invalid_argument("Bicubic workspace is too small");
     check(cudaMemsetAsync(statistics, 0, 4 * sizeof(float), stream));
-    if (half) launch<__half>(pixels, sw, sh, tensor, width, height, cw, ch, statistics, stream);
-    else launch<float>(pixels, sw, sh, tensor, width, height, cw, ch, statistics, stream);
+    const std::size_t output_bytes = static_cast<std::size_t>(cw)*ch*3*(half ? sizeof(__half) : sizeof(float));
+    check(cudaMemsetAsync(tensor,0,output_bytes,stream));  // Bottom/right canvas padding.
+    bicubicHorizontal<<<dim3((width+31)/32,(sh+7)/8,3),dim3(32,8),0,stream>>>(pixels,sw,sh,intermediate,width);
+    check(cudaGetLastError());
+    if (half) launch<__half>(intermediate, sh, tensor, width, height, cw, ch, statistics, stream);
+    else launch<float>(intermediate, sh, tensor, width, height, cw, ch, statistics, stream);
 }
 void validateDescriptors(const void* data, bool half, std::size_t count, float* statistics, cudaStream_t stream) {
     const unsigned blocks = static_cast<unsigned>((count + 255) / 256);

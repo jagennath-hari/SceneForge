@@ -203,8 +203,13 @@ once per frame; this is **not** zero-copy across GPUs. TensorRT still performs i
 internal pair assembly/normalization as part of the LightGlue graph.
 
 Cached PNGs are decoded as BGR on the CPU and uploaded once through pinned memory.
-CUDA converts them to RGB NCHW, resizes, normalizes and pads directly into the
-RaCo–ALIKED input allocation.
+CUDA converts them to RGB NCHW using antialiased bicubic resizing (Keys cubic,
+a=-0.5), half-pixel centers and clamped source edges. Separable horizontal and
+vertical passes widen filter support for downsampling and normalize weights at
+each output pixel. The horizontal pass writes a reusable FP32 GPU workspace;
+the vertical pass clamps cubic overshoot to [0,1] and writes the FP16/FP32 model
+input. The canvas is zero-padded on the bottom/right. Both passes use 32×8 blocks
+and bounded shared-memory strips; no image data returns to the CPU between them.
 A shared-memory Laplacian stencil and warp reductions compute sharpness on GPU;
 RANSAC reads TensorRT keypoints, scores, indices and confidence on the same CUDA
 stream, without a host round trip. It samples 2,000 hypotheses per model family,
@@ -216,7 +221,9 @@ copies keypoints and verified matches for display. The CUDA eight-point solver
 is not numerically identical to OpenCV's CPU estimator and requires validation.
 This removes intermediate tensor transfers, but is **not** a fully device-only
 NVDEC-to-RaCo video path: the existing decoded-PNG cache boundary remains.
-The area resize and FP16 sharpness path can slightly change threshold decisions.
+Bicubic resizing and FP16 sharpness can change threshold decisions. Rebuilding
+the native selector invalidates its cached selections; TensorRT engines remain
+reusable. Interpolation accuracy and performance still require validation.
 
 
 The standalone commands open an OpenCV window, initially paused. **N** steps to the next candidate,

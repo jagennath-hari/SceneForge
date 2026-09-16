@@ -116,6 +116,7 @@ private:
     TensorRunner runner_;
     ImageUpload upload_;
     DeviceBuffer statistics_;
+    std::unique_ptr<DeviceBuffer> resize_workspace_;
     std::vector<std::shared_ptr<DeviceFeatures>> pool_;
 };
 

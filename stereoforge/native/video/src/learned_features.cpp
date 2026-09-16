@@ -57,6 +57,11 @@ FrameFeatures RaCoALIKEDExtractor::extract(const std::filesystem::path& path, st
     result.timestamp = timestamp;
     result.size = cv::Size(std::max(1, static_cast<int>(std::round(image.cols * scale))),
                           std::max(1, static_cast<int>(std::round(image.rows * scale))));
+    if (image.cols > 65536 || image.rows > 65536)
+        throw std::runtime_error("Candidate dimensions exceed the supported bicubic resize range");
+    const std::size_t resize_bytes = static_cast<std::size_t>(result.size.width) * image.rows * 3 * sizeof(float);
+    if (!this->resize_workspace_ || this->resize_workspace_->bytes() < resize_bytes)
+        this->resize_workspace_ = std::make_unique<DeviceBuffer>(this->runner_.device(), resize_bytes);
     for (const std::shared_ptr<DeviceFeatures>& slot : this->pool_) {
         if (slot.use_count() == 1) { result.device_features = slot; break; }
     }
@@ -72,6 +77,7 @@ FrameFeatures RaCoALIKEDExtractor::extract(const std::filesystem::path& path, st
     const unsigned char* pixels = this->upload_.upload(image, this->runner_.stream());
     prepareRgbImage(pixels, image.cols, image.rows, this->runner_.address("image"), this->runner_.half("image"),
         result.size.width, result.size.height, this->options_.width, this->options_.height,
+        static_cast<float*>(this->resize_workspace_->data()), this->resize_workspace_->bytes(),
         static_cast<float*>(this->statistics_.data()), this->runner_.stream());
     this->runner_.run();
     validateDescriptors(result.device_features->descriptors.data(), this->runner_.half("descriptors"),

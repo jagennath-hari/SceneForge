@@ -312,7 +312,19 @@ points and descriptors. CUDA RANSAC consumes the matcher's original device outpu
 on the same stream; only feature/selection aggregate statistics return to CPU.
 The debug window additionally downloads points, matches and masks for display.
 Input PNG decoding still occurs on CPU, with one pinned upload; CUDA converts
-BGR to RGB and resamples/normalizes/pads directly into the model input.
+BGR to RGB and applies antialiased Keys bicubic interpolation (a=-0.5), with
+half-pixel centers, clamped edges and weight normalization. Horizontal and vertical
+passes use 32×8 blocks and shared-memory strips with unconditional barriers,
+including partial edge blocks. Filter support widens by the downsampling ratio.
+FP32 intermediate values retain negative cubic lobes; final pixels are clamped to
+[0,1] before conversion to the model I/O precision. Each extraction worker retains
+a reusable 3×source-height×resized-width FP32 device workspace. The second pass
+writes directly into the zero-padded model canvas on the same CUDA stream.
+Source dimensions are bounded to 65,536 and model canvases to 4,096 per side;
+allocation failures remain explicit. Native binary hashes invalidate selections
+after a resizer change. This resampler is not claimed bit-identical to an external
+library; edge behavior, identity scaling, strong downscales, partial blocks and
+FP16/FP32 accuracy need validation on the target GPU.
 The GPU sharpness stencil uses a shared tile with halo, unconditional block
 barriers, warp reductions and two global statistics atomics per block. This is
 not a streaming NVDEC integration and not end-to-end zero-copy from video. The supplied config selects mixed FP16; FP32 remains selectable. TF32 stays disabled.

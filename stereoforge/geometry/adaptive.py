@@ -5,15 +5,17 @@ from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
 import gc
+import json
 import logging
 import math
 from pathlib import Path
 from threading import Event, Lock
+from uuid import uuid4
 
 import torch
 from stereoforge.utils.progress import Progress, tracked
 
-from .alignment import align_overlap
+from .alignment import OverlapAlignmentError, align_overlap
 from .config import GeometryConfig
 from .types import FrameGeometry, GeometrySequence
 from .vggt_omega import GeometryOutOfMemoryError, VGGTOmegaGeometryEstimator
@@ -134,7 +136,23 @@ class AdaptiveGeometryEstimator:
         completed = sorted(item for sections, _ in results for item in sections)
         retries = [item for _, attempts in results for item in attempts]
         LOGGER.info("VGGT models unloaded and CUDA caches released; merging reconstruction on CPU")
-        sequence, merges = self._merge(completed, directory, len(paths))
+        try:
+            sequence, merges = self._merge(completed, directory, len(paths))
+        except (ValueError, RuntimeError) as exc:
+            # Move outside staged_output before its cleanup removes the failed run.
+            retained = directory.parent.parent / "failed_reconstructions" / uuid4().hex
+            retained.parent.mkdir(parents=True, exist_ok=True)
+            directory.rename(retained)
+            report = {"error": str(exc), "frame_count": len(paths),
+                      "sections": [asdict(section) for section in completed],
+                      "devices": [asdict(budget) for budget in budgets],
+                      "overlap": self.config.chunk_overlap,
+                      "alignment": exc.diagnostics if isinstance(exc, OverlapAlignmentError) else None}
+            try:
+                (retained / "failure.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            except OSError:
+                LOGGER.exception("Could not write merge diagnostics; section tensors retained in %s", retained)
+            raise ValueError(f"{exc}\nSection tensors and merge diagnostics retained in {retained}") from exc
         return sequence, {"devices": [asdict(d) for d in budgets], "oom_retries": retries,
                           "memory_measurements": sorted(measurements, key=lambda m: (m["start"], m["stop"])),
                           "gpu_memory_fraction": self.config.gpu_memory_fraction,
@@ -248,7 +266,10 @@ class AdaptiveGeometryEstimator:
                 try:
                     transform = align_overlap(frames, local) if frames else None
                 except (ValueError, RuntimeError) as exc:
-                    raise ValueError(f"Cannot merge section [{section.start}, {section.stop}): {exc}") from exc
+                    diagnostics = {"failed_section": asdict(section), "merged_sections": records,
+                                   "overlap": exc.diagnostics if isinstance(exc, OverlapAlignmentError) else None}
+                    raise OverlapAlignmentError(
+                        f"Cannot merge section [{section.start}, {section.stop}): {exc}", diagnostics) from exc
                 records.append({**asdict(section), "transform": transform.as_dict() if transform else None})
                 LOGGER.debug("Merging frames [%d, %d)%s", section.start, section.stop,
                             f", overlap error={transform.relative_error:.4f}" if transform else " (world anchor)")
@@ -261,7 +282,6 @@ class AdaptiveGeometryEstimator:
                     rgb.append(local.processed_rgb[i].clone())
                     names.append(local.source_names[i])
                     sizes.append(local.original_sizes_hw[i])
-                path.unlink()
         if len(frames) != count:
             raise ValueError(f"Incomplete reconstruction: {len(frames)}/{count} frames")
         scale = self.config.meters_per_unit
@@ -271,6 +291,10 @@ class AdaptiveGeometryEstimator:
                 pose = frame.camera_to_world.clone()
                 pose[:3, 3] *= scale
                 frames[index] = replace(frame, depth=frame.depth * scale, camera_to_world=pose)
+        sequence = GeometrySequence(tuple(frames.values()), torch.stack(rgb), tuple(names), tuple(sizes),
+                                    "meters" if scale is not None else "reconstruction_units", scale)
+        # Keep every input until reconstruction and validation have both succeeded.
+        for section in sections:
+            (directory / f"{section.start}_{section.stop}.pt").unlink()
         directory.rmdir()
-        return GeometrySequence(tuple(frames.values()), torch.stack(rgb), tuple(names), tuple(sizes),
-                                "meters" if scale is not None else "reconstruction_units", scale), records
+        return sequence, records

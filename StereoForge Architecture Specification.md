@@ -364,10 +364,21 @@ Future full-rate stereo output must recover poses and suitable depth for interve
 frames; pose interpolation alone does not supply that geometry.
 
 Section results are spooled to CPU/disk. Models are unloaded and CUDA caches
-released before CPU merging. Robust Sim(3) fits shared-frame depth geometry,
+released before CPU merging. The default overlap is 32 selected keyframes;
+section sizes still adapt to each GPU's memory budget. Robust Sim(3) fits shared-frame depth geometry,
 transforms cameras, and rescales depths. Earlier overlap predictions are retained
 once. The first section sets the world/scale anchor. Alignment failure stops the
-reconstruction; sequential drift is still possible. Final arrays and compressed
+reconstruction; sequential drift is still possible. Alignment considers shared-camera
+rotation/depth-scale seeds, per-frame point fits, and deterministic three-point
+RANSAC hypotheses, then refits threshold inliers. Acceptance still requires median
+depth-normalized point error at most 0.08, at least 50% point inliers at that
+threshold, and median camera rotation disagreement at most 10 degrees. These are
+heuristic quality checks, not guarantees of global accuracy or pixel reprojection bounds.
+On merge failure, all section tensor files survive staging cleanup under
+`data/intermediate/failed_reconstructions/<id>/`, with `failure.json` containing
+section boundaries, previous transforms, and available per-frame overlap diagnostics.
+Processed RGB is embedded in the tensors; source image paths can refer to removed
+staging files. There is no automatic resume command yet. Final arrays and compressed
 report export require host RAM proportional to sequence length.
 
 ## ALIKED and depth-initialized refinement

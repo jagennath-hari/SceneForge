@@ -85,6 +85,13 @@ visible GPUs with adaptive memory budgets, then unloads its models before CPU
 merging. ALIKED refinement follows. Set `refinement.enabled: false` in
 `configs/default.yaml` for VGGT only. ALIKED is the only supported refinement feature family.
 
+Section alignment defaults to 32 shared keyframes (`geometry.chunk_overlap`).
+It uses camera/depth seeds and deterministic Sim(3) RANSAC with unchanged quality
+checks. A rejected merge retains all section tensors and `failure.json` under
+`data/intermediate/failed_reconstructions/<id>/` for inspection. These tensors
+include processed RGB and geometry; their original staging image paths may no
+longer exist. Retention does not automatically resume a failed run.
+
 The native selector uses RaCo–ALIKED + LightGlue+ in FP16 TensorRT by default,
 with CUDA fundamental-matrix and homography RANSAC. Feature extraction runs in
 bounded GPU workers; decisions remain in timestamp order against the **last

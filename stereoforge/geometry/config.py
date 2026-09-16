@@ -21,7 +21,7 @@ class GeometryConfig:
     max_frames: int | None = None
     meters_per_unit: float | None = None
     chunk_max_frames: int | None = None
-    chunk_overlap: int = 8
+    chunk_overlap: int = 32
     gpu_memory_fraction: float = 0.90
 
     def __post_init__(self) -> None:

@@ -27,7 +27,10 @@ set_target_properties(stereoforge_keyframes PROPERTIES CUDA_STANDARD 17 CUDA_STA
 find_path(TENSORRT_INCLUDE NvInferRuntime.h PATHS /opt/tensorrt/include REQUIRED)
 find_library(TENSORRT_LIBRARY NAMES nvinfer libnvinfer.so.10 PATHS /opt/tensorrt/lib REQUIRED)
 target_compile_features(stereoforge_keyframes PUBLIC cxx_std_20)
-target_include_directories(stereoforge_keyframes PUBLIC include ${OpenCV_INCLUDE_DIRS} ${TENSORRT_INCLUDE})
+target_include_directories(stereoforge_keyframes PUBLIC include ${OpenCV_INCLUDE_DIRS})
+# TensorRT headers call deprecated APIs internally. Treat vendor headers as
+# system headers while retaining deprecation warnings in our own source.
+target_include_directories(stereoforge_keyframes SYSTEM PUBLIC ${TENSORRT_INCLUDE})
 target_link_libraries(stereoforge_keyframes PUBLIC ${OpenCV_LIBS} ${TENSORRT_LIBRARY} CUDA::cudart PRIVATE Threads::Threads nlohmann_json::nlohmann_json)
 target_compile_options(stereoforge_keyframes PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic>")
 add_executable(stereoforge-select-keyframes src/keyframes_main.cpp src/keyframe_debug_view.cpp)

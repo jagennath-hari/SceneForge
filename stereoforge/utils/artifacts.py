@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 import json
 from pathlib import Path
@@ -15,7 +15,7 @@ def write_json(path: Path, document: Mapping[str, Any]) -> None:
 
 
 @contextmanager
-def staged_output(destination: Path) -> Iterator[Path]:
+def staged_output(destination: Path) -> Generator[Path, None, None]:
     """Publish by same-filesystem rename; failures clean up only our temporary files."""
     if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
         raise ValueError(f"Output must be new or empty: {destination}")

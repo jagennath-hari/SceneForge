@@ -5,14 +5,14 @@ breaks numeric color tokens and the following tracks. Keep text for inspection,
 but pass a separate binary-only directory to the native optimizer.
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 import struct
 
 
 class ColmapBinaryWriter:
     @staticmethod
-    def _records(path: Path) -> Iterator[list[str]]:
+    def _records(path: Path) -> Generator[list[str], None, None]:
         with path.open() as stream:
             for line in stream:
                 if line.strip() and not line.startswith("#"):

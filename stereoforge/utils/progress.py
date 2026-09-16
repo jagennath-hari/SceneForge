@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Generator, Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 import logging
 import sys
 from threading import Event, Thread
 from time import monotonic
-from typing import TypeVar
+from types import TracebackType
+from typing import Self
 
 from tqdm import tqdm
 
 LOGGER = logging.getLogger(__name__)
-T = TypeVar("T")
 _shared_progress: ContextVar[Progress | None] = ContextVar("shared_progress", default=None)
 
 
@@ -38,7 +38,7 @@ class Progress:
         self.stopped = Event()
         self.thread = Thread(target=self._refresh, name="progress-refresh", daemon=True)
 
-    def __enter__(self) -> Progress:
+    def __enter__(self) -> Self:
         if self.parent is not None:
             self.status("working")
             return self
@@ -78,7 +78,8 @@ class Progress:
                 LOGGER.info("%s: %d completed, %.0fs elapsed — %s",
                             self.description, self.completed, monotonic() - self.started, self.detail)
 
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
+    def __exit__(self, exc_type: type[BaseException] | None,
+                 exc_value: BaseException | None, traceback: TracebackType | None) -> None:
         if self.parent is not None:
             self.status("done" if exc_type is None else "stopped")
             return
@@ -92,7 +93,7 @@ class Progress:
 
 
 @contextmanager
-def progress_group(description: str) -> Iterator[Progress]:
+def progress_group(description: str) -> Generator[Progress, None, None]:
     """Reuse one elapsed-time bar for all nested stages and item counters."""
     with Progress(description) as progress:
         token = _shared_progress.set(progress)
@@ -103,10 +104,11 @@ def progress_group(description: str) -> Iterator[Progress]:
 
 
 @contextmanager
-def tracked(items: Iterable[T], description: str, total: int, unit: str = "item") -> Iterator[Iterator[T]]:
+def tracked[T](items: Iterable[T], description: str, total: int,
+               unit: str = "item") -> Generator[Iterator[T], None, None]:
     """Advance after each loop body; close the bar even when that body fails."""
     with Progress(description, total, unit) as progress:
-        def iterate() -> Iterator[T]:
+        def iterate() -> Generator[T, None, None]:
             for item in items:
                 yield item
                 progress.advance()

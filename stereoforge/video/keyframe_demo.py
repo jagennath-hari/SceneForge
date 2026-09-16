@@ -20,7 +20,7 @@ def main() -> int:
     source.add_argument("--input", type=Path, help="Existing decoded candidate directory with manifest.json")
     parser.add_argument("--output", type=Path, help="New diagnostic directory")
     parser.add_argument("--keyframe-config", type=Path,
-                        default=Path(__file__).resolve().parents[2] / "configs/keyframes.json")
+                        default=Path(__file__).resolve().parents[2] / "configs/keyframes_raco.json")
     args = parser.parse_args()
     try:
         executable = shutil.which("stereoforge-select-keyframes")

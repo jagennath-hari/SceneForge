@@ -1,4 +1,5 @@
 #include "stereoforge/video/keyframe_selector.hpp"
+#include "stereoforge/video/learned_features.hpp"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <condition_variable>
@@ -13,12 +14,23 @@
 #include <utility>
 
 namespace stereoforge::video {
+void KeyframeOptions::validate() const {
+    if (this->features < 120 || this->features > 4096 || this->workers == 0 || this->min_features < 8 ||
+        this->min_features > this->features || this->min_inliers < 8 || this->min_inliers > this->features)
+        throw std::invalid_argument("Invalid keyframe feature counts or worker count");
+    for (double value : {this->min_inlier_ratio, this->min_coverage, this->retention, this->motion})
+        if (!std::isfinite(value) || value <= 0 || value >= 1) throw std::invalid_argument("Keyframe ratios must be between zero and one");
+    for (double value : {this->ransac_pixels, this->tracking_timeout})
+        if (!std::isfinite(value) || value <= 0) throw std::invalid_argument("Keyframe thresholds must be positive");
+    for (double value : {this->min_sharpness, this->min_interval})
+        if (!std::isfinite(value) || value < 0) throw std::invalid_argument("Keyframe thresholds must be nonnegative");
+}
 namespace {
 class OrderedFeatures final {
 public:
     OrderedFeatures(const std::filesystem::path& directory, const nlohmann::json& frames, ExtractorFactory factory, unsigned workers) :
         directory_(directory), frames_(frames), factory_(std::move(factory)),
-        capacity_(2 * (workers ? workers : std::clamp(std::thread::hardware_concurrency(), 1u, 8u))) {
+        capacity_(2 * workers) {
         try {
             for (unsigned index = 0; index < this->capacity_ / 2; ++index)
                 this->workers_.emplace_back([this] { this->work(); });
@@ -44,7 +56,7 @@ private:
     }
     void work() {
         try {
-            std::unique_ptr<FeatureExtractor> extractor = this->factory_();
+            std::unique_ptr<RaCoALIKEDExtractor> extractor = this->factory_();
             if (!extractor) throw std::runtime_error("Feature extractor factory returned null");
             while (true) {
                 std::size_t index;
@@ -82,12 +94,14 @@ private:
     bool stopped_{false};
 };
 }
-KeyframeSelector::KeyframeSelector(KeyframeOptions options, ExtractorFactory factory, std::unique_ptr<FeatureMatcher> matcher) :
+KeyframeSelector::KeyframeSelector(KeyframeOptions options, ExtractorFactory factory, std::unique_ptr<LightGlueMatcher> matcher) :
     options_(options), factory_(std::move(factory)), matcher_(std::move(matcher)) {
     this->options_.validate();
-    if (!this->factory_) this->factory_ = [options] { return std::make_unique<OrbFeatureExtractor>(options); };
-    if (!this->matcher_) this->matcher_ = std::make_unique<OrbRansacMatcher>(options);
+    if (!this->factory_ || !this->matcher_)
+        throw std::invalid_argument("RaCo extractor factory and LightGlue matcher are required");
 }
+
+KeyframeSelector::~KeyframeSelector() = default;
 
 bool KeyframeSelector::run(const std::filesystem::path& directory, const std::filesystem::path& output,
                            const ProgressCallback& progress, const DebugCallback& debug) {
@@ -182,7 +196,7 @@ bool KeyframeSelector::run(const std::filesystem::path& directory, const std::fi
     manifest["candidate_frame_count"] = frames.size();
     manifest["frames"] = std::move(selected);
     manifest["keyframe_selection"] = {{"status", interrupted ? "interrupted" : (tracking_break ? "tracking_break" : (success ? "complete" : "insufficient_keyframes"))},
-        {"frontend", this->options_.frontend + " + RANSAC"}, {"decisions", std::move(decisions)}};
+        {"frontend", keyframe_label}, {"decisions", std::move(decisions)}};
     const std::filesystem::path temporary = output.string() + ".tmp";
     std::ofstream report(temporary);
     report.exceptions(std::ios::badbit | std::ios::failbit);

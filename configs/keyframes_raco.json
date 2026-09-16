@@ -1,10 +1,10 @@
 {
-  "frontend": "superpoint_lightglue",
+  "frontend": "raco_aliked_lightglue",
   "precision": "fp16",
   "features": 1024,
   "model_width": 960,
   "model_height": 544,
-  "detector_threshold": 0.005,
+  "detector_threshold": 0.0,
   "match_threshold": 0.1,
   "min_features": 120,
   "min_inliers": 60,

@@ -25,8 +25,8 @@ DeviceBuffer::~DeviceBuffer() {
     cudaSetDevice(this->device_);
     if (this->data_) cudaFree(this->data_);
 }
-DeviceFeatures::DeviceFeatures(int device, std::size_t points_bytes, std::size_t descriptor_bytes) :
-    points(device, points_bytes), descriptors(device, descriptor_bytes) {}
+DeviceFeatures::DeviceFeatures(int device, std::size_t points_bytes, std::size_t descriptor_bytes, std::size_t score_bytes) :
+    points(device, points_bytes), descriptors(device, descriptor_bytes), scores(device, score_bytes) {}
 DeviceFeatures& DeviceFeatures::onDevice(int device, cudaStream_t stream) {
     if (this->points.device() == device) return *this;
     if (!this->mirror_valid_ || !this->mirror_ || this->mirror_->points.device() != device) {
@@ -38,16 +38,25 @@ DeviceFeatures& DeviceFeatures::onDevice(int device, cudaStream_t stream) {
         if (enabled != cudaErrorPeerAccessAlreadyEnabled) check(enabled);
         else cudaGetLastError();
         if (!this->mirror_ || this->mirror_->points.device() != device)
-            this->mirror_ = std::make_shared<DeviceFeatures>(device, this->points.bytes(), this->descriptors.bytes());
+            this->mirror_ = std::make_shared<DeviceFeatures>(device, this->points.bytes(), this->descriptors.bytes(), this->scores.bytes());
         check(cudaMemcpyPeerAsync(this->mirror_->points.data(), device, this->points.data(), this->points.device(), this->points.bytes(), stream));
         check(cudaMemcpyPeerAsync(this->mirror_->descriptors.data(), device, this->descriptors.data(), this->descriptors.device(), this->descriptors.bytes(), stream));
+        check(cudaMemcpyPeerAsync(this->mirror_->scores.data(), device, this->scores.data(), this->scores.device(), this->scores.bytes(), stream));
         check(cudaStreamSynchronize(stream));
         this->mirror_valid_ = true;
     }
     return *this->mirror_;
 }
 void TensorRunner::Logger::log(Severity severity, const char* message) noexcept {
-    if (severity <= Severity::kWARNING) std::cerr << "TensorRT: " << message << '\n';
+    if (severity > Severity::kWARNING) return;
+    const std::lock_guard<std::mutex> lock(this->mutex_);
+    std::cerr << "TensorRT: " << message << '\n';
+}
+TensorRunner::Logger& TensorRunner::logger() const {
+    // TensorRT shares its logger across runtimes. One thread-safe instance must
+    // outlive every worker's runtime, engine and execution context.
+    static Logger shared_logger;
+    return shared_logger;
 }
 TensorRunner::TensorRunner(const std::filesystem::path& path, int device) : device_(device) {
     try {
@@ -57,7 +66,7 @@ TensorRunner::TensorRunner(const std::filesystem::path& path, int device) : devi
         std::ifstream file(path, std::ios::binary);
         if (!file) throw std::runtime_error("Missing TensorRT engine: " + path.string());
         const std::vector<char> bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-        this->runtime_.reset(nvinfer1::createInferRuntime(this->logger_));
+        this->runtime_.reset(nvinfer1::createInferRuntime(this->logger()));
         if (!this->runtime_) throw std::runtime_error("Cannot create TensorRT runtime");
         this->engine_.reset(this->runtime_->deserializeCudaEngine(bytes.data(), bytes.size()));
         if (!this->engine_) throw std::runtime_error("Cannot load engine; regenerate models for this GPU/TensorRT version");
@@ -187,15 +196,6 @@ std::vector<float> TensorRunner::output(const std::string& name) {
         check(cudaMemcpyAsync(result.data(), buffer.bound, this->bytes(name), cudaMemcpyDeviceToHost, this->stream_));
         this->finish();
     }
-    return result;
-}
-std::vector<std::int32_t> TensorRunner::indices(const std::string& name) {
-    check(cudaSetDevice(this->device_));
-    const Buffer& buffer = this->buffers_.at(name);
-    if (buffer.input || buffer.type != nvinfer1::DataType::kINT32) throw std::runtime_error("Expected INT32 output");
-    std::vector<std::int32_t> result(buffer.count);
-    check(cudaMemcpyAsync(result.data(), buffer.bound, this->bytes(name), cudaMemcpyDeviceToHost, this->stream_));
-    this->finish();
     return result;
 }
 }  // namespace stereoforge::video

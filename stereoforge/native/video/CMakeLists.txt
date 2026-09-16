@@ -21,8 +21,8 @@ target_link_libraries(stereoforge-extract-frames PRIVATE stereoforge_video nlohm
 target_compile_options(stereoforge-extract-frames PRIVATE -Wall -Wextra -Wpedantic)
 install(TARGETS stereoforge-extract-frames RUNTIME DESTINATION bin)
 
-find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs features2d calib3d highgui)
-add_library(stereoforge_keyframes src/keyframe_selector.cpp src/orb_features.cpp src/learned_features.cpp src/tensor_runner.cpp src/keyframe_kernels.cu)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs features2d highgui)
+add_library(stereoforge_keyframes src/keyframe_selector.cpp src/learned_features.cpp src/tensor_runner.cpp src/keyframe_kernels.cu src/cuda_ransac.cu)
 set_target_properties(stereoforge_keyframes PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON CUDA_ARCHITECTURES "75;80;86;89;90")
 find_path(TENSORRT_INCLUDE NvInferRuntime.h PATHS /opt/tensorrt/include REQUIRED)
 find_library(TENSORRT_LIBRARY NAMES nvinfer libnvinfer.so.10 PATHS /opt/tensorrt/lib REQUIRED)

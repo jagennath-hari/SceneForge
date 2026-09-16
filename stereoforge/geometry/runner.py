@@ -93,10 +93,10 @@ class GeometryDemoRunner:
             timestamps: tuple[float, ...] | None = None
             video_extraction: dict[str, Any] | None = None
             if request.video is not None:
-                LOGGER.info("Preparing continuous video; %s", "using all candidate frames" if request.all_frames else "selecting ORB/RANSAC keyframes")
+                LOGGER.info("Preparing continuous video; %s", "using all candidate frames" if request.all_frames else "selecting visual keyframes")
                 sampler = VideoFrameSampler(request.start_seconds or 0.0, request.duration, request.frame_count,
                                             max_edge=3 * self.config.geometry.image_resolution, keyframes=not request.all_frames,
-                                            keyframe_config=request.keyframe_config or Path(__file__).resolve().parents[2] / "configs/keyframes.json")
+                                            keyframe_config=request.keyframe_config or Path(__file__).resolve().parents[2] / "configs/keyframes_raco.json")
                 sampled = sampler.sample(request.video, staging / "input_frames")
                 image_paths, timestamps = sampled.paths, sampled.timestamps_seconds
                 LOGGER.info("Selected %d geometry frames from %d decoded candidates", len(image_paths), sampled.candidate_frame_count)

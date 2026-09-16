@@ -24,14 +24,16 @@ from stereoforge.utils.progress import Progress
 UPSTREAM_REVISION = "d12b4ba1632f558234e3f084e1f3d8bdf9147890"
 
 
-class SuperPointExport(nn.Module):
+class RaCoALIKEDExport(nn.Module):
     def __init__(self, features: int) -> None:
         super().__init__()
-        from lightglue_dynamo.models.superpoint import SuperPoint
-        self.extractor = SuperPoint(num_keypoints=features).eval()
+        from lightglue_dynamo.models.aliked import RaCoALIKED
+        # Upstream's portable GridSample path avoids a DeformConv plugin dependency.
+        self.extractor = RaCoALIKED(num_keypoints=features, portable_deform_conv=True).eval()
+        self.extractor.fuse_batch_norm()
 
     def forward(self, image: torch.Tensor) -> tuple[torch.Tensor, ...]:
-        points, scores, descriptors = self.extractor(image)
+        points, scores, descriptors, _ranker_scores = self.extractor(image)
         return points.float(), scores, descriptors
 
 
@@ -50,13 +52,14 @@ class LightGlueExport(nn.Module):
         self.register_buffer("canvas", torch.tensor([width, height], dtype=torch.float32))
         from lightglue_dynamo.models.lightglue import LightGlue
         self.matcher = LightGlue(
-            url="https://github.com/cvg/LightGlue/releases/download/v0.1_arxiv/superpoint_lightglue.pth",
+            input_dim=128,
+            url="https://github.com/cvg/LightGlue/releases/download/v0.1_arxiv/raco_aliked_lightglue.pth",
             depth_confidence=-1, width_confidence=-1, filter_threshold=0.0,
         ).eval()
 
     def forward(self, points0: torch.Tensor, descriptors0: torch.Tensor,
                 points1: torch.Tensor, descriptors1: torch.Tensor) -> tuple[torch.Tensor, ...]:
-        keypoints = 2 * torch.cat((points0, points1), dim=0) / self.canvas - 1
+        keypoints = (torch.cat((points0, points1), dim=0) - self.canvas / 2) / (self.canvas.max() / 2)
         descriptors = torch.cat((descriptors0, descriptors1), dim=0)
         descriptors = self.matcher.input_proj(descriptors)
         encodings = self.matcher.posenc(keypoints)
@@ -116,8 +119,8 @@ class LearnedModelCache:
         if any(type(value) is not int for value in values):
             raise ValueError("Learned model dimensions and feature count must be integers")
         features, width, height = values
-        if not 120 <= features <= 4096 or any(value < 64 or value > 4096 or value % 8 for value in (width, height)):
-            raise ValueError("Use 120–4096 keypoints and model dimensions divisible by eight, between 64 and 4096")
+        if not 120 <= features <= 4096 or any(value < 64 or value > 4096 or value % 32 for value in (width, height)):
+            raise ValueError("Use 120–4096 keypoints and model dimensions divisible by 32, between 64 and 4096")
         precision = settings.get("precision", "fp32")
         if precision not in ("fp32", "fp16"):
             raise ValueError("precision must be fp32 or fp16; INT8 requires a separate calibration workflow")
@@ -126,7 +129,7 @@ class LearnedModelCache:
     def prepare(self) -> Path:
         import tensorrt as trt
         if not torch.cuda.is_available():
-            raise RuntimeError("SuperPoint/LightGlue requires a visible CUDA GPU")
+            raise RuntimeError("RaCo–ALIKED/LightGlue+ requires a visible CUDA GPU")
         # A serialized engine is local to the runtime/hardware it was built for.
         devices = []
         for index in range(torch.cuda.device_count()):
@@ -146,7 +149,7 @@ class LearnedModelCache:
         root = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "stereoforge/keyframes"
         root.mkdir(parents=True, exist_ok=True)
         destination = root / key
-        with (root / f"{key}.lock").open("a") as lock, Progress("Preparing SuperPoint + LightGlue") as progress:
+        with (root / f"{key}.lock").open("a") as lock, Progress("Preparing RaCo–ALIKED + LightGlue+") as progress:
             progress.status("checking model cache")
             fcntl.flock(lock, fcntl.LOCK_EX)
             onnx_directory = self.prepare_onnx(progress)
@@ -156,7 +159,7 @@ class LearnedModelCache:
             try:
                 for index in range(len(devices)):
                     with torch.cuda.device(index):
-                        for name in ("superpoint", "lightglue"):
+                        for name in ("raco_aliked", "lightglue"):
                             budget = BuildMemoryBudget.current_device()
                             progress.status(f"building {name} {self.precision} for cuda:{index}; "
                                             f"workspace {budget.workspace_bytes / (1 << 30):.1f} GiB, "
@@ -177,7 +180,7 @@ class LearnedModelCache:
 
     def _onnx_identity(self) -> dict:
         # Precision, TensorRT, driver and GPU identities deliberately do not affect ONNX.
-        return {"upstream": UPSTREAM_REVISION, "contract": "upstream_modules_dynamo_v5_static_dense_matches",
+        return {"upstream": UPSTREAM_REVISION, "contract": "raco_aliked_dense_portable_dynamo_v1",
                 "exporter": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                 "torch": torch.__version__, "features": self.features,
                 "width": self.width, "height": self.height}
@@ -195,7 +198,7 @@ class LearnedModelCache:
                 manifest = json.loads((destination / "manifest.json").read_text())
                 valid = manifest["identity"] == identity and all(
                     hashlib.sha256((destination / name).read_bytes()).hexdigest() == manifest["sha256"][name]
-                    for name in ("superpoint.onnx", "lightglue.onnx"))
+                    for name in ("raco_aliked.onnx", "lightglue.onnx"))
             except (OSError, ValueError, KeyError, TypeError):
                 valid = False
             if valid:
@@ -206,7 +209,7 @@ class LearnedModelCache:
                 progress.status("downloading missing weights and exporting ONNX models")
                 self._export(temporary)
                 hashes = {name: hashlib.sha256((temporary / name).read_bytes()).hexdigest()
-                          for name in ("superpoint.onnx", "lightglue.onnx")}
+                          for name in ("raco_aliked.onnx", "lightglue.onnx")}
                 (temporary / "manifest.json").write_text(json.dumps({"identity": identity, "sha256": hashes}, indent=2))
                 if destination.exists():
                     shutil.rmtree(destination)
@@ -221,7 +224,7 @@ class LearnedModelCache:
         try:
             manifest = json.loads((directory / "manifest.json").read_text())
             names = {f"{name}_{index}.engine" for index in range(len(identity["devices"]))
-                     for name in ("superpoint", "lightglue")}
+                     for name in ("raco_aliked", "lightglue")}
             return (manifest["identity"] == identity and set(manifest["sha256"]) == names and
                     all(hashlib.sha256((directory / name).read_bytes()).hexdigest() == manifest["sha256"][name]
                         for name in names))
@@ -243,18 +246,18 @@ class LearnedModelCache:
                           "external_data": False,
                           "custom_translation_table": {torch.ops.aten.div.Tensor_mode: translate_integer_div}}
         with torch.inference_mode():
-            torch.onnx.export(SuperPointExport(self.features).eval(),
-                              (torch.zeros(1, 1, self.height, self.width),), directory / "superpoint.onnx",
+            torch.onnx.export(RaCoALIKEDExport(self.features).eval(),
+                              (torch.zeros(1, 3, self.height, self.width),), directory / "raco_aliked.onnx",
                               input_names=["image"], output_names=["keypoints", "scores", "descriptors"],
                               **export_options)
             torch.onnx.export(LightGlueExport(self.width, self.height).eval(),
-                              (torch.zeros(1, self.features, 2), torch.zeros(1, self.features, 256),
-                               torch.zeros(1, self.features, 2), torch.zeros(1, self.features, 256)),
+                              (torch.zeros(1, self.features, 2), torch.zeros(1, self.features, 128),
+                               torch.zeros(1, self.features, 2), torch.zeros(1, self.features, 128)),
                               directory / "lightglue.onnx", input_names=["points0", "descriptors0", "points1", "descriptors1"],
                               output_names=["indices", "confidence"], **export_options)
         # Validate exports before publishing the ONNX cache or building either
         # engine. These checks execute only when the user runs preparation.
-        for name in ("superpoint.onnx", "lightglue.onnx"):
+        for name in ("raco_aliked.onnx", "lightglue.onnx"):
             self._prepare_tensorrt_onnx(directory / name)
 
     @staticmethod
@@ -426,17 +429,17 @@ class LearnedModelCache:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Prepare cached SuperPoint/LightGlue ONNX models and TensorRT engines")
+    parser = argparse.ArgumentParser(description="Prepare cached RaCo–ALIKED/LightGlue+ ONNX models and TensorRT engines")
     parser.add_argument("--config", type=Path,
-                        default=Path(__file__).resolve().parents[2] / "configs/keyframes_superpoint.json")
+                        default=Path(__file__).resolve().parents[2] / "configs/keyframes_raco.json")
     parser.add_argument("--precision", choices=("fp32", "fp16"),
                         help="Override config for this build; use the same precision in the demo config")
     parser.add_argument("--onnx-only", action="store_true", help="Download weights/export ONNX without building GPU engines")
     args = parser.parse_args()
     try:
         settings = json.loads(args.config.read_text(encoding="utf-8"))
-        if settings.get("frontend") != "superpoint_lightglue":
-            raise ValueError("Select a SuperPoint/LightGlue configuration")
+        if settings.get("frontend") != "raco_aliked_lightglue":
+            raise ValueError("Select a RaCo–ALIKED/LightGlue+ configuration")
         if args.precision:
             settings["precision"] = args.precision
         cache = LearnedModelCache.from_settings(settings)

@@ -4,9 +4,11 @@
 
 namespace stereoforge::video {
 // Caller owns buffers and orders upload -> preprocessing -> inference on stream.
-void prepareGrayImage(const unsigned char* pixels, int source_width, int source_height,
+void prepareRgbImage(const unsigned char* pixels, int source_width, int source_height,
     void* tensor, bool half, int width, int height, int canvas_width, int canvas_height,
     float* statistics, cudaStream_t stream);
 void validateDescriptors(const void* descriptors, bool half, std::size_t count,
     float* statistics, cudaStream_t stream);
+void validateKeypoints(const void* points, const void* scores, bool half, int count,
+    int width, int height, float detector_threshold, float* statistics, cudaStream_t stream);
 }  // namespace stereoforge::video

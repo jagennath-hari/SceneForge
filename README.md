@@ -6,7 +6,7 @@ recording** such as drone footage or a walkthrough.
 The implemented pipeline is:
 
 ```text
-Video → ORB/RANSAC keyframes → VGGT-Ω dense geometry → ALIKED/LightGlue tracks
+Video → RaCo–ALIKED/LightGlue+ + CUDA RANSAC keyframes → VGGT-Ω dense geometry → ALIKED/LightGlue tracks
       → VGGT depth-initialized pyCuSFM bundle adjustment → WebGL reports
 ```
 
@@ -85,14 +85,15 @@ visible GPUs with adaptive memory budgets, then unloads its models before CPU
 merging. ALIKED refinement follows. Set `refinement.enabled: false` in
 `configs/default.yaml` for VGGT only. ALIKED is the only supported refinement feature family.
 
-The native selector extracts ORB features in bounded parallel CPU workers, then
-makes decisions in timestamp order against the **last accepted keyframe**. Mutual
-Hamming ratio matching is verified with fundamental-matrix and homography RANSAC.
+The native selector uses RaCo–ALIKED + LightGlue+ in FP16 TensorRT by default,
+with CUDA fundamental-matrix and homography RANSAC. Feature extraction runs in
+bounded GPU workers; decisions remain in timestamp order against the **last
+accepted keyframe**. RaCo–ALIKED/LightGlue+ is the only keyframe frontend.
 Inlier support, spatial coverage, sharpness, overlap retention and image movement
 control selection. A recent reliable frame can bridge a sudden overlap loss;
 unresolved tracking breaks stop geometry rather than silently joining disconnected
 views. RANSAC provides geometric filtering, not a guarantee that every match is correct.
-ORB is only the selection frontend; pyCuSFM continues to use ALIKED.
+The keyframe frontend is separate from pyCuSFM, which continues to use ALIKED.
 
 To inspect keyframe selection alone, rebuild the Docker environment after native
 code changes, then run inside the container with the desktop display forwarded:
@@ -101,22 +102,22 @@ code changes, then run inside the container with the desktop display forwarded:
 python -m stereoforge.video.keyframe_demo --video data/input/barn.mp4
 ```
 
-To compare **SuperPoint + LightGlue + RANSAC**, use:
+To select **RaCo–ALIKED + LightGlue+ + CUDA RANSAC** explicitly, use:
 
 ```bash
 python -m stereoforge.video.keyframe_demo --video data/input/barn.mp4 \
-    --keyframe-config configs/keyframes_superpoint.json
+    --keyframe-config configs/keyframes_raco.json
 ```
 
 After inspecting selection, the same configuration works end to end:
 
 ```bash
 python -m stereoforge.geometry.demo --video data/input/barn.mp4 \
-    --keyframe-config configs/keyframes_superpoint.json
+    --keyframe-config configs/keyframes_raco.json
 ```
 
 Rebuild Docker for the native backend and export dependencies. First use downloads
-the SuperPoint and matching LightGlue weights, exports separate ONNX models, and
+the RaCo, ALIKED and matching LightGlue+ weights, exports separate ONNX models, and
 builds local TensorRT engines. This preparation can take several minutes; progress
 reports the current export/build stage. Engines persist under
 `.cache/stereoforge/keyframes/`, keyed by model settings, adapter, GPU identity,
@@ -155,7 +156,11 @@ copied into Docker. Initialize it with `git submodule update --init --recursive`
 when updating an existing checkout. The adapter uses upstream attention and
 assignment modules, then applies mutual-match filtering directly into fixed-size
 buffers. It avoids the upstream variable-length match list and its NonZero
-allocation. Inputs and outputs have fixed dimensions; adaptive depth is disabled. Export follows upstream's Dynamo/opset-20 settings, including
+allocation. Inputs and outputs have fixed dimensions; adaptive depth is disabled.
+RaCo uses dense keypoint ranking and folded BatchNorm. ALIKED uses upstream's
+portable GridSample decomposition of deformable convolution, avoiding a separate
+TensorRT plugin dependency. This is an FP16-compatible deployment path, not a
+claim of matching upstream's fastest benchmark configuration. Export follows upstream's Dynamo/opset-20 settings, including
 its integer-division translation for TensorRT. A compatibility pass folds constant
 shape expressions and materializes ONNX initializers for reduction axes required
 by TensorRT 10.13. Both ONNX files are checked before
@@ -163,16 +168,16 @@ cache publication or engine building. The export contract version invalidates
 older graphs; no manual cache deletion is required.
 
 
-The learned backend uses one SuperPoint worker per visible GPU when GPU 0 can
+The learned backend uses one RaCo–ALIKED worker per visible GPU when GPU 0 can
 access its peers, cached reference features, and ordered LightGlue matching on
 GPU 0. Without peer access it uses GPU 0 for both stages. It starts with mixed FP16, 1024
 keypoints, and a 960 × 544 model canvas. Images retain their aspect ratio and are
-padded on the bottom/right; padding and weak detections cannot become RANSAC
-matches. `model_width`/`model_height` control that canvas; `feature_edge` and
-`descriptor_ratio` apply only to ORB. `detector_threshold` filters SuperPoint
-detections and `match_threshold` filters LightGlue confidence. Selection thresholds
+padded on the bottom/right; padding and detections below the configured cutoff
+cannot become RANSAC matches. `model_width`/`model_height` control that canvas.
+`detector_threshold` filters RaCo spatial detection probabilities (default zero),
+and `match_threshold` filters LightGlue confidence. Selection thresholds
 in the learned config are initial values, **not yet calibrated or benchmarked**.
-ORB remains the default and pyCuSFM still uses ALIKED.
+RaCo is the only keyframe frontend; pyCuSFM still uses ALIKED.
 
 The TensorRT build uses optimization level 5, VRAM-based memory limits, available
 cuBLAS/cuBLASLt/cuDNN/edge-mask/JIT tactics, existing-weight sparsity, and the full
@@ -191,18 +196,26 @@ unsupported capture falls back to normal enqueue. Reusable frame slots keep GPU
 allocations and addresses stable across candidates. No speedup is claimed before
 profiling on the target machine.
 
-Floating-point SuperPoint outputs bind directly to separate LightGlue reference
+Floating-point RaCo–ALIKED outputs bind directly to separate LightGlue reference
 and candidate inputs on the same GPU. Descriptors never round-trip through host
 memory. For another extraction GPU, a peer copy creates a retained GPU-0 mirror
 once per frame; this is **not** zero-copy across GPUs. TensorRT still performs its
 internal pair assembly/normalization as part of the LightGlue graph.
 
-Cached PNGs are decoded on the CPU and uploaded once through pinned memory. CUDA
-area resizing, normalization, and padding write directly to SuperPoint's input.
+Cached PNGs are decoded as BGR on the CPU and uploaded once through pinned memory.
+CUDA converts them to RGB NCHW, resizes, normalizes and pads directly into the
+RaCo–ALIKED input allocation.
 A shared-memory Laplacian stencil and warp reductions compute sharpness on GPU;
-small keypoint/score/statistic and match arrays return to CPU for RANSAC/debugging.
+RANSAC reads TensorRT keypoints, scores, indices and confidence on the same CUDA
+stream, without a host round trip. It samples 2,000 hypotheses per model family,
+uses normalized DLT (rank-two enforcement for fundamental matrices), rejects
+rank-deficient samples, scores consensus in parallel and refits on winning inliers.
+Coverage and median displacement are computed on-device. Only aggregate statistics
+return to the CPU during production selection; the debug window additionally
+copies keypoints and verified matches for display. The CUDA eight-point solver
+is not numerically identical to OpenCV's CPU estimator and requires validation.
 This removes intermediate tensor transfers, but is **not** a fully device-only
-NVDEC-to-SuperPoint video path: the existing decoded-PNG cache boundary remains.
+NVDEC-to-RaCo video path: the existing decoded-PNG cache boundary remains.
 The area resize and FP16 sharpness path can slightly change threshold decisions.
 
 
@@ -224,7 +237,7 @@ Use `--input PATH_TO_DECODED_FRAMES` instead of `--video` to reuse a directory w
 its native `manifest.json` directly. Use all candidate frames, not an already
 filtered geometry run, when evaluating selection thresholds.
 
-Tune the initial thresholds in `configs/keyframes.json`, or supply another file
+Tune the initial thresholds in `configs/keyframes_raco.json`, or supply another file
 with `--keyframe-config`. These defaults have not been calibrated on Barn. Use
 `--all-frames` to bypass selection for diagnostics. `--frames` limits video
 candidates **before** keyframe selection, so the resulting keyframe count can be
@@ -370,7 +383,7 @@ containers can install it with `uv pip install 'protobuf>=5,<7'` before refineme
 
 - `geometry/`: dense geometry, GPU scheduling, orchestration and existing CLI commands.
 - `refinement/`: ALIKED tracks, depth-seeded native BA, COLMAP exchange and sparse reports.
-- `video/` and `native/video/`: Python process adapter and C++ FFmpeg extraction.
+- `stereoforge/video/` and `stereoforge/native/video/`: Python process adapter and C++ FFmpeg extraction.
 - `utils/`: shared camera conversions, progress, artifacts and visualization.
 
 Future stages belong in the architecture roadmap until implemented. Package

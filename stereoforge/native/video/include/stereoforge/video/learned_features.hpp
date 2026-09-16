@@ -5,6 +5,7 @@
 #include <cuda_runtime_api.h>
 #include <map>
 #include <cstdint>
+#include <mutex>
 
 namespace stereoforge::video {
 class DeviceBuffer final {
@@ -24,11 +25,12 @@ private:
 
 class DeviceFeatures final {
 public:
-    DeviceFeatures(int device, std::size_t points_bytes, std::size_t descriptor_bytes);
+    DeviceFeatures(int device, std::size_t points_bytes, std::size_t descriptor_bytes, std::size_t score_bytes);
     [[nodiscard]] DeviceFeatures& onDevice(int device, cudaStream_t stream);
     void invalidateMirror() { this->mirror_valid_ = false; }
     DeviceBuffer points;
     DeviceBuffer descriptors;
+    DeviceBuffer scores;
 private:
     std::shared_ptr<DeviceFeatures> mirror_;
     bool mirror_valid_{false};
@@ -43,7 +45,6 @@ public:
     TensorRunner(const TensorRunner&) = delete;
     TensorRunner& operator=(const TensorRunner&) = delete;
     [[nodiscard]] std::vector<float> output(const std::string& name);
-    [[nodiscard]] std::vector<std::int32_t> indices(const std::string& name);
     void run();
     void finish();
     void bind(const std::string& name, const DeviceBuffer& memory);
@@ -58,7 +59,10 @@ private:
     class Logger final : public nvinfer1::ILogger {
     public:
         void log(Severity severity, const char* message) noexcept override;
-    } logger_;
+    private:
+        std::mutex mutex_;
+    };
+    [[nodiscard]] Logger& logger() const;
     void release() noexcept;
     int device_;
     cudaStream_t stream_{};
@@ -83,7 +87,8 @@ struct LearnedOptions final {
     int width{960};
     int height{544};
     int features{1024};
-    float detector_threshold{0.005f};
+    float detector_threshold{0.0f};
+    bool debug{false};
     float match_threshold{0.1f};
 };
 
@@ -101,11 +106,11 @@ private:
     std::unique_ptr<DeviceBuffer> pixels_;
 };
 
-class SuperPointExtractor final : public FeatureExtractor {
+class RaCoALIKEDExtractor final {
 public:
-    SuperPointExtractor(LearnedOptions options, int device);
+    RaCoALIKEDExtractor(LearnedOptions options, int device);
     [[nodiscard]] FrameFeatures extract(const std::filesystem::path& path,
-        std::size_t index, double timestamp) override;
+        std::size_t index, double timestamp);
 private:
     LearnedOptions options_;
     TensorRunner runner_;
@@ -114,13 +119,19 @@ private:
     std::vector<std::shared_ptr<DeviceFeatures>> pool_;
 };
 
-class LightGlueMatcher final : public FeatureMatcher {
+class LightGlueMatcher final {
 public:
     LightGlueMatcher(LearnedOptions options, KeyframeOptions selection, int device);
-    [[nodiscard]] MatchQuality match(const FrameFeatures& reference, const FrameFeatures& candidate) override;
+    [[nodiscard]] MatchQuality match(const FrameFeatures& reference, const FrameFeatures& candidate);
 private:
     LearnedOptions options_;
     KeyframeOptions selection_;
     TensorRunner runner_;
+    DeviceBuffer matches_;
+    DeviceBuffer match_count_;
+    DeviceBuffer models_;
+    DeviceBuffer winners_;
+    DeviceBuffer mask_;
+    DeviceBuffer summary_;
 };
 }  // namespace stereoforge::video

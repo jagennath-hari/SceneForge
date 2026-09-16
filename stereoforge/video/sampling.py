@@ -43,7 +43,7 @@ class VideoFrameSampler:
     count: int | None = None
     max_edge: int = 1536
     keyframes: bool = True
-    keyframe_config: Path = Path(__file__).resolve().parents[2] / "configs/keyframes.json"
+    keyframe_config: Path = Path(__file__).resolve().parents[2] / "configs/keyframes_raco.json"
 
     def __post_init__(self) -> None:
         require_finite("start_seconds", self.start_seconds)
@@ -136,7 +136,7 @@ class VideoFrameSampler:
         document = json.loads(output.read_text(encoding="utf-8"))
         status = document.get("keyframe_selection", {}).get("status")
         if status != "complete":
-            raise RuntimeError(f"Keyframe selection: {status}. Inspect {output}; adjust configs/keyframes.json or use --all-frames for diagnostics")
+            raise RuntimeError(f"Keyframe selection: {status}. Inspect {output}; adjust configs/keyframes_raco.json or use --all-frames for diagnostics")
         candidates = json.loads((cache / "manifest.json").read_text(encoding="utf-8"))["frames"]
         if document.get("candidate_frame_count") != len(candidates) or len(document["frames"]) < 3:
             raise ValueError("Keyframe selection has inconsistent frame counts")
@@ -159,9 +159,8 @@ class VideoFrameSampler:
     @staticmethod
     def model_arguments(config: Path) -> list[str]:
         settings = json.loads(config.read_text(encoding="utf-8"))
-        if settings.get("frontend", "orb") != "superpoint_lightglue":
-            return []
-        # ORB remains independent of model export and PyTorch imports.
+        if settings.get("frontend", "raco_aliked_lightglue") != "raco_aliked_lightglue":
+            raise ValueError("Only raco_aliked_lightglue keyframes are supported")
         from stereoforge.video.learned_models import LearnedModelCache
         return ["--models", str(LearnedModelCache.from_settings(settings).prepare())]
 

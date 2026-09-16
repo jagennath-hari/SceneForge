@@ -1,7 +1,6 @@
 #pragma once
 
 #include <opencv2/core.hpp>
-#include <opencv2/features2d.hpp>
 #include <cstddef>
 #include <filesystem>
 #include <functional>
@@ -12,6 +11,10 @@
 namespace stereoforge::video {
 
 class DeviceFeatures;
+class RaCoALIKEDExtractor;
+class LightGlueMatcher;
+inline constexpr char keyframe_frontend[] = "raco_aliked_lightglue";
+inline constexpr char keyframe_label[] = "RaCo + LightGlue+ + CUDA RANSAC";
 
 struct FrameFeatures final {
     std::size_t index{};
@@ -20,7 +23,6 @@ struct FrameFeatures final {
     double sharpness{};
     std::size_t feature_count{};
     std::vector<cv::KeyPoint> points;
-    cv::Mat descriptors;
     std::shared_ptr<DeviceFeatures> device_features;
 };
 
@@ -36,58 +38,22 @@ struct MatchQuality final {
 };
 
 struct KeyframeOptions final {
-    int features{2000};
-    int feature_edge{960};
+    int features{1024};
     int min_features{120};
-    int min_inliers{40};
-    double descriptor_ratio{0.75};
+    int min_inliers{60};
     double ransac_pixels{2.0};
-    double min_inlier_ratio{0.30};
+    double min_inlier_ratio{0.4};
     double min_coverage{0.25};
     double retention{0.65};
     double motion{0.035};
     double min_sharpness{20.0};
     double min_interval{0.20};
     double tracking_timeout{2.0};
-    std::string frontend{"orb"};
-    unsigned workers{0};  // Zero chooses the bounded CPU default.
+    unsigned workers{1};  // One bounded extraction worker per usable GPU.
     void validate() const;
 };
 
-// A learned frontend can implement these interfaces without changing selection.
-class FeatureExtractor {
-public:
-    virtual ~FeatureExtractor() = default;
-    [[nodiscard]] virtual FrameFeatures extract(const std::filesystem::path& path,
-        std::size_t index, double timestamp) = 0;
-};
-class FeatureMatcher {
-public:
-    virtual ~FeatureMatcher() = default;
-    [[nodiscard]] virtual MatchQuality match(const FrameFeatures& reference, const FrameFeatures& candidate) = 0;
-};
-using ExtractorFactory = std::function<std::unique_ptr<FeatureExtractor>()>;
-
-class OrbFeatureExtractor final : public FeatureExtractor {
-public:
-    explicit OrbFeatureExtractor(const KeyframeOptions& options);
-    [[nodiscard]] FrameFeatures extract(const std::filesystem::path& path,
-        std::size_t index, double timestamp) override;
-private:
-    int edge_;
-    cv::Ptr<cv::ORB> orb_;
-};
-[[nodiscard]] MatchQuality verifyMatches(const FrameFeatures& reference, const FrameFeatures& candidate,
-    std::vector<cv::DMatch> matches, const KeyframeOptions& options);
-
-class OrbRansacMatcher final : public FeatureMatcher {
-public:
-    explicit OrbRansacMatcher(KeyframeOptions options);
-    [[nodiscard]] MatchQuality match(const FrameFeatures& reference, const FrameFeatures& candidate) override;
-private:
-    KeyframeOptions options_;
-    cv::BFMatcher matcher_{cv::NORM_HAMMING, false};
-};
+using ExtractorFactory = std::function<std::unique_ptr<RaCoALIKEDExtractor>()>;
 
 class KeyframeSelector final {
 public:
@@ -96,14 +62,15 @@ public:
     using DebugCallback = std::function<bool(const FrameFeatures* reference,
         const FrameFeatures& candidate, const MatchQuality&, const std::string& decision,
         std::size_t selected)>;
-    explicit KeyframeSelector(KeyframeOptions options, ExtractorFactory factory = {},
-                              std::unique_ptr<FeatureMatcher> matcher = {});
+    explicit KeyframeSelector(KeyframeOptions options, ExtractorFactory factory,
+                              std::unique_ptr<LightGlueMatcher> matcher);
+    ~KeyframeSelector();
     // Writes a result even for tracking breaks, so diagnostics survive failure.
     [[nodiscard]] bool run(const std::filesystem::path& directory, const std::filesystem::path& output,
                            const ProgressCallback& progress = {}, const DebugCallback& debug = {});
 private:
     KeyframeOptions options_;
     ExtractorFactory factory_;
-    std::unique_ptr<FeatureMatcher> matcher_;
+    std::unique_ptr<LightGlueMatcher> matcher_;
 };
 }  // namespace stereoforge::video

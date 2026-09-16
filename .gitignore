@@ -13,4 +13,4 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
-/native/**/build/
+/stereoforge/native/**/build/

@@ -23,7 +23,7 @@ __global__ void resizeNormalize(const unsigned char* source, int source_width, i
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= canvas_width || y >= canvas_height) return;
-    float value = 0;
+    float rgb[3]{};
     if (x < width && y < height) {
         const float scale_x = static_cast<float>(source_width) / width;
         const float scale_y = static_cast<float>(source_height) / height;
@@ -33,12 +33,15 @@ __global__ void resizeNormalize(const unsigned char* source, int source_width, i
             const float wy = fminf(bottom, sy + 1.0f) - fmaxf(top, static_cast<float>(sy));
             for (int sx = static_cast<int>(floorf(left)); sx < static_cast<int>(ceilf(right)) && sx < source_width; ++sx) {
                 const float wx = fminf(right, sx + 1.0f) - fmaxf(left, static_cast<float>(sx));
-                value += source[sy * source_width + sx] * wx * wy;
+                const std::size_t offset = (static_cast<std::size_t>(sy) * source_width + sx) * 3;
+                for (int channel = 0; channel < 3; ++channel)
+                    rgb[channel] += source[offset + 2 - channel] * wx * wy;
             }
         }
-        value /= 255.0f * scale_x * scale_y;
+        for (int channel = 0; channel < 3; ++channel) rgb[channel] /= 255.0f * scale_x * scale_y;
     }
-    output[y * canvas_width + x] = writeValue<T>(value);
+    for (int channel = 0; channel < 3; ++channel)
+        output[(channel * canvas_height + y) * canvas_width + x] = writeValue<T>(rgb[channel]);
 }
 __device__ int reflect(int value, int size) {
     if (size <= 1) return 0;
@@ -51,7 +54,7 @@ __device__ int reflect(int value, int size) {
 // participates in both barriers, including partial blocks. Eight warp partials
 // are reduced by the first warp; only two atomics per block reach global memory.
 template <typename T>
-__global__ void sharpness(const T* image, int width, int height, int stride, float* statistics) {
+__global__ void sharpness(const T* image, int width, int height, int stride, int canvas_height, float* statistics) {
     __shared__ float tile[10][34];
     __shared__ float partial_sum[8];
     __shared__ float partial_square[8];
@@ -63,7 +66,9 @@ __global__ void sharpness(const T* image, int width, int height, int stride, flo
         const int tx = index % 34, ty = index / 34;
         const int sx = reflect(origin_x + tx - 1, width);
         const int sy = reflect(origin_y + ty - 1, height);
-        tile[ty][tx] = 255.0f * readValue(image[sy * stride + sx]);
+        const int offset = sy * stride + sx, plane = stride * canvas_height;
+        tile[ty][tx] = 255.0f * (0.299f * readValue(image[offset]) +
+            0.587f * readValue(image[plane + offset]) + 0.114f * readValue(image[2*plane + offset]));
     }
     __syncthreads();
     float sum = 0;
@@ -94,6 +99,24 @@ __global__ void finiteDescriptors(const T* data, std::size_t count, float* stati
     const bool invalid = index < count && !isfinite(readValue(data[index]));
     if (__any_sync(0xffffffffu, invalid) && threadIdx.x % 32 == 0) atomicExch(statistics + 2, 1.0f);
 }
+// One warp aggregates feature validity, rather than one atomic per point.
+template <typename T>
+__global__ void keypointStatistics(const T* points, const T* scores, int count,
+    int width, int height, float threshold, float* statistics) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    bool invalid = false, usable = false;
+    if (i < count) {
+        const float x = readValue(points[2*i]), y = readValue(points[2*i+1]), score = readValue(scores[i]);
+        invalid = !isfinite(x) || !isfinite(y) || !isfinite(score);
+        usable = !invalid && x >= 4 && y >= 4 && x < width-4 && y < height-4 && score >= threshold;
+    }
+    const unsigned valid_mask = __ballot_sync(0xffffffffu, usable);
+    const bool any_invalid = __any_sync(0xffffffffu, invalid);
+    if (threadIdx.x % 32 == 0) {
+        atomicAdd(statistics + 3, static_cast<float>(__popc(valid_mask)));
+        if (any_invalid) atomicExch(statistics + 2, 1.0f);
+    }
+}
 template <typename T>
 void launch(const unsigned char* pixels, int sw, int sh, void* output, int width, int height,
     int cw, int ch, float* statistics, cudaStream_t stream) {
@@ -102,15 +125,15 @@ void launch(const unsigned char* pixels, int sw, int sh, void* output, int width
         pixels, sw, sh, static_cast<T*>(output), width, height, cw, ch);
     check(cudaGetLastError());
     sharpness<<<dim3((width + 31) / 32, (height + 7) / 8), block, 0, stream>>>(
-        static_cast<T*>(output), width, height, cw, statistics);
+        static_cast<T*>(output), width, height, cw, ch, statistics);
     check(cudaGetLastError());
 }
 }
-void prepareGrayImage(const unsigned char* pixels, int sw, int sh, void* tensor, bool half,
+void prepareRgbImage(const unsigned char* pixels, int sw, int sh, void* tensor, bool half,
     int width, int height, int cw, int ch, float* statistics, cudaStream_t stream) {
     if (!pixels || !tensor || !statistics || sw < width || sh < height || width < 1 || height < 1 || cw < width || ch < height)
         throw std::invalid_argument("Invalid preprocessing dimensions or pointers");
-    check(cudaMemsetAsync(statistics, 0, 3 * sizeof(float), stream));
+    check(cudaMemsetAsync(statistics, 0, 4 * sizeof(float), stream));
     if (half) launch<__half>(pixels, sw, sh, tensor, width, height, cw, ch, statistics, stream);
     else launch<float>(pixels, sw, sh, tensor, width, height, cw, ch, statistics, stream);
 }
@@ -118,6 +141,15 @@ void validateDescriptors(const void* data, bool half, std::size_t count, float* 
     const unsigned blocks = static_cast<unsigned>((count + 255) / 256);
     if (half) finiteDescriptors<<<blocks, 256, 0, stream>>>(static_cast<const __half*>(data), count, statistics);
     else finiteDescriptors<<<blocks, 256, 0, stream>>>(static_cast<const float*>(data), count, statistics);
+    check(cudaGetLastError());
+}
+void validateKeypoints(const void* points, const void* scores, bool half, int count,
+    int width, int height, float threshold, float* statistics, cudaStream_t stream) {
+    const unsigned blocks = static_cast<unsigned>((count + 255) / 256);
+    if (half) keypointStatistics<<<blocks,256,0,stream>>>(static_cast<const __half*>(points),
+        static_cast<const __half*>(scores),count,width,height,threshold,statistics);
+    else keypointStatistics<<<blocks,256,0,stream>>>(static_cast<const float*>(points),
+        static_cast<const float*>(scores),count,width,height,threshold,statistics);
     check(cudaGetLastError());
 }
 }  // namespace stereoforge::video

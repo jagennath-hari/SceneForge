@@ -1,6 +1,7 @@
 #include "stereoforge/video/keyframe_debug_view.hpp"
 #include <nlohmann/json.hpp>
 #include <opencv2/highgui.hpp>
+#include <opencv2/features2d.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <fstream>
@@ -9,14 +10,14 @@
 #include <stdexcept>
 
 namespace stereoforge::video {
-KeyframeDebugView::KeyframeDebugView(const std::filesystem::path& directory, const std::string& frontend) : directory_(directory) {
+KeyframeDebugView::KeyframeDebugView(const std::filesystem::path& directory) : directory_(directory) {
     std::ifstream input(this->directory_ / "manifest.json");
     input.exceptions(std::ios::badbit | std::ios::failbit);
     nlohmann::json manifest;
     input >> manifest;
     for (const nlohmann::json& frame : manifest.at("frames"))
         this->files_.push_back(frame.at("file").get<std::string>());
-    this->title_ += " | " + frontend;
+    this->title_ += std::string(" | ") + keyframe_label;
     cv::namedWindow(this->title_, cv::WINDOW_NORMAL);
     cv::resizeWindow(this->title_, 1440, 700);
 }

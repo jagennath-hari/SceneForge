@@ -18,7 +18,7 @@ The application currently performs:
 ```text
 Continuous video or ordered image folder
     → decoded RGB frames and timestamps
-    → native ORB/RANSAC visual keyframe selection (video inputs)
+    → RaCo–ALIKED/LightGlue+ and CUDA RANSAC keyframe selection (video inputs)
     → adaptive multi-GPU VGGT-Ω inference
     → CPU alignment and merging
     → saved dense geometry and source previews
@@ -47,11 +47,11 @@ StereoForge/
 │   ├── Dockerfile.pycusfm
 │   └── constraints.txt
 ├── scripts/build_and_start.sh        # Build environment and enter/attach to it
-├── native/video/
-│   ├── CMakeLists.txt
-│   ├── include/stereoforge/video/    # All .hpp/.cuh headers and RAII declarations
-│   └── src/                         # Only .cpp/.cu translation units
 ├── stereoforge/
+│   ├── native/video/
+│   │   ├── CMakeLists.txt
+│   │   ├── include/stereoforge/video/ # All .hpp/.cuh headers and RAII declarations
+│   │   └── src/                      # Only .cpp/.cu translation units
 │   ├── geometry/
 │   │   ├── types.py                 # GeometrySequence and FrameGeometry
 │   │   ├── config.py                # Validated demo configuration
@@ -228,11 +228,12 @@ adapting overlapping section sizes from memory measurements. The target budget i
 all selected geometry frames. Video inputs intentionally reduce candidates to
 visual keyframes before VGGT; `--all-frames` bypasses this for diagnostics.
 
-Keyframe selection is a separate native pass over the decoded cache. ORB runs in
-bounded parallel CPU workers, with a single timestamp-ordered matcher/decision
-consumer across all decoder sections. Features are compared to the last accepted
-keyframe using mutual nearest-neighbor Hamming ratio matches, then RANSAC with
-fundamental and homography models. The stronger model's support is checked against
+Keyframe selection is a separate native pass over the decoded cache. The default
+RaCo–ALIKED/LightGlue+ frontend runs in TensorRT, with bounded GPU extraction
+workers and CUDA RANSAC. A single timestamp-ordered matcher/decision consumer spans
+all decoder sections. Features are compared to the last accepted keyframe, then
+verified against fundamental and homography models. RaCo–ALIKED/LightGlue+ is
+the only supported keyframe frontend. The stronger model's support is checked against
 minimum inliers, inlier ratio and coverage of a 4 × 4 grid in both views. Homography
 support allows planar/rotation-dominated footage; image movement is not interpreted
 as metric translation or guaranteed parallax. Repeated patterns and moving objects
@@ -245,7 +246,7 @@ A buffered last reliable candidate bridges sudden loss; each subsequent match is
 recomputed against the updated anchor. A sustained inability to connect frames is
 reported as a tracking break and stops geometry. First/last usable views are retained;
 fewer than three connected keyframes is an explicit diagnostic outcome. Thresholds
-are initial tunable values in `configs/keyframes.json`, not validated guarantees.
+are initial tunable values in `configs/keyframes_raco.json`, not validated guarantees.
 
 `python -m stereoforge.video.keyframe_demo --video VIDEO` runs selection alone
 with an OpenCV desktop window. A main-thread observer displays the actual reference,
@@ -257,8 +258,8 @@ diagnostic. The standalone native selector exposes the same window via
 they include partial outcomes and do not require three selected frames to inspect.
 No geometry models are loaded by this diagnostic command.
 
-`FeatureExtractor` and `FeatureMatcher` also support an optional SuperPoint/LightGlue
-frontend selected with `--keyframe-config configs/keyframes_superpoint.json` in
+`RaCoALIKEDExtractor` and `LightGlueMatcher` implement the single keyframe path,
+selected explicitly with `--keyframe-config configs/keyframes_raco.json` in
 either demo. The implementation uses pinned
 [LightGlue-ONNX](https://github.com/fabio-sim/LightGlue-ONNX/tree/d12b4ba1632f558234e3f084e1f3d8bdf9147890)
 models from the `third_party/lightglue-onnx` submodule with two separate static
@@ -275,30 +276,43 @@ expressions and materializes Constant nodes as initializers. It rejects reductio
 axes that remain nonconstant before TensorRT construction. ONNX validation runs
 before cache publication and TensorRT construction. A new
 export contract key prevents reuse of graphs from the legacy exporter.
+The extractor uses upstream dense ranking with BatchNorm folded for inference,
+and ALIKED's portable GridSample deformable-convolution path to avoid plugin
+requirements. The model uses a fixed RGB canvas divisible by 32 and fixed top-K.
+RaCo detection scores are spatial probabilities; the default detection cutoff is zero, while rank selection, border checks and match confidence remain active.
 Python prepares and caches engines;
-C++ performs frame inference using TensorRT 10.13.3.9. ORB remains the default.
+C++ performs frame inference using TensorRT 10.13.3.9.
 
-SuperPoint takes grayscale [0,1] images resized with preserved aspect ratio and
+RaCo–ALIKED takes RGB [0,1] images resized with preserved aspect ratio and
 bottom/right padding to a fixed canvas. It outputs pixel keypoints, scores, and
-256-dimensional descriptors. FP16 engine builds use FP16 floating-point I/O;
+128-dimensional descriptors. FP16 engine builds use FP16 floating-point I/O;
 match indices use INT32. The fixed top-K slots remain aligned, while
 weak detections and padding are excluded from feature counts and accepted matches.
 LightGlue binds separate reference/candidate device buffers directly, then applies
-`2 * xy / [canvas_width, canvas_height] - 1` and pair assembly within the graph,
+`(xy - [canvas_width, canvas_height]/2) / (max(canvas_width, canvas_height)/2)` and pair assembly within the graph,
 matching this upstream implementation.
 The export retains the full fixed-depth network and learned assignment, returning
-fixed-size mutual match indices and confidences. C++ filters confidence and applies
-the same pixel-space RANSAC/coverage/motion checks used by ORB. There is no claim
+fixed-size mutual match indices and confidences. CUDA filters confidence, scores both fundamental-matrix and homography hypotheses,
+and computes inlier ratio, coverage and median pixel displacement. The bounded
+RANSAC budget is 2,000 hypotheses per family. Normalized DLT and rank-two
+fundamental projection use double precision; consensus scoring uses pixel-space
+errors. Rank-deficient samples are rejected and each family's winning model is
+refitted on all its inliers, retaining the original if the refit scores worse.
+The fundamental solver uses eight-point samples; results are not guaranteed
+identical to OpenCV's CPU estimator. Correctness and performance need user validation. There is no claim
 that learned matching eliminates false correspondences or repeated-structure ambiguity.
 
 One bounded extraction worker runs per visible GPU when peer access to GPU 0 is
 available; otherwise both stages use GPU 0. Acceptance remains sequential against
 the last accepted reference. Shared frame ownership retains pooled device buffers,
 which prevents reuse while queued or held as an anchor. Same-device descriptor
-handoff binds the original SuperPoint output allocation; cross-device handoff
-uses a cached peer mirror without host staging. Small metadata returns to CPU
-for RANSAC. Input PNG decoding still occurs on CPU, with one pinned upload;
-CUDA area resampling/normalization/padding writes directly into the model input.
+handoff binds the original RaCo–ALIKED output allocation; cross-device handoff
+uses a cached peer mirror without host staging. Scores are retained alongside
+points and descriptors. CUDA RANSAC consumes the matcher's original device outputs
+on the same stream; only feature/selection aggregate statistics return to CPU.
+The debug window additionally downloads points, matches and masks for display.
+Input PNG decoding still occurs on CPU, with one pinned upload; CUDA converts
+BGR to RGB and resamples/normalizes/pads directly into the model input.
 The GPU sharpness stencil uses a shared tile with halo, unconditional block
 barriers, warp reductions and two global statistics atomics per block. This is
 not a streaming NVDEC integration and not end-to-end zero-copy from video. The supplied config selects mixed FP16; FP32 remains selectable. TF32 stays disabled.
@@ -333,7 +347,7 @@ calibration. This backend does not change pyCuSFM's ALIKED configuration.
 The selector saves acceptance reasons and
 per-candidate metrics, with original displayed-frame indices/timestamps preserved
 through renumbering into a run. Candidate PNGs remain cached; only selected frames
-enter VGGT, reports and pyCuSFM. ORB selection does not replace ALIKED refinement.
+enter VGGT, reports and pyCuSFM. Keyframe selection does not replace ALIKED refinement.
 Future full-rate stereo output must recover poses and suitable depth for intervening
 frames; pose interpolation alone does not supply that geometry.
 

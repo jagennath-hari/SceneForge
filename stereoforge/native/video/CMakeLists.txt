@@ -17,9 +17,11 @@ target_compile_features(stereoforge_video PUBLIC cxx_std_20)
 set_target_properties(stereoforge_video PROPERTIES CXX_EXTENSIONS OFF)
 target_include_directories(stereoforge_video PUBLIC include)
 target_link_libraries(stereoforge_video PRIVATE PkgConfig::FFMPEG nlohmann_json::nlohmann_json Threads::Threads CUDA::cudart CUDA::cuda_driver)
+# NVCC-generated host code uses GNU line markers. Keep pedantic warnings for
+# ordinary C++, but do not apply them to NVCC's generated translation units.
 target_compile_options(stereoforge_video PRIVATE
     "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic>"
-    "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra,-Wpedantic>")
+    "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra>")
 
 add_executable(stereoforge-extract-frames src/main.cpp)
 target_link_libraries(stereoforge-extract-frames PRIVATE stereoforge_video nlohmann_json::nlohmann_json)
@@ -39,7 +41,7 @@ target_include_directories(stereoforge_keyframes SYSTEM PUBLIC ${TENSORRT_INCLUD
 target_link_libraries(stereoforge_keyframes PUBLIC ${OpenCV_LIBS} ${TENSORRT_LIBRARY} CUDA::cudart PRIVATE Threads::Threads nlohmann_json::nlohmann_json)
 target_compile_options(stereoforge_keyframes PRIVATE
     "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic>"
-    "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra,-Wpedantic>")
+    "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra>")
 add_executable(stereoforge-select-keyframes src/keyframes_main.cpp src/keyframe_debug_view.cpp)
 target_link_libraries(stereoforge-select-keyframes PRIVATE stereoforge_keyframes nlohmann_json::nlohmann_json)
 target_compile_options(stereoforge-select-keyframes PRIVATE -Wall -Wextra -Wpedantic)

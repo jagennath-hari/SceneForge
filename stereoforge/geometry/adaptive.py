@@ -15,7 +15,8 @@ from uuid import uuid4
 import torch
 from stereoforge.utils.progress import Progress, tracked
 
-from .alignment import OverlapAlignmentError, align_overlap
+from .alignment import OverlapAlignmentError
+from .boundary_alignment import align_boundary
 from .config import GeometryConfig
 from .types import FrameGeometry, GeometrySequence
 from .vggt_omega import GeometryOutOfMemoryError, VGGTOmegaGeometryEstimator
@@ -135,7 +136,7 @@ class AdaptiveGeometryEstimator:
                 raise
         completed = sorted(item for sections, _ in results for item in sections)
         retries = [item for _, attempts in results for item in attempts]
-        LOGGER.info("VGGT models unloaded and CUDA caches released; merging reconstruction on CPU")
+        LOGGER.info("VGGT models unloaded and CUDA caches released; merging reconstruction with device-aware ICP")
         try:
             sequence, merges = self._merge(completed, directory, len(paths))
         except (ValueError, RuntimeError) as exc:
@@ -264,7 +265,10 @@ class AdaptiveGeometryEstimator:
                 path = directory / f"{section.start}_{section.stop}.pt"
                 local = _load(path)
                 try:
-                    transform = align_overlap(frames, local) if frames else None
+                    transform = align_boundary(
+                        frames, local, dict(enumerate(rgb)),
+                        icp_device="auto" if self.config.device == "cuda" else self.config.device,
+                    ) if frames else None
                 except (ValueError, RuntimeError) as exc:
                     diagnostics = {"failed_section": asdict(section), "merged_sections": records,
                                    "overlap": exc.diagnostics if isinstance(exc, OverlapAlignmentError) else None}

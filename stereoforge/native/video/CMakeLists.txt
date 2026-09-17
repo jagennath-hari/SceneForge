@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.22)
 project(StereoForgeVideo VERSION 1.0 LANGUAGES CXX CUDA)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CUDA_STANDARD 20)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_EXTENSIONS OFF)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil libswscale)
@@ -9,12 +12,14 @@ find_package(CUDAToolkit REQUIRED)
 find_package(Threads REQUIRED)
 
 add_library(stereoforge_video src/video_extractor.cpp src/parallel_extractor.cpp src/cuda_resize.cu)
-set_target_properties(stereoforge_video PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON CUDA_ARCHITECTURES "75;80;86;89;90")
+set_target_properties(stereoforge_video PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON CUDA_ARCHITECTURES "75;80;86;89;90")
 target_compile_features(stereoforge_video PUBLIC cxx_std_20)
 set_target_properties(stereoforge_video PROPERTIES CXX_EXTENSIONS OFF)
 target_include_directories(stereoforge_video PUBLIC include)
 target_link_libraries(stereoforge_video PRIVATE PkgConfig::FFMPEG nlohmann_json::nlohmann_json Threads::Threads CUDA::cudart CUDA::cuda_driver)
-target_compile_options(stereoforge_video PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic>")
+target_compile_options(stereoforge_video PRIVATE
+    "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic>"
+    "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra,-Wpedantic>")
 
 add_executable(stereoforge-extract-frames src/main.cpp)
 target_link_libraries(stereoforge-extract-frames PRIVATE stereoforge_video nlohmann_json::nlohmann_json)
@@ -23,7 +28,7 @@ install(TARGETS stereoforge-extract-frames RUNTIME DESTINATION bin)
 
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs features2d highgui)
 add_library(stereoforge_keyframes src/keyframe_selector.cpp src/learned_features.cpp src/tensor_runner.cpp src/keyframe_kernels.cu src/cuda_ransac.cu)
-set_target_properties(stereoforge_keyframes PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON CUDA_ARCHITECTURES "75;80;86;89;90")
+set_target_properties(stereoforge_keyframes PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON CUDA_ARCHITECTURES "75;80;86;89;90")
 find_path(TENSORRT_INCLUDE NvInferRuntime.h PATHS /opt/tensorrt/include REQUIRED)
 find_library(TENSORRT_LIBRARY NAMES nvinfer libnvinfer.so.10 PATHS /opt/tensorrt/lib REQUIRED)
 target_compile_features(stereoforge_keyframes PUBLIC cxx_std_20)
@@ -32,8 +37,15 @@ target_include_directories(stereoforge_keyframes PUBLIC include ${OpenCV_INCLUDE
 # system headers while retaining deprecation warnings in our own source.
 target_include_directories(stereoforge_keyframes SYSTEM PUBLIC ${TENSORRT_INCLUDE})
 target_link_libraries(stereoforge_keyframes PUBLIC ${OpenCV_LIBS} ${TENSORRT_LIBRARY} CUDA::cudart PRIVATE Threads::Threads nlohmann_json::nlohmann_json)
-target_compile_options(stereoforge_keyframes PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic>")
+target_compile_options(stereoforge_keyframes PRIVATE
+    "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic>"
+    "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra,-Wpedantic>")
 add_executable(stereoforge-select-keyframes src/keyframes_main.cpp src/keyframe_debug_view.cpp)
 target_link_libraries(stereoforge-select-keyframes PRIVATE stereoforge_keyframes nlohmann_json::nlohmann_json)
 target_compile_options(stereoforge-select-keyframes PRIVATE -Wall -Wextra -Wpedantic)
 install(TARGETS stereoforge-select-keyframes RUNTIME DESTINATION bin)
+
+add_executable(stereoforge-match-pairs src/pair_matches_main.cpp)
+target_link_libraries(stereoforge-match-pairs PRIVATE stereoforge_keyframes nlohmann_json::nlohmann_json)
+target_compile_options(stereoforge-match-pairs PRIVATE -Wall -Wextra -Wpedantic)
+install(TARGETS stereoforge-match-pairs RUNTIME DESTINATION bin)

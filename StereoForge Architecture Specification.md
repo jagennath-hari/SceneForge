@@ -13,7 +13,19 @@ StereoSpace inference, and video encoding are outside the implemented scope.
 Their intended behavior is described in the roadmap, not represented by empty
 Python modules or placeholder tests.
 
-The application currently performs:
+The experimental hierarchical sparse path (`stereoforge.reconstruction.demo`)
+now performs:
+
+```text
+Continuous video → visual keyframes → one verified image graph and global tracks
+    → balanced overlapping graph groups → independent small VGGT-Ω inference
+    → local pyCuSFM BA → bottom-up shared-camera/track Sim(3) and merge BA
+    → global track retriangulation → final pyCuSFM BA → colored sparse viewer
+```
+
+This is an implementation awaiting runtime validation on indoor_travel. It does
+not claim to reproduce GTSfM's optimizer or replace the existing dense path yet.
+The existing geometry application performs:
 
 ```text
 Continuous video or ordered image folder
@@ -364,7 +376,7 @@ Future full-rate stereo output must recover poses and suitable depth for interve
 frames; pose interpolation alone does not supply that geometry.
 
 Section results are spooled to CPU/disk. Models are unloaded and CUDA caches
-released before CPU merging. The default overlap is 32 selected keyframes;
+released before merging. The default overlap is 32 selected keyframes;
 section sizes still adapt to each GPU's memory budget. Robust Sim(3) fits shared-frame depth geometry,
 transforms cameras, and rescales depths. Earlier overlap predictions are retained
 once. The first section sets the world/scale anchor. Alignment failure stops the
@@ -374,6 +386,32 @@ RANSAC hypotheses, then refits threshold inliers. Acceptance still requires medi
 depth-normalized point error at most 0.08, at least 50% point inliers at that
 threshold, and median camera rotation disagreement at most 10 degrees. These are
 heuristic quality checks, not guarantees of global accuracy or pixel reprojection bounds.
+Before registration, every shared processed RGB tensor must match exactly. Independent
+camera/depth transforms are compared by rotation, scale ratio, and their action at
+a common 3D anchor (translation differences alone depend on the coordinate origin).
+A majority must agree within 10 degrees, a 1.1 scale ratio, and 0.08 median-depth
+units of anchor displacement. This consensus seeds Open3D tensor point-to-plane ICP
+on shared-frame surfaces at three voxel resolutions. Scale stays fixed, Tukey
+weights suppress outliers, and a weighted Jacobian conditioning check rejects
+underconstrained surface updates. ICP results compete with the original candidates
+under the original pixel and camera validation; ICP fitness alone cannot accept a merge.
+ICP uses one CUDA device when available for downsampling, normals, and registration.
+DLPack shares surface tensors with PyTorch for on-device conditioning reductions;
+only a 6x6 matrix and transform/statistics return to CPU. Geometry preparation and
+final acceptance checks remain on CPU. Automatic device selection warns on CPU
+fallback; explicitly requested CUDA must be available. Runtime CUDA errors propagate.
+
+Adjacent-section registration uses `boundary_alignment.py` to restrict all input
+to identical shared-frame IDs, including RGB identity checks. At least five shared
+frames must have sufficient jointly valid depth. Every third usable shared image
+is held out; the remaining images alone seed Sim(3), consensus, and ICP. Every
+held-out frame must pass the 8% depth-relative median error, 50% inlier support,
+and 10-degree rotation-disagreement gates. On success the transform is applied
+to the entire new section. Geometry outside the overlap is not independently
+validated by this operation. Failed fitting or held-out validation requests boundary
+recovery and retains diagnostics; it never searches for distant matching images.
+Automatic boundary reinference is not implemented. Standalone alignment and
+reprojection experiments and diagnostic multistart ICP have been removed.
 On merge failure, all section tensor files survive staging cleanup under
 `data/intermediate/failed_reconstructions/<id>/`, with `failure.json` containing
 section boundaries, previous transforms, and available per-frame overlap diagnostics.
@@ -502,3 +540,94 @@ source audio where feasible. None of these downstream behaviors is implemented y
 - Add meaningful tests with implemented behavior when authorized; empty test files
   are not verification. The current user workflow reserves builds, tests and
   inference execution for the user.
+
+## Experimental hierarchical sparse reconstruction
+
+The `stereoforge/reconstruction/` package separates reconstruction responsibilities:
+`demo.py` handles the video, authorization-gated checkpoint resolution, request
+identity and resume; `view_graph.py` builds tracks and the separator tree;
+`inference.py` spools independent VGGT groups across visible GPUs; `triangulation.py`
+initializes/rebuilds landmarks; and `pipeline.py` coordinates local and hierarchical
+optimization and publishes the sparse viewer. `registration.py` estimates and
+reconciles sparse Sim(3) candidates; `merge_validation.py` withholds overlap
+observations and evaluates the optimized result. `refinement/bundle_adjustment.py`
+contains the reusable standalone pyCuSFM BA adapter and sparse statistics.
+Superseded two-section BA, camera-recovery and targeted-recovery modules are
+removed. The working dense pipeline and saved-run refinement commands remain available;
+obsolete alignment/reprojection experiment CLIs are removed. Saved outputs are not deleted.
+
+The frontend matches temporal neighbors with the existing RaCo–ALIKED/LightGlue+
+TensorRT implementation and CUDA F/H RANSAC. A verified pair requires at least
+thirty inliers and a 25% inlier fraction. The native matcher exports detector
+indices together with processed-image coordinates, retaining a bounded 32-frame
+feature cache. Repeated feature IDs must have consistent pixel coordinates.
+Confidence-ordered union-find rejects an edge that would introduce two observations
+from one image, preserving the already-consistent components rather than deleting
+them. These globally identified tracks are reused through every optimization stage.
+There is no association between separate pyCuSFM ALIKED and RaCo feature sets here.
+
+A balanced BFS ordering of the verified graph supplies candidate cuts. Boundary
+cameras provide separators shared by both child groups; at least six are required,
+with eight requested by default. Splits must make strict progress. This is a
+separator hierarchy, not METIS nested dissection. The full input graph must be
+connected; disconnected images are reported rather than silently removed. Groups
+are capped at 32 images by default, independently of GPU memory capacity. VGGT
+workers use separate GPUs when available, retain completed tensors on disk, and
+exit before BA starts. One-GPU configurations use the same pipeline with one worker.
+
+Verified tracks with three or more observations are robustly triangulated against
+VGGT cameras. Candidate pairs require at least one degree of ray separation;
+hypotheses are scored by positive-depth reprojection support and refitted from
+inliers. This initial implementation uses triangulation rather than depth-averaged
+landmark seeds. Local BA uses Cauchy loss and the native standalone policy. Every
+parent estimates a provisional alignment from shared sparse landmarks: at least
+six shared cameras and sixty unambiguous landmarks are required. Training and
+held-out Sim(3) landmark inlier fractions must each reach 80% within 5% of scene
+depth. Every shared camera must agree within ten degrees and 5% of scene depth.
+Cross-section pixel errors are recorded before BA but do not alone reject an
+otherwise valid initialization. Reconciliation keeps one camera per image and
+requires at least twenty joined tracks after fourteen-pixel seed filtering.
+
+Before joint BA, one measured overlap observation is withheld from eligible joined
+tracks, leaving at least three training observations per track and ten per affected
+camera. The remaining graph must be connected. At least forty observations total
+and five per shared camera are required. The optimized model must preserve all
+supported cameras, and at least 80% of withheld projections must be within five
+pixels both overall and in every shared camera. Unknown/ambiguous optimized
+landmark identities count as failures. Identity is recovered from surviving
+measured observations, never native landmark numbering. Withheld observations
+were used in child BA and initialization, and selection follows seed filtering;
+this is not an independent evaluation of the whole pipeline. They remain excluded
+from accepted intermediate tracks. Rejected candidates retain diagnostics and
+viewers without a completion marker.
+The same global tracks are retriangulated with the final merged cameras before a
+last BA, allowing observations lost during local filtering to be reconsidered for
+cameras still registered. Unregistered cameras are not silently reintroduced.
+
+GTSfM-equivalent pose/calibration priors, GNC-TLS and final prior release are not
+exposed/verified in this backend. Fixing the first camera does not establish metric
+scale. Temporal candidate selection does not provide distant loop retrieval. Sparse
+optimization never updates the original dense depth tensors. These are explicit
+limitations rather than implicit claims of paper equivalence.
+
+A run retains input identity, selection indices/timestamps, verified graph components,
+global tracks, partition hierarchy, raw VGGT tensors, COLMAP seeds, optimizer logs,
+per-node alignment and validation, final retriangulation and the colored sparse
+viewer. `--resume` requires unchanged input/settings/checkpoint and verifies saved
+track and hierarchy identity. It reuses saved matching, VGGT and leaf BA even when
+merge code changes. Parent/final caches require the current policy, merge-code
+fingerprint and child-result fingerprints. Older BA attempts are preserved under
+`.previous_*` directories before retrying; unvalidated merges cannot be reused.
+A partial output lists every missing camera and returns nonzero. Complete requires
+all selected keyframes, not merely a connected subset. No inference or build was
+performed as part of implementing this path; end-to-end quality remains unverified.
+
+### Native source layout
+
+Custom CUDA kernels and their launch implementations live in `.cu` source files
+under `stereoforge/native/video/src/`. Kernel interfaces use `.cuh` under
+`include/stereoforge/video/`. Host C++ uses `.cpp`/`.hpp` even when calling CUDA
+runtime/driver or TensorRT APIs. The host `CudaResizer` class is declared in
+`cuda_resize.hpp`; its kernels remain in `cuda_resize.cu`. Both language targets
+require C++20. The decoder, keyframe selector
+and pair-matching executable are active components of the supported pipelines.

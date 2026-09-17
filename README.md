@@ -3,7 +3,15 @@
 Geometry-aware stereo video synthesis, starting with **one continuous, uncut
 recording** such as drone footage or a walkthrough.
 
-The implemented pipeline is:
+The new experimental hierarchical sparse pipeline is:
+
+```text
+Video → keyframes → verified RaCo–ALIKED/LightGlue+ image graph and global tracks
+      → small overlapping graph groups → VGGT-Ω → local pyCuSFM BA
+      → hierarchical Sim(3) merging + BA → global retriangulation + BA → colored WebGL report
+```
+
+The existing dense geometry pipeline remains available for comparison:
 
 ```text
 Video → RaCo–ALIKED/LightGlue+ + CUDA RANSAC keyframes → VGGT-Ω dense geometry → ALIKED/LightGlue tracks
@@ -68,6 +76,76 @@ perform a Hugging Face access check.
 
 ## Run the geometry pipeline
 
+For the new hierarchical approach on the continuous indoor walkthrough, first
+exit/stop the running container and rebuild on the host (native pair matching now
+exports stable feature IDs):
+
+```bash
+bash scripts/build_and_start.sh
+```
+
+Then inside Docker:
+
+```bash
+python -m stereoforge.reconstruction.demo --video data/input/indoor_travel.mp4
+```
+
+Defaults are 32 images per VGGT group, eight separator cameras when available,
+and matching against the next four keyframes. `--device cuda` distributes VGGT
+groups across all visible GPUs; `--device cuda:0` uses one. Matching uses the first
+selected GPU to keep feature identity consistent. BA runs after VGGT workers exit.
+Small group size is a geometry-quality limit, not an attempt to fill all VRAM.
+Use `--cluster-size`, `--neighbors`, `--checkpoint`, or `--keyframe-config` only
+when starting a new run. `--debug` prints tracebacks.
+
+Open the printed `hierarchical_*/index.html`. A complete result contains every
+selected keyframe; missing cameras are listed explicitly and produce a partial
+status/nonzero exit code. Disconnected image graphs or rejected merges stop the
+run and retain diagnostics. Resume with the same inputs, settings and checkpoint:
+
+```bash
+python -m stereoforge.reconstruction.demo --resume data/intermediate/hierarchical_TIMESTAMP
+```
+
+Saved match batches, VGGT groups and leaf BA are reused. Resume verifies that
+recomputed global tracks and the partition hierarchy still match the saved ones.
+Older parent merges are recomputed under the current validation policy; accepted
+merges are reusable only with matching child results and merge implementation.
+Replaced BA attempts are preserved under `.previous_*` directories. Reports
+include `selection.json`, `graph.json`, `tracks.jsonl`, `hierarchy.json`, per-node
+triangulation/alignment/BA diagnostics, and `global_retriangulation.json`.
+Every completed BA stage also has its own `index.html` sparse viewer, linked from
+the failure report when a later stage stops.
+
+Merging has two stages: robust Sim(3) and shared-camera checks authorize a
+**provisional** merge, then joint BA must pass withheld-observation validation.
+At least 40 overlap observations, including five per shared camera, are excluded
+from that BA objective. At least 80% must project within five pixels, globally
+and in each shared camera. Missing landmarks count as failures; losing a supported
+camera rejects the merge. These observations were used in child reconstructions
+and initialization, so this is a check of the joint optimization, not an independent
+test of the entire reconstruction. Withheld observations remain excluded from
+accepted merge tracks; final global retriangulation can reconsider them.
+Inspect `nodes/*/validation_before_ba.json`, `validation_after_ba.json` and
+`withheld_observations.json`. Failure retains the candidate viewer but never
+marks that merge complete.
+
+Superseded two-section BA, camera recovery, cross-section, alignment and
+reprojection experiment commands have been removed. Existing data and saved
+experimental outputs are preserved. The dense pipeline and saved-run refinement
+commands remain supported.
+
+This implements the hierarchical workflow with the exposed pyCuSFM optimizer,
+not the paper's exact optimization. It uses temporal RaCo matches instead of
+MegaLoc/SIFT/PoseLib, balanced BFS graph separators instead of METIS nested
+dissection, triangulated sparse seeds instead of depth averaging, and native
+Cauchy BA instead of GTSAM GNC-TLS and staged pose/calibration priors. No explicit
+prior-release option is available for the final BA. Nonlocal loop retrieval is
+not implemented. Output is uncalibrated sparse geometry; dense depth and stereo
+video synthesis are not produced by this command. Runtime validation is pending.
+
+The earlier dense pipeline is invoked separately below.
+
 Inside Docker, with your continuous video under `data/input/`:
 
 ```bash
@@ -81,7 +159,7 @@ python -m stereoforge.geometry.demo --images data/input/frames
 ```
 
 Video inputs now use visual keyframes by default. VGGT distributes overlapping sections across
-visible GPUs with adaptive memory budgets, then unloads its models before CPU
+visible GPUs with adaptive memory budgets, then unloads its models before
 merging. ALIKED refinement follows. Set `refinement.enabled: false` in
 `configs/default.yaml` for VGGT only. ALIKED is the only supported refinement feature family.
 
@@ -91,6 +169,25 @@ checks. A rejected merge retains all section tensors and `failure.json` under
 `data/intermediate/failed_reconstructions/<id>/` for inspection. These tensors
 include processed RGB and geometry; their original staging image paths may no
 longer exist. Retention does not automatically resume a failed run.
+
+The merger verifies exact shared-frame RGB identity and requires a majority
+consensus among camera/depth-derived transforms. It then attempts robust,
+multiscale point-to-plane ICP on overlap surfaces with scale held fixed.
+Original pixel-correspondence and camera checks decide acceptance, not ICP fitness.
+Planar or otherwise underconstrained ICP updates are discarded. Diagnostics record
+per-frame transforms, pairwise agreement, and ICP results on success and failure.
+These thresholds remain heuristic and need validation on representative footage.
+
+ICP uses Open3D's tensor API: voxel downsampling, normals, and registration run
+on CUDA when available. Geometry preparation and final acceptance checks remain
+on CPU. Each overlap uses one GPU; it does not require two GPUs. Automatic device selection warns before falling back to CPU if Open3D CUDA
+is unavailable. Diagnostics record the actual ICP device. No CPU retry hides CUDA runtime errors.
+
+The dense merger registers adjacent sections only through identical shared
+frames. It verifies RGB identity, fits Sim(3) and ICP on training overlap images,
+and validates on held-out overlap images. Rejected boundaries retain section
+tensors under `data/intermediate/failed_reconstructions/` without publishing a merge.
+The obsolete standalone alignment/reprojection experiments have been removed.
 
 The native selector uses RaCo–ALIKED + LightGlue+ in FP16 TensorRT by default,
 with CUDA fundamental-matrix and homography RANSAC. Feature extraction runs in
@@ -404,3 +501,9 @@ Future stages belong in the architecture roadmap until implemented. Package
 initializers describe real packages; empty helper scripts, test files and future
 modules are deliberately absent. Builds, tests and inference remain user-run in
 the current development workflow.
+
+Native file conventions: custom CUDA kernels and their launch implementations use
+`.cu` under `stereoforge/native/video/src/`; kernel interfaces use `.cuh` under
+`include/`. Host C++ code uses `.cpp`/`.hpp`, including CUDA runtime/driver and
+TensorRT callers. `cuda_resize.hpp` is a host class interface; its custom kernels
+are implemented in `cuda_resize.cu`. Both language targets use C++20.

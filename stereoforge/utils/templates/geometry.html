@@ -90,8 +90,9 @@ class ReconstructionViewer {
  update(){
   const f=this.frames[this.index];$('frame').value=this.index;$('number').textContent=`${this.index+1} / ${this.frames.length}`;
   $('scene-label').textContent=`${$('progressive').checked?'Revealing frames':'Full reconstruction'} · ${this.times[this.index].toFixed(2)} s`;
-  for(const kind of ['rgb','depth','confidence'])$(kind).src=f.previews[kind];
+  for(const kind of ['rgb','depth','confidence'])if(f.previews[kind])$(kind).src=f.previews[kind];
   $('stats').textContent=`Frame ${f.frame_index}\nValid depth: ${(f.valid_fraction*100).toFixed(1)}%\nMedian depth: ${f.depth_p50===null?'unavailable':f.depth_p50.toPrecision(4)}\nUnits: ${data.units}\nProcessed: ${f.processed_size_hw[1]} × ${f.processed_size_hw[0]}\n${f.source}`;
+  if(data.sparse_only)$('stats').textContent=`Frame ${f.frame_index}\nSparse BA reconstruction\nScale uncalibrated\nProcessed: ${f.processed_size_hw[1]} × ${f.processed_size_hw[0]}\n${f.source}`;
   const start=this.cameraOffsets[this.index]*7,selected=this.frustumVertices.slice(start,start+16*7);
   for(let i=0;i<selected.length;i+=7){selected[i+3]=1;selected[i+4]=.65;selected[i+5]=.2;}
   this.gl.bindBuffer(this.gl.ARRAY_BUFFER,this.highlight.buffer);this.gl.bufferData(this.gl.ARRAY_BUFFER,new Float32Array(selected),this.gl.DYNAMIC_DRAW);this.highlight.count=16;this.draw();
@@ -118,6 +119,12 @@ class ReconstructionViewer {
 }
 $('summary').textContent=`${data.frames.length} frames · ${data.points.length.toLocaleString()} sampled points · ${data.units==='meters'?'Calibrated meters':'Scale uncalibrated'}`;
 if(data.reconstruction_name)$('reconstruction-name').textContent=data.reconstruction_name;
+if(data.sparse_only){
+ $('depth').closest('figure').hidden=true;$('confidence').closest('figure').hidden=true;
+ document.querySelector('a[href="geometry.npz"]').hidden=true;
+ document.querySelector('a[href="contact_sheet.jpg"]').hidden=true;
+ $('summary').textContent+=` · ${data.frames.length}/${data.input_frames} registered · Dense depth not refined`;
+}
 if(data.refinement_link){$('refinement-link').hidden=false;$('refinement-link').href=data.refinement_link;$('refinement-link').textContent=data.refinement_label;}
 if(data.sparse_refinement){
  document.querySelectorAll('figcaption')[1].textContent='VGGT depth reference · not refined';

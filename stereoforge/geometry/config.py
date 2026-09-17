@@ -27,7 +27,7 @@ class GeometryConfig:
     def __post_init__(self) -> None:
         if not isinstance(self.device, str) or re.fullmatch(r"cpu|cuda(?::\d+)?", self.device) is None:
             raise ValueError("geometry.device must be cpu, cuda or cuda:N")
-        require_integer("geometry.chunk_overlap", self.chunk_overlap, minimum=2)
+        require_integer("geometry.chunk_overlap", self.chunk_overlap, minimum=5)
         if self.chunk_max_frames is not None:
             require_integer("geometry.chunk_max_frames", self.chunk_max_frames)
             if self.chunk_max_frames < self.chunk_overlap + 2:

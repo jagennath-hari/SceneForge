@@ -15,7 +15,7 @@
 !stereoforge/**
 !configs/
 !configs/**
-stereoforge/native/**/build/
+stereoforge/**/build/
 **/.git
 **/.git/**
 **/__pycache__

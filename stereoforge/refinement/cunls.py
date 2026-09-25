@@ -23,6 +23,7 @@ class CuNLSOptions:
     gnc_rounds: int = 64
     lm_iterations: int = 50
     check_jacobians: bool = False
+    use_gnc: bool = True
 
 
 class CuNLSBundleAdjuster:
@@ -70,7 +71,7 @@ class CuNLSBundleAdjuster:
         write_json(directory / 'normalization.json', {'origin': origin.tolist(), 'scale': scale,
                                                       'frame_order': ids, 'units': 'reconstruction_units'})
         command = [executable, str(directory / 'input.json'), str(directory / 'output.json'), str(self.device)]
-        with Progress('cuNLS local bundle adjustment'), (directory / 'solver.log').open('w') as log:
+        with Progress('cuNLS local BA' if self.options.use_gnc else 'cuNLS joint BA'), (directory / 'solver.log').open('w') as log:
             process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             try:
                 code = process.wait()
@@ -87,6 +88,8 @@ class CuNLSBundleAdjuster:
         if code:
             raise RuntimeError(f'cuNLS BA failed (exit {code}); inspect {directory / "solver.log"}')
         result = json.loads((directory / 'output.json').read_text())
+        if not self.options.use_gnc and result.get('report', {}).get('use_gnc') is not False:
+            raise RuntimeError('Native solver lacks joint-BA mode; rebuild Docker before running the pair diagnostic')
         if (result.get('format_version') != 1 or len(result['cameras']) != len(ids)
                 or len(result['points']) != len(model.points)):
             raise ValueError('Native BA changed camera/point identities')
@@ -102,7 +105,8 @@ class CuNLSBundleAdjuster:
             optimized[frame] = SparseCamera(pose, k, model.cameras[frame].size_hw)
         raw_points = []
         retained = []
-        for point, xyz in zip(model.points, result['points'], strict=True):
+        retained_indices = []
+        for index, (point, xyz) in enumerate(zip(model.points, result['points'], strict=True)):
             position = np.asarray(xyz, dtype=float)*scale + origin
             if position.shape != (3,) or not np.isfinite(position).all():
                 raise ValueError('Invalid native landmark')
@@ -111,6 +115,7 @@ class CuNLSBundleAdjuster:
                      if reprojection_error(optimized[f], position, uv) <= self.options.threshold_pixels}
             if len(valid) >= 3:
                 retained.append(SparsePoint(position, point.rgb, valid))
+                retained_indices.append(index)
         # Preserve raw results separately; filtering must not hide solver failures.
         SparseModel(optimized, tuple(raw_points)).write(directory / 'raw', ids)
         supported = {f for p in retained for f in p.observations}
@@ -130,13 +135,14 @@ class CuNLSBundleAdjuster:
                 pending.extend(adjacency[f] - reached)
         connected = bool(supported) and reached == supported
         adequate_support = all(support.get(f, 0) >= 6 for f in ids)
+        complete = result['report'].get('optimization_complete', result['report']['gnc_converged'])
         report = {**result['report'], 'input_frames': len(ids), 'registered_frames': len(supported),
                   'missing_frames': sorted(set(ids)-supported), 'landmarks_before': len(model.points),
                   'landmarks_after': len(retained), 'connected': connected, 'camera_support': support,
-                  'options': asdict(self.options),
+                  'options': asdict(self.options), 'retained_point_indices': retained_indices,
                   'validation_scope': 'Optimization residuals, not independent accuracy or held-out validation',
                   'normalization_scale': scale, 'frame_order': ids,
-                  'status': 'diagnostic_complete' if adequate_support and connected and result['report']['gnc_converged']
+                  'status': 'diagnostic_complete' if adequate_support and connected and complete
                             else 'diagnostic_partial'}
         write_json(directory / 'report.json', report)
         return filtered, report

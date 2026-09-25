@@ -46,11 +46,12 @@ class ClusterDiagnostic:
             self.images[frame.frame_index] = path
             colors[frame.frame_index] = rgb
         points = []
+        track_ids = []
         candidate_count = 0
         # Tracks are measured image correspondences; initialize positions from
         # VGGT depth, then retain at least three positive-depth observations.
         with (self.run / 'global_tracks.jsonl').open() as stream:
-            for line in stream:
+            for track_id, line in enumerate(stream):
                 track = {int(f): np.asarray(uv, dtype=float) for f, uv in json.loads(line).items() if int(f) in frames}
                 if len(track) < 3:
                     continue
@@ -79,6 +80,8 @@ class ClusterDiagnostic:
                 h, w = colors[f].shape[:2]
                 x, y = np.clip(np.rint(uv).astype(int), [0, 0], [w-1, h-1])
                 points.append(SparsePoint(xyz, colors[f][y, x].copy(), valid))
+                track_ids.append(track_id)
+        write_json(self.output / 'track_ids.json', {'point_track_ids': track_ids})
         supported = {f for p in points for f in p.observations}
         write_json(self.output / 'initialization.json', {
             'section': str(self.section), 'candidate_tracks': candidate_count, 'landmarks': len(points),
@@ -110,7 +113,7 @@ class ClusterDiagnostic:
         GeometryReportWriter._write_ply(destination / 'point_cloud.ply', xyz, rgb)
         GeometryReportWriter._write_viewer(destination, metadata, xyz, rgb, appeared)
 
-    def execute(self) -> dict:
+    def solve(self) -> tuple[SparseModel, dict]:
         self.optimizer.preflight()
         model = self.initialize()
         model.write(self.output / 'initialized_sparse', sorted(model.cameras))
@@ -126,6 +129,10 @@ class ClusterDiagnostic:
                 + '<a href="ba/solver.log">Solver log</a> · <a href="report.json">Full diagnostics</a></p>'
                 + '<pre>' + html.escape(json.dumps(report, indent=2)) + '</pre>')
         (self.output / 'index.html').write_text(page)
+        return refined, report
+
+    def execute(self) -> dict:
+        _, report = self.solve()
         return report
 
 

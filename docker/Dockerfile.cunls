@@ -32,8 +32,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     rm -rf /opt/third_party/cuNLS/python/build
 
 # StereoForge factors and native solver; upstream cuNLS remains unchanged.
-COPY stereoforge/native/optimization/ /opt/stereoforge-native/optimization/
-RUN cmake -S /opt/stereoforge-native/optimization -B /tmp/stereoforge-optimization -G Ninja \
+COPY stereoforge/optimization/ /opt/stereoforge/optimization/
+RUN cmake -S /opt/stereoforge/optimization -B /tmp/stereoforge-optimization -G Ninja \
         -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local && \
     cmake --build /tmp/stereoforge-optimization --parallel "${BUILD_JOBS}" && \
     cmake --install /tmp/stereoforge-optimization && \

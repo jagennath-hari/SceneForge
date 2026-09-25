@@ -40,12 +40,12 @@ ENV PYTHONPATH=/opt/third_party/lightglue-onnx
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install 'onnx>=1.17,<2' 'onnxscript>=0.3,<1'
 
-COPY stereoforge/native/video/ /opt/stereoforge-native/video/
-RUN cmake -S /opt/stereoforge-native/video -B /opt/stereoforge-native/build -G Ninja \
+COPY stereoforge/video/ /opt/stereoforge/video/
+RUN cmake -S /opt/stereoforge/video -B /opt/stereoforge/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local && \
-    cmake --build /opt/stereoforge-native/build --parallel 4 && \
-    cmake --install /opt/stereoforge-native/build && \
-    rm -rf /opt/stereoforge-native/build
+    cmake --build /opt/stereoforge/build --parallel 4 && \
+    cmake --install /opt/stereoforge/build && \
+    rm -rf /opt/stereoforge/build
 
 COPY third_party/vggt-omega/requirements.txt /opt/requirements/vggt-omega.txt
 RUN --mount=type=cache,target=/root/.cache/uv \

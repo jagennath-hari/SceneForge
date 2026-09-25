@@ -147,7 +147,8 @@ nlohmann::json BundleAdjuster::Solve(const nlohmann::json& input) const {
     const float focal_sigma = PositiveOption(options, "focal_sigma_pixels", 10);
     const float rotation_sigma = PositiveOption(options, "rotation_sigma_radians", 0.1f);
     const float translation_sigma = PositiveOption(options, "translation_sigma", 0.1f);
-    const int rounds = options.value("gnc_rounds", 64);
+    const bool use_gnc = options.value("use_gnc", true);
+    const int rounds = use_gnc ? options.value("gnc_rounds", 64) : 1;
     const int iterations = options.value("lm_iterations", 50);
     if (rounds < 1 || rounds > 128 || iterations < 1 || iterations > 500) {
         throw std::invalid_argument("Invalid GNC/LM iteration limits");
@@ -250,7 +251,8 @@ nlohmann::json BundleAdjuster::Solve(const nlohmann::json& input) const {
     const float maximum = *std::max_element(errors.begin(), errors.end());
     float mu = std::max(1e-6f, c2 / std::max(c2, 2*maximum-c2));
     Json report = {{"before", ErrorStatistics(errors, c2)}, {"rounds", Json::array()},
-                   {"gnc_converged", false}, {"solver", "cuNLS LM/cuDSS"}};
+                   {"gnc_converged", false}, {"optimization_complete", false},
+                   {"use_gnc", use_gnc}, {"solver", "cuNLS LM/cuDSS"}};
     if (options.value("check_jacobians", false)) {
         float maximum_error = 0;
         const std::size_t samples = std::min<std::size_t>(8, observations.size());
@@ -266,7 +268,9 @@ nlohmann::json BundleAdjuster::Solve(const nlohmann::json& input) const {
     }
     double previous_tls = report["before"]["tls_cost"].get<double>();
     for (int round = 0; round < rounds; ++round) {
-        UpdateTlsWeights(device_errors.data(), device_weights.data(), observations.size(), c2, mu, stream.GetStream());
+        if (use_gnc) {
+            UpdateTlsWeights(device_errors.data(), device_weights.data(), observations.size(), c2, mu, stream.GetStream());
+        }
         THROW_ON_CUDA_ERROR(cudaStreamSynchronize(stream.GetStream()));
         device_weights.CopyToHost(weights.data(), weights.size());
         std::vector<std::size_t> active_views(positions.size(), 0);
@@ -306,10 +310,17 @@ nlohmann::json BundleAdjuster::Solve(const nlohmann::json& input) const {
         report["rounds"].push_back({{"mu", mu}, {"lm_iterations", summary.num_iterations},
             {"weighted_cost_before", summary.initial_cost}, {"weighted_cost_after", summary.final_cost},
             {"soft_weights", soft}, {"frozen_landmarks", frozen.size()}, {"errors", stats}});
+        if (!use_gnc) {
+            // The joint solve uses locally filtered observations with unit weights.
+            // A budget-limited LM solve is retained, but not called complete.
+            report["optimization_complete"] = summary.num_iterations < static_cast<std::size_t>(iterations);
+            report["lm_budget_exhausted"] = summary.num_iterations >= static_cast<std::size_t>(iterations);
+            break;
+        }
         std::cerr << "GNC " << round+1 << "/" << rounds << ": " << stats["within_threshold"]
                   << "/" << observations.size() << " observations within " << threshold << " px\n";
         if (mu >= 1 && soft == 0 && std::abs(tls-previous_tls) <= 1e-5*std::max(1.0, previous_tls)) {
-            report["gnc_converged"] = true; break;
+            report["gnc_converged"] = true; report["optimization_complete"] = true; break;
         }
         previous_tls = tls;
         mu = std::min(mu*1.6f, 1e6f);

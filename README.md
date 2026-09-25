@@ -1,12 +1,56 @@
 # StereoForge
 
-## Custom cuNLS backend: one-cluster diagnostic
+## Custom cuNLS backend: two-cluster diagnostic
+
+Rebuild the container after these native source changes:
+
+```bash
+bash scripts/build_and_start.sh
+```
+
+Then run inside Docker:
+
+```bash
+python -m stereoforge.reconstruction.cunls_pair_demo \
+  --run data/intermediate/incremental_20260925_051358_654232 \
+  --device 0 --check-jacobians
+```
+
+This tests keyframes **[0, 32)** and **[24, 56)**: 56 unique cameras with eight
+shared cameras. These are selected-keyframe indices, not original video frames.
+The saved first VGGT cluster is reused if its indices match; the second is inferred
+from the cached keyframes using the saved authorized checkpoint. Decoding and
+feature matching are not repeated. Both local BA solves use custom CUDA factors
+and cuNLS GNC-TLS; the joint cuNLS solve uses unit weights on reconciled tracks.
+
+`--start`, `--cluster-size`, and `--overlap` choose a different bounded pair.
+Alternatively, supply both `--reference PATH.pt --local PATH.pt` to use existing
+VGGT clusters from this run without inference. Every invocation writes a new
+`RUN/cunls_pair_TIMESTAMP/`; it never overwrites earlier results.
+
+Open that directory's `index.html` for the local before/after viewers, combined
+before/after viewers and solver logs. `alignment.json` explains Sim(3) checks;
+`reconciliation.json` records merged/retriangulated tracks; `validation.json`
+reports observations withheld from **joint BA only** (they were used earlier).
+Rejected candidates remain inspectable and the command returns a nonzero status.
+Complete status requires both local solves, valid shared-camera/landmark alignment,
+all 56 cameras, connected support and passing held-out pixel checks after joint BA.
+No acceptance thresholds have been loosened for this experiment.
+
+The small seven-parameter Sim(3) fit remains in the existing NumPy/SciPy code.
+Local and joint BA run in C++/CUDA on the selected GPU, sequentially, so a single
+GPU is supported. Joint BA still uses initialization pose/focal priors and a fixed
+first camera; this is not an unanchored global solve or a full Barn reconstruction.
+This new pair workflow has not been compiled or run by the coding agent.
+
+## Single-cluster diagnostic
 
 The first custom backend is now implemented in C++/CUDA under
-`stereoforge/native/optimization`. Python prepares input and publishes reports;
+`stereoforge/optimization`. Python prepares input and publishes reports;
 `stereoforge-bundle-adjust` performs the optimization. It links to unchanged cuNLS,
 not GTSfM or pyCuSFM. This is a **bounded cluster diagnostic**, not the full replacement
-for the old reconstruction command. Native code has not yet been built or runtime-validated.
+for the old reconstruction command. The user has successfully run the single-cluster
+diagnostic, including its pixel Jacobian check.
 
 Exit the existing container and rebuild with `bash scripts/build_and_start.sh`.
 Inside the new container, reuse the Barn inputs and VGGT seed:
@@ -36,14 +80,16 @@ finite differences on up to eight input observations before solving. It is a
 runtime diagnostic you run, not a claim that the backend has passed validation.
 The report also checks post-filter camera support and connectivity. Reprojection
 statistics are fitting diagnostics, not independent reconstruction accuracy.
-Hierarchy construction, Sim(3) merging, and final unanchored global refinement are
-still future work; the old end-to-end path has not been redirected to this backend.
+The pair command above adds bounded Sim(3) merging and joint refinement. Full hierarchy
+orchestration and unanchored global refinement remain pending; the old end-to-end
+path has not been redirected to this backend.
 
 
 Geometry-aware stereo video synthesis, starting with **one continuous, uncut
 recording** such as drone footage or a walkthrough.
 
-The default reconstruction pipeline grows one sparse map:
+**Legacy pyCuSFM workflow (not migrated to the cuNLS image):** the earlier
+reconstruction pipeline grows one sparse map:
 
 ```text
 Video → keyframes → verified RaCo–ALIKED/LightGlue+ tracks
@@ -52,7 +98,7 @@ Video → keyframes → verified RaCo–ALIKED/LightGlue+ tracks
       → full-sequence colored sparse viewer
 ```
 
-Start a new end-to-end run inside Docker:
+For the older pyCuSFM environment, the legacy end-to-end command was:
 
 ```bash
 python -m stereoforge.reconstruction.demo --video data/input/barn.mp4
@@ -529,7 +575,7 @@ containers can install it with `uv pip install 'protobuf>=5,<7'` before refineme
 
 - `geometry/`: dense geometry, GPU scheduling, orchestration and existing CLI commands.
 - `refinement/`: ALIKED tracks, depth-seeded native BA, COLMAP exchange and sparse reports.
-- `stereoforge/video/` and `stereoforge/native/video/`: Python process adapter and C++ FFmpeg extraction.
+- `stereoforge/video/`: Python process adapter and C++ FFmpeg extraction.
 - `utils/`: shared camera conversions, progress, artifacts and visualization.
 
 Future stages belong in the architecture roadmap until implemented. Package
@@ -538,7 +584,7 @@ modules are deliberately absent. Builds, tests and inference remain user-run in
 the current development workflow.
 
 Native file conventions: custom CUDA kernels and their launch implementations use
-`.cu` under `stereoforge/native/video/src/`; kernel interfaces use `.cuh` under
+`.cu` under `stereoforge/video/src/`; kernel interfaces use `.cuh` under
 `include/`. Host C++ code uses `.cpp`/`.hpp`, including CUDA runtime/driver and
 TensorRT callers. `cuda_resize.hpp` is a host class interface; its custom kernels
 are implemented in `cuda_resize.cu`. Both language targets use C++20.

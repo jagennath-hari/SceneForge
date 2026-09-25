@@ -64,7 +64,14 @@ StereoForge/
 │   └── constraints.txt
 ├── scripts/build_and_start.sh        # Build environment and enter/attach to it
 ├── stereoforge/
-│   ├── native/video/
+│   ├── optimization/               # Custom cuNLS C++/CUDA backend
+│   │   ├── CMakeLists.txt
+│   │   ├── include/stereoforge/optimization/
+│   │   └── src/
+│   ├── video/                       # Python adapters plus C++/CUDA video backend
+│   │   ├── sampling.py
+│   │   ├── learned_models.py
+│   │   ├── keyframe_demo.py
 │   │   ├── CMakeLists.txt
 │   │   ├── include/stereoforge/video/ # All .hpp/.cuh headers and RAII declarations
 │   │   └── src/                      # Only .cpp/.cu translation units
@@ -87,7 +94,6 @@ StereoForge/
 │   │   ├── colmap_binary.py         # Binary seed serialization and native BA command
 │   │   ├── colmap_validation.py     # Output identity and geometric validation
 │   │   └── report.py                # Sparse import, alignment, viewer, failure report
-│   ├── video/sampling.py            # Python adapter for native frame extraction
 │   └── utils/
 │       ├── artifacts.py            # Staged publication and JSON artifacts
 │       ├── camera.py               # Pose/quaternion convention conversions
@@ -668,7 +674,7 @@ performed as part of implementing this path; end-to-end quality remains unverifi
 ### Native source layout
 
 Custom CUDA kernels and their launch implementations live in `.cu` source files
-under `stereoforge/native/video/src/`. Kernel interfaces use `.cuh` under
+under `stereoforge/video/src/`. Kernel interfaces use `.cuh` under
 `include/stereoforge/video/`. Host C++ uses `.cpp`/`.hpp` even when calling CUDA
 runtime/driver or TensorRT APIs. The host `CudaResizer` class is declared in
 `cuda_resize.hpp`; its kernels remain in `cuda_resize.cu`. Both language targets
@@ -770,14 +776,16 @@ stereo video. The backend fixes only its first camera; metric scale and global d
 correction are not guaranteed. No new long-range loop matching is implemented.
 
 
-## Custom cuNLS local optimization (implemented, runtime validation pending)
+## Custom cuNLS optimization: local and two-cluster diagnostics
 
-The first migration stage is a standalone saved-cluster diagnostic. It does not
-replace hierarchical orchestration or redirect old pyCuSFM entry points.
+The saved-cluster diagnostic has been run successfully by the user, including
+its pixel Jacobian check. The next implemented stage joins two overlapping
+clusters; its runtime validation is pending. Neither command redirects the old
+pyCuSFM end-to-end entry points.
 
-- `native/optimization/include/stereoforge/optimization/`: host API `.hpp` and
+- `optimization/include/stereoforge/optimization/`: host API `.hpp` and
   custom CUDA factor interface `.cuh`.
-- `native/optimization/src/`: ordinary C++ graph/IO code and `.cu` factor kernels.
+- `optimization/src/`: ordinary C++ graph/IO code and `.cu` factor kernels.
 - `refinement/cunls.py`: typed options, normalization, native process lifecycle,
   output identity checks, filtering and diagnostics; no pyCuSFM dependency.
 - `reconstruction/cunls_demo.py`: verified saved RGB/track coordinate grids,
@@ -824,3 +832,47 @@ positive depth, at most three pixels reprojection error, and three views per poi
 Complete diagnostic status also requires six observations per camera, connected
 support, all original cameras, and the GNC convergence criterion. No fitting
 statistic is presented as held-out validation or ground-truth accuracy.
+
+
+### Two-cluster cuNLS experiment
+
+`python -m stereoforge.reconstruction.cunls_pair_demo --run RUN --device 0`
+uses keyframe ranges [0,32) and [24,56) by default. The first saved VGGT seed is
+reused when its indices match; missing clusters are inferred from the run's
+validated input manifest and saved authorized checkpoint. Explicit `--reference`
+and `--local` accept saved clusters from the same run instead. Inference workers
+exit before BA starts. No decoding, feature extraction or matching is repeated.
+
+Each cluster independently verifies its processed RGB against the feature grid,
+initializes globally identified measured tracks from VGGT depth, and runs local
+GNC-TLS cuNLS BA. Global JSONL track identities survive the native array interface
+and filtering through `track_ids.json` and `retained_point_indices`. Shared-pixel
+associations are checked against these identities before alignment.
+
+The existing CPU registration implementation performs landmark RANSAC and a
+seven-parameter camera-aware Sim(3) fit, with training/held-out landmark and camera
+checks. Its depth-observability, coverage and acceptance gates remain unchanged.
+A rejected alignment stops the experiment with a detailed `alignment.json`;
+there is no forced merge, threshold relaxation or unrelated-frame search.
+
+Reconciliation keeps one camera per global frame, joins unambiguous tracks and
+retriangulates weak landmarks from measured rays. Joint BA withholds overlap
+observations, then solves with custom cuNLS factors and unit observation weights
+(`use_gnc=false`). This reuses the native C++/CUDA solver; no new upstream cuNLS
+code is needed. The first camera stays fixed and soft pose/focal priors are taken
+from the reconciled map. This is a bounded prior-regularized experiment, not the
+future unanchored global optimization or an exact reproduction of GTSfM.
+
+Success requires both local diagnostics to complete, accepted alignment, all
+union cameras retained with connected support and six observations per camera,
+and at least 80% of the withheld observations within five pixels overall and
+in each shared camera. Missing optimized landmarks count as validation failures.
+Held-out pixels were excluded from joint BA only: they participated in child BA
+and initialization, so this does not establish independent scene accuracy.
+Budget-limited joint LM is marked partial, even with a successful process exit.
+
+Every invocation creates `RUN/cunls_pair_TIMESTAMP/` with local and combined
+viewers, raw/filtered COLMAP models, solver logs, correspondence identities,
+reconciliation details and validation results. Failure retains every artifact and
+publishes the failing stage in the root report. The experiment covers only the
+union of these two clusters (56 cameras by default), and never refines dense depth.

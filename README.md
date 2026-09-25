@@ -32,6 +32,23 @@ within four pixels of their predicted position. A rejected extension cannot dele
 its established track. Joint BA then refines the map, subject to current and older
 overlap validation; its normal outlier filtering still applies.
 
+When shared depth support is insufficient for Sim(3), the native builder attempts
+PnP/RANSAC against existing global map landmarks. This fallback is not triggered
+by a fitted transform failing its geometry checks. New cameras are registered in
+frame order, retaining established landmark positions until joint BA. Measured
+tracks supply the correspondences; there is no new descriptor-matching pass.
+
+Recovery uses C++ OpenCV PnP and Eigen triangulation on CPU, followed by CUDA/cuNLS
+joint BA. Each new camera needs at least 30 training and 10 held-out correspondences,
+image coverage, 20 training inliers and at least 80% held-out agreement within five
+pixels. Held-out pixels stay excluded from BA and are rechecked at later merges.
+New landmarks require three registered views, positive depth, at most four-pixel
+reprojection error and at least one degree of ray separation. Existing tracks are
+not replaced by incoming VGGT depths. Recovery commits only after all incoming
+cameras and the existing overlap checks pass; otherwise the accepted map survives.
+This is a fallback for insufficient alignment support after local BA succeeds,
+not a recovery for failed VGGT/local BA or complete feature-tracking loss.
+
 `--device cuda` uses visible GPUs for VGGT windows and the first visible GPU for
 BA. `--device cuda:0` selects one GPU. Single-GPU systems use the same pipeline.
 VGGT workers exit before BA begins. `--lm-iterations 300` is the default joint

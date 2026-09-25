@@ -32,6 +32,25 @@ mandatory before a candidate replaces the accepted map. Priors remain those of
 the initialized solve; this is not an unanchored global optimizer or an exact
 GTSfM reproduction. Non-overlap child landmarks are preserved during reconciliation.
 
+If alignment lacks sufficient shared depth-observable landmarks, C++ recovery
+registers incoming frames against the established map using measured global-track
+2D-to-3D correspondences and OpenCV PnP/RANSAC. A typed insufficient-support error
+selects this path; fitted-transform geometry failures are not bypassed. Existing
+camera poses/depths seed recovery directly in the common gauge. No incoming depth
+scale is inferred or copied. CPU Eigen triangulation adds previously absent tracks
+only after three registered views and >=1 degree of parallax support them.
+
+PnP uses a deterministic training/holdout split: >=30/10 correspondences with
+>=6/3 occupied cells on a 4x4 image grid. RANSAC uses a four-pixel threshold, 1000
+iterations and 0.999 confidence; refined training support must retain >=20 points,
+>=50% of training candidates and six image cells. At least 80% of held-out pixels
+must be within five pixels with positive depth. Holdouts are excluded from BA and
+future extensions, stored only in native memory, and validated after joint BA and
+subsequent merges. Old-boundary checks remain mandatory. A failed recovery leaves
+the accepted map untouched. This does not recover failures before alignment or
+invent correspondences when map tracks are unavailable. The implementation has
+not been compiled or exercised by the coding agent.
+
 `--window-size` and `--overlap` count keyframes. All keyframes are covered, with a
 possibly shorter final window. VGGT inference is scheduled across visible GPUs
 (or one selected device) and workers exit before sequential cuNLS BA begins.

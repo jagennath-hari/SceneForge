@@ -6,6 +6,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <stdexcept>
 #include <vector>
 #include "stereoforge/optimization/bundle_adjuster.hpp"
 
@@ -34,6 +35,10 @@ struct DepthFrame {
     Camera camera;
     std::vector<float> depth;
     std::vector<std::uint8_t> rgb;
+};
+class InsufficientAlignmentSupport final : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
 };
 struct Similarity {
     double scale = 1;
@@ -65,6 +70,9 @@ private:
     [[nodiscard]] SparseMap Initialize(const std::vector<DepthFrame>& frames) const;
     void Optimize(SparseMap& model, bool local) const;
     [[nodiscard]] SparseMap Combine(const SparseMap& local) const;
+    [[nodiscard]] SparseMap Recover(const std::vector<DepthFrame>& frames, const SparseMap& local,
+                                    Boundary& recovery_checks,
+                                    const std::function<void(const std::string&)>& progress) const;
     [[nodiscard]] Boundary Withhold(SparseMap& combined, const SparseMap& local) const;
     void Validate(const SparseMap& model, const Boundary& boundary) const;
     BundleAdjuster solver_;

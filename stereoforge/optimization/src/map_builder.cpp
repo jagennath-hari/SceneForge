@@ -300,19 +300,28 @@ void MapBuilder::AddWindow(const std::vector<DepthFrame>& frames, const std::fun
     this->Optimize(local, true);
     if (this->accepted_windows_ == 0) { this->map_ = std::move(local); ++this->accepted_windows_; return; }
     progress("shared-camera/landmark Sim(3)");
-    const Similarity alignment = Align(this->map_, local);
-    Transform(local, alignment);
-    progress("combining tracks");
-    SparseMap candidate = this->Combine(local);
+    SparseMap candidate;
+    Boundary recovery_checks;
+    try {
+        const Similarity alignment = Align(this->map_, local);
+        Transform(local, alignment);
+        progress("combining tracks");
+        candidate = this->Combine(local);
+    } catch (const InsufficientAlignmentSupport& error) {
+        progress(std::string("PnP recovery: ") + error.what());
+        candidate = this->Recover(frames, local, recovery_checks, progress);
+    }
     const Boundary boundary = this->Withhold(candidate, local);
     progress("joint cuNLS BA");
     this->Optimize(candidate, false);
     progress("validating overlaps");
     this->Validate(candidate, boundary);
+    if (!recovery_checks.observations.empty()) { this->Validate(candidate, recovery_checks); }
     for (const Boundary& previous : this->boundaries_) { this->Validate(candidate, previous); }
     // Transactional commit: a rejected candidate never mutates the accepted map.
     this->map_ = std::move(candidate);
     this->boundaries_.push_back(boundary);
+    if (!recovery_checks.observations.empty()) { this->boundaries_.push_back(std::move(recovery_checks)); }
     ++this->accepted_windows_;
 }
 } // namespace stereoforge::optimization

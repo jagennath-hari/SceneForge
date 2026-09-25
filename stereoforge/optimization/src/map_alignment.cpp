@@ -172,8 +172,9 @@ Similarity Align(const SparseMap& reference, const SparseMap& local) {
         ids.push_back(entry.first); source.push_back(b.position); target.push_back(a.position);
         for (const FrameId f : shared) { if (a.observations.contains(f)) { distances.push_back((a.position-reference.cameras.at(f).center).norm()); } }
     }
-    if (shared.size() < 6 || ids.size() < 60 || eligible.size() < 60) {
-        throw std::runtime_error("Insufficient shared alignment support: " + std::to_string(shared.size()) + " cameras, " + std::to_string(eligible.size()) + "/60 depth-observable landmarks");
+    if (shared.size() < 6) { throw std::runtime_error("Alignment requires six shared cameras"); }
+    if (ids.size() < 60 || eligible.size() < 60) {
+        throw InsufficientAlignmentSupport("Insufficient shared alignment support: " + std::to_string(shared.size()) + " cameras, " + std::to_string(eligible.size()) + "/60 depth-observable landmarks");
     }
     const double depth = Median(distances);
     if (!std::isfinite(depth) || depth <= 1e-8) { throw std::runtime_error("Degenerate overlap scale"); }

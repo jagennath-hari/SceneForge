@@ -105,13 +105,14 @@ class WindowReconstructor(ReconstructionFrontend):
             infer_clusters(checkpoint, paths, windows, self.output / 'vggt', self.devices)
             with Progress('Loading native feature tracks'):
                 self.native.load_tracks(tracks)
-            with progress_group('Building common map') as progress:
+            with progress_group('Building common map', len(windows), 'window') as progress:
                 for index, window in enumerate(windows):
                     self.summary['stage'] = f'window_{index}'
                     def update(stage: str) -> None:
                         progress.status(f'window {index+1}/{len(windows)} | {stage}')
                     self.native.add_window(self.output / 'vggt' / f'{window.identifier}.pt', self.images, update)
                     self.summary['accepted_windows'] = self.native.accepted_windows
+                    progress.advance()
             self.current = self.native.export()
             if self.current is None or set(self.current.cameras) != set(range(len(paths))):
                 raise ValueError('Common map does not contain every selected keyframe')

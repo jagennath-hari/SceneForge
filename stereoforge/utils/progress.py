@@ -102,9 +102,10 @@ class Progress:
 
 
 @contextmanager
-def progress_group(description: str) -> Generator[Progress, None, None]:
-    """Reuse one elapsed-time bar for all nested stages and item counters."""
-    with Progress(description) as progress:
+def progress_group(description: str, total: int | None = None,
+                   unit: str = "item") -> Generator[Progress, None, None]:
+    """Reuse one bar for nested stages; the caller advances overall work."""
+    with Progress(description, total, unit) as progress:
         token = _shared_progress.set(progress)
         try:
             yield progress

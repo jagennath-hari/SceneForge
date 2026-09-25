@@ -93,8 +93,7 @@ class WindowReconstructor(ReconstructionFrontend):
             if not tracks.exists():
                 graph = VerifiedGraph(len(paths))
                 files = self._match(len(paths))
-                with Progress('Building measured feature tracks'):
-                    graph.read(files)
+                graph.read(files)
                 write_json(self.output / 'graph.json', graph.summary)
                 temporary = tracks.with_suffix('.partial')
                 with temporary.open('w') as stream:

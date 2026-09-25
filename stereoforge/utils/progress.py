@@ -69,6 +69,15 @@ class Progress:
         if self.bar.total is not None:
             self.bar.total += count
 
+    def reset(self, total: int, unit: str, detail: str) -> None:
+        """Start a counted phase on the same terminal line, with its own ETA."""
+        self.total = total
+        self.completed = 0
+        if self.parent is None:
+            self.bar.unit = unit
+            self.bar.reset(total=total)
+        self.status(detail)
+
     def _refresh(self) -> None:
         interval = 1 if self.interactive else 15
         while not self.stopped.wait(interval):

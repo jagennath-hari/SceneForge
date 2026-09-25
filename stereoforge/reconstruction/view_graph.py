@@ -7,6 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
+from stereoforge.utils.progress import Progress
+
 @dataclass(frozen=True, slots=True, order=True)
 class Observation:
     frame: int
@@ -33,11 +35,17 @@ class VerifiedGraph:
         self.summary: dict = {}
 
     def read(self, files: list[Path]) -> None:
+        with Progress("Building measured feature tracks", sum(path.stat().st_size for path in files), "B") as progress:
+            self._read(files, progress)
+
+    def _read(self, files: list[Path], progress: Progress) -> None:
+        progress.status("reading verified matches")
         edges = []
         verified_pairs = 0
         for path in files:
-            with path.open() as stream:
+            with path.open('rb') as stream:
                 for line in stream:
+                    progress.advance(len(line))
                     pair = json.loads(line)
                     a, b = pair["source"], pair["target"]
                     if a not in self.neighbors or b not in self.neighbors or a == b:
@@ -79,20 +87,31 @@ class VerifiedGraph:
                 node = parent[node]
             return node
 
+        progress.status(f"sorting {len(edges):,} match edges")
+        edges.sort(reverse=True)
+        progress.reset(len(edges), "edge", "joining consistent tracks")
         rejected = 0
-        for _, a, b in sorted(edges, reverse=True):
+        for _, a, b in edges:
             x, y = root(a), root(b)
             if x == y:
+                progress.advance()
                 continue
             if members[x].keys() & members[y].keys():
                 rejected += 1
+                progress.advance()
                 continue
             if len(members[x]) < len(members[y]):
                 x, y = y, x
             parent[y] = x
             members[x].update(members.pop(y))
-        self.tracks = [{f: self.pixels[node] for f, node in sorted(group.items())}
-                       for group in members.values() if len(group) >= 3]
+            progress.advance()
+        progress.reset(len(members), "track", "collecting tracks with at least three views")
+        self.tracks = []
+        for group in members.values():
+            if len(group) >= 3:
+                self.tracks.append({f: self.pixels[node] for f, node in sorted(group.items())})
+            progress.advance()
+        progress.reset(self.count, "frame", "checking image connectivity")
         components, pending = [], set(self.neighbors)
         while pending:
             component, frontier = set(), [min(pending)]
@@ -100,6 +119,7 @@ class VerifiedGraph:
                 frame = frontier.pop()
                 if frame not in component:
                     component.add(frame)
+                    progress.advance()
                     frontier.extend(self.neighbors[frame] - component)
             components.append(sorted(component))
             pending -= component

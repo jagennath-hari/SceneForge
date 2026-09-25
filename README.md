@@ -45,7 +45,7 @@ contains:
 - `status.json`: completion status, registered/missing keyframes and failing stage.
 - `selection.json`: selected keyframes mapped to original video frames/timestamps.
 - `vggt/`: initial per-window depth, calibration and camera estimates.
-- `map_TIMESTAMP/`: attempt settings and the final COLMAP model.
+- `map_TIMESTAMP/`: attempt settings only; no automatic COLMAP export.
 
 Distances are in reconstruction units, not established meters. Sparse BA does
 not refine VGGT's dense depth. Full-video dense reconstruction, stereo synthesis
@@ -60,7 +60,8 @@ checks stay enabled, including checks on previously merged boundaries.
 
 The common map stays inside one C++ object, called through pybind11. Eigen handles
 landmark initialization, Sim(3), merging and validation on the CPU; custom CUDA and
-cuNLS handle local/joint BA. Typed buffers go directly into BA without per-window
+cuNLS handle local/joint BA. Options, statistics and results are typed C++ structs;
+the native map/solver interface contains no JSON objects. Typed buffers go directly into BA without per-window
 JSON requests, subprocesses, COLMAP round trips or intermediate viewers. Track
 identities remain stable; earlier-boundary validation uses indexed lookups.
 Python loads VGGT tensors and exports the final map once. Input caches and final

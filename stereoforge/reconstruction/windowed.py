@@ -77,8 +77,6 @@ class WindowReconstructor(ReconstructionFrontend):
                             'timestamp_seconds': self.timestamps[f] if self.timestamps else None,
                             'camera_to_world': c.pose.tolist(), 'intrinsics': c.intrinsics.tolist(),
                             'image_size_hw': c.size_hw} for f, c in sorted(model.cameras.items())]})
-            if not (self.attempt / 'final_sparse').exists():
-                model.write(self.attempt / 'final_sparse', sorted(model.cameras))
             # The viewer may subsample large clouds; export every optimized point.
             GeometryReportWriter._write_ply(self.output / 'point_cloud.ply',
                 np.asarray([p.xyz for p in model.points]), np.asarray([p.rgb for p in model.points], dtype=np.uint8))

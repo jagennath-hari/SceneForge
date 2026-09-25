@@ -41,7 +41,10 @@ initialization, quality checks, RANSAC/Sim(3), track extension and validation on
 Local and joint BA use typed in-memory buffers with the existing CUDA/cuNLS factors.
 Python loads VGGT tensors, verifies processed image grids, invokes the native builder
 through pybind11 and publishes the final map. No per-window solver JSON files,
-subprocesses or intermediate COLMAP exports are used. Native Eigen LM replaces the
+subprocesses or COLMAP exports are used, including at final publication. BA options,
+statistics and results use typed C++ structs, with no JSON dependency in the native
+map/solver library. The legacy standalone JSON adapter is separate from this path.
+Native Eigen LM replaces the
 SciPy seven-parameter solve with the same objective and acceptance thresholds;
 sampling and solver numerics differ, so runtime equivalence is not yet established. The production path does not instantiate or call pyCuSFM.
 

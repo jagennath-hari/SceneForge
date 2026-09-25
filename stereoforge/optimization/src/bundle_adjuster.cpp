@@ -5,7 +5,9 @@
 #include <array>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -23,17 +25,6 @@ namespace stereoforge::optimization {
 using cunls::LogError;
 
 namespace {
-using Json = nlohmann::json;
-
-std::vector<float> ReadVector(const Json& value, std::size_t size) {
-    const std::vector<float> result = value.get<std::vector<float>>();
-    if (result.size() != size || !std::all_of(result.begin(), result.end(),
-        [](float v) { return std::isfinite(v); })) {
-        throw std::invalid_argument("Invalid vector length or nonfinite input");
-    }
-    return result;
-}
-
 void ValidatePose(const std::vector<float>& pose) {
     if (pose.size() != 16 || !std::all_of(pose.begin(), pose.end(), [](float v) { return std::isfinite(v); })) {
         throw std::invalid_argument("Invalid or nonfinite pose");
@@ -57,8 +48,7 @@ void ValidatePose(const std::vector<float>& pose) {
     if (std::abs(determinant-1) > 1e-3f) { throw std::invalid_argument("Camera rotation is reflected"); }
 }
 
-float PositiveOption(const Json& options, const char* name, float fallback) {
-    const float value = options.value(name, fallback);
+float PositiveOption(float value, const char* name) {
     if (!std::isfinite(value) || value <= 0) { throw std::invalid_argument(std::string(name)+" must be positive"); }
     return value;
 }
@@ -127,7 +117,7 @@ float CheckPixelJacobian(const cunls::SE3Transform& pose, const cunls::Vector<3>
         if (!std::isfinite(reference[row]) || !std::isfinite(cuda_residual[row]) ||
             std::abs(reference[row]-cuda_residual[row]) > 0.01 + 1e-4*std::abs(reference[row])) {
             throw std::runtime_error("CUDA residual disagrees with FP64 reference: " +
-                Json({{"row", row}, {"cuda", cuda_residual[row]}, {"reference", reference[row]}}).dump());
+                std::string("row ")+std::to_string(row)+", CUDA "+std::to_string(cuda_residual[row])+", reference "+std::to_string(reference[row]));
         }
     }
     float maximum = 0;
@@ -138,7 +128,7 @@ float CheckPixelJacobian(const cunls::SE3Transform& pose, const cunls::Vector<3>
         bool previous_passed = false;
         bool accepted = false;
         double previous_error = 0;
-        Json attempts = Json::array();
+        std::ostringstream attempts;
         for (int refinement = 0; refinement < 12; ++refinement) {
             const double epsilon = std::ldexp(1e-3, -refinement);
             const std::array<double, 3> plus = ReferencePixelResidual(
@@ -159,8 +149,12 @@ float CheckPixelJacobian(const cunls::SE3Transform& pose, const cunls::Vector<3>
                     std::abs(numerical[row]-previous[row]) <= tolerance;
                 current_error = std::max(current_error, normalized_errors[row]);
             }
-            attempts.push_back({{"epsilon", epsilon}, {"numerical", numerical},
-                                {"tolerance_ratios", normalized_errors}});
+            attempts << "epsilon=" << epsilon;
+            for (int row = 0; row < 3; ++row) {
+                attempts << " row=" << row << " numerical=" << numerical[row]
+                         << " tolerance_ratio=" << normalized_errors[row];
+            }
+            attempts << ';';
             if (passed && previous_passed && stable) {
                 maximum = std::max(maximum, static_cast<float>(std::max(current_error, previous_error)));
                 accepted = true;
@@ -171,16 +165,14 @@ float CheckPixelJacobian(const cunls::SE3Transform& pose, const cunls::Vector<3>
             previous_error = current_error;
         }
         if (!accepted) {
-            const Json diagnostic = {{"column", column}, {"pixel", pixel}, {"huber_delta", huber_delta},
-                {"analytic", {analytic[column], analytic[11+column], analytic[22+column]}},
-                {"attempts", attempts}};
-            throw std::runtime_error("Reprojection Jacobian failed FP64 reference check: " + diagnostic.dump());
+            throw std::runtime_error("Reprojection Jacobian failed FP64 reference check: column " +
+                std::to_string(column) + "; " + attempts.str());
         }
     }
     return maximum;
 }
 
-Json ErrorStatistics(const std::vector<float>& errors, float c2) {
+BAErrorStatistics ErrorStatistics(const std::vector<float>& errors, float c2) {
     std::vector<float> finite;
     std::size_t inliers = 0;
     double tls = 0;
@@ -190,9 +182,8 @@ Json ErrorStatistics(const std::vector<float>& errors, float c2) {
         tls += std::min(error, c2);
     }
     std::sort(finite.begin(), finite.end());
-    return {{"observations", errors.size()}, {"positive_finite", finite.size()},
-            {"within_threshold", inliers}, {"tls_cost", tls},
-            {"median_pixels", finite.empty() ? Json(nullptr) : Json(finite[finite.size()/2])}};
+    return {errors.size(), finite.size(), inliers, tls,
+            finite.empty() ? std::numeric_limits<float>::quiet_NaN() : finite[finite.size()/2]};
 }
 } // namespace
 
@@ -203,18 +194,18 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
     THROW_ON_CUDA_ERROR(cudaGetDeviceCount(&device_count));
     if (this->device_ < 0 || this->device_ >= device_count) { throw std::invalid_argument("CUDA device outside visible devices"); }
     THROW_ON_CUDA_ERROR(cudaSetDevice(this->device_));
-    const Json& options = input.options;
-    const float threshold = PositiveOption(options, "threshold_pixels", 3);
-    const float focal_sigma = PositiveOption(options, "focal_sigma_pixels", 10);
-    const float rotation_sigma = PositiveOption(options, "rotation_sigma_radians", 0.1f);
-    const float translation_sigma = PositiveOption(options, "translation_sigma", 0.1f);
-    const bool use_gnc = options.value("use_gnc", true);
-    const float huber_delta = options.value("huber_delta_pixels", 0.0f);
+    const BAOptions& options = input.options;
+    const float threshold = PositiveOption(options.threshold_pixels, "threshold_pixels");
+    const float focal_sigma = PositiveOption(options.focal_sigma_pixels, "focal_sigma_pixels");
+    const float rotation_sigma = PositiveOption(options.rotation_sigma_radians, "rotation_sigma_radians");
+    const float translation_sigma = PositiveOption(options.translation_sigma, "translation_sigma");
+    const bool use_gnc = options.use_gnc;
+    const float huber_delta = options.huber_delta_pixels;
     if (!std::isfinite(huber_delta) || huber_delta < 0 || (use_gnc && huber_delta > 0)) {
         throw std::invalid_argument("Huber delta must be nonnegative and used only without GNC");
     }
-    const int rounds = use_gnc ? options.value("gnc_rounds", 64) : 1;
-    const int iterations = options.value("lm_iterations", 50);
+    const int rounds = use_gnc ? options.gnc_rounds : 1;
+    const int iterations = options.lm_iterations;
     if (rounds < 1 || rounds > 128 || iterations < 1 || iterations > 500) {
         throw std::invalid_argument("Invalid GNC/LM iteration limits");
     }
@@ -317,10 +308,11 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
     const float c2 = threshold*threshold;
     const float maximum = *std::max_element(errors.begin(), errors.end());
     float mu = std::max(1e-6f, c2 / std::max(c2, 2*maximum-c2));
-    Json report = {{"before", ErrorStatistics(errors, c2)}, {"rounds", Json::array()},
-                   {"gnc_converged", false}, {"optimization_complete", false},
-                   {"use_gnc", use_gnc}, {"huber_delta_pixels", huber_delta}, {"solver", "cuNLS LM/cuDSS"}};
-    if (options.value("check_jacobians", false)) {
+    BAReport report;
+    report.before = ErrorStatistics(errors, c2);
+    report.use_gnc = use_gnc;
+    report.huber_delta_pixels = huber_delta;
+    if (options.check_jacobians) {
         float maximum_error = 0;
         const std::size_t samples = std::min<std::size_t>(8, observations.size());
         for (std::size_t sample = 0; sample < samples; ++sample) {
@@ -338,12 +330,10 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
                     {principal[2*i], principal[2*i+1]}, stream.GetStream(), huber_delta));
             }
         }
-        report["jacobian_check"] = {{"observations", samples}, {"maximum_tolerance_ratio", maximum_error},
-            {"passed", true}, {"huber_shifted_samples", huber_delta > 0 ? samples : 0},
-            {"reference", "CPU FP64 right-SE3 residual differences; production CUDA analytic Jacobian"},
-            {"scope", "pixel factor, all 11 tangent columns; initial positive-depth states, plus shifted Huber samples when enabled"}};
+        report.jacobian_samples = samples;
+        report.maximum_jacobian_tolerance_ratio = maximum_error;
     }
-    double previous_tls = report["before"]["tls_cost"].get<double>();
+    double previous_tls = report.before.tls_cost;
     for (int round = 0; round < rounds; ++round) {
         if (use_gnc) {
             UpdateTlsWeights(device_errors.data(), device_weights.data(), observations.size(), c2, mu, stream.GetStream());
@@ -380,25 +370,24 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
         }
         device_errors.CopyToHost(errors.data(), errors.size());
         device_weights.CopyToHost(weights.data(), weights.size());
-        const Json stats = ErrorStatistics(errors, c2);
-        const double tls = stats["tls_cost"].get<double>();
+        const BAErrorStatistics stats = ErrorStatistics(errors, c2);
+        const double tls = stats.tls_cost;
         const std::size_t soft = static_cast<std::size_t>(std::count_if(weights.begin(), weights.end(),
             [](float w) { return w > 0.01f && w < 0.99f; }));
-        report["rounds"].push_back({{"mu", mu}, {"lm_iterations", summary.num_iterations},
-            {"weighted_cost_before", summary.initial_cost}, {"weighted_cost_after", summary.final_cost},
-            {"soft_weights", soft}, {"frozen_landmarks", frozen.size()}, {"errors", stats}});
+        report.rounds.push_back({mu, summary.num_iterations, summary.initial_cost, summary.final_cost,
+                                 soft, frozen.size(), stats});
         if (!use_gnc) {
             // The joint solve uses fixed external weights; optional Huber
             // robustification is evaluated inside the pixel factor.
             // A budget-limited LM solve is retained, but not called complete.
-            report["optimization_complete"] = summary.num_iterations < static_cast<std::size_t>(iterations);
-            report["lm_budget_exhausted"] = summary.num_iterations >= static_cast<std::size_t>(iterations);
+            report.optimization_complete = summary.num_iterations < static_cast<std::size_t>(iterations);
+            report.lm_budget_exhausted = summary.num_iterations >= static_cast<std::size_t>(iterations);
             break;
         }
-        if (options.value("verbose", true)) { std::cerr << "GNC " << round+1 << "/" << rounds << ": " << stats["within_threshold"]
+        if (options.verbose) { std::cerr << "GNC " << round+1 << "/" << rounds << ": " << stats.within_threshold
                   << "/" << observations.size() << " observations within " << threshold << " px\n"; }
         if (mu >= 1 && soft == 0 && std::abs(tls-previous_tls) <= 1e-5*std::max(1.0, previous_tls)) {
-            report["gnc_converged"] = true; report["optimization_complete"] = true; break;
+            report.gnc_converged = true; report.optimization_complete = true; break;
         }
         previous_tls = tls;
         mu = std::min(mu*1.6f, 1e6f);
@@ -427,36 +416,8 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
         }
         output.points.push_back({point[0], point[1], point[2]});
     }
-    report["after"] = ErrorStatistics(errors, c2);
+    report.after = ErrorStatistics(errors, c2);
     output.report = std::move(report);
-    return output;
-}
-nlohmann::json BundleAdjuster::Solve(const nlohmann::json& input) const {
-    if (input.at("format_version") != 1) { throw std::invalid_argument("Unsupported input format"); }
-    BAInput request;
-    request.options = input.value("options", Json::object());
-    for (const Json& value : input.at("cameras")) {
-        BACamera camera;
-        const std::vector<float> pose = ReadVector(value.at("world_to_camera"), 16);
-        const std::vector<float> k = ReadVector(value.at("intrinsics"), 4);
-        std::copy(pose.begin(), pose.end(), camera.world_to_camera.begin());
-        std::copy(k.begin(), k.end(), camera.intrinsics.begin());
-        request.cameras.push_back(camera);
-    }
-    for (const Json& value : input.at("points")) {
-        const std::vector<float> xyz = ReadVector(value, 3);
-        request.points.push_back({xyz[0], xyz[1], xyz[2]});
-    }
-    for (const Json& value : input.at("observations")) {
-        const std::vector<float> uv = ReadVector(value.at("pixel"), 2);
-        request.observations.push_back({value.at("camera").get<std::size_t>(),
-            value.at("point").get<std::size_t>(), {uv[0], uv[1]}});
-    }
-    const BAResult result = this->Solve(request);
-    Json output = {{"format_version", 1}, {"cameras", Json::array()}, {"points", result.points}, {"report", result.report}};
-    for (const BACamera& camera : result.cameras) {
-        output["cameras"].push_back({{"world_to_camera", camera.world_to_camera}, {"intrinsics", camera.intrinsics}});
-    }
     return output;
 }
 } // namespace stereoforge::optimization

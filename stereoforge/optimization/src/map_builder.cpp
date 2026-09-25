@@ -146,9 +146,11 @@ void MapBuilder::Optimize(SparseMap& model, bool local) const {
     if (steps.empty()) { throw std::runtime_error("Degenerate camera baseline"); }
     const double scale = Median(steps);
     BAInput input;
-    input.options = {{"use_gnc", local}, {"huber_delta_pixels", local ? 0 : 3},
-        {"lm_iterations", local ? 50 : this->iterations_}, {"check_jacobians", this->check_jacobians_},
-        {"verbose", false}};
+    input.options.use_gnc = local;
+    input.options.huber_delta_pixels = local ? 0 : 3;
+    input.options.lm_iterations = local ? 50 : this->iterations_;
+    input.options.check_jacobians = this->check_jacobians_;
+
     for (const FrameId frame : camera_ids) {
         const Camera& camera = model.cameras.at(frame);
         Eigen::Matrix4d pose = Eigen::Matrix4d::Identity();
@@ -170,7 +172,7 @@ void MapBuilder::Optimize(SparseMap& model, bool local) const {
         }
     }
     const BAResult result = this->solver_.Solve(input);
-    if (!result.report.at("optimization_complete").get<bool>()) {
+    if (!result.report.optimization_complete) {
         throw std::runtime_error(local ? "Local BA did not converge" : "Joint BA exhausted its iteration budget; increase --lm-iterations");
     }
     for (std::size_t i = 0; i < camera_ids.size(); ++i) {

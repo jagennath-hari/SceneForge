@@ -15,12 +15,12 @@ foreach(cuda_include IN LISTS CUDAToolkit_INCLUDE_DIRS)
         target_include_directories(stereoforge_optimization SYSTEM PUBLIC "${cuda_include}/cccl")
     endif()
 endforeach()
-target_link_libraries(stereoforge_optimization PUBLIC cunls::cunls nlohmann_json::nlohmann_json CUDA::cudart PRIVATE CUDA::cublas)
+target_link_libraries(stereoforge_optimization PUBLIC cunls::cunls CUDA::cudart PRIVATE CUDA::cublas)
 target_compile_options(stereoforge_optimization PRIVATE
     "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic>"
     "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra>")
 add_executable(stereoforge-bundle-adjust src/main.cpp)
-target_link_libraries(stereoforge-bundle-adjust PRIVATE stereoforge_optimization)
+target_link_libraries(stereoforge-bundle-adjust PRIVATE stereoforge_optimization nlohmann_json::nlohmann_json)
 set_target_properties(stereoforge-bundle-adjust PROPERTIES INSTALL_RPATH /opt/cunls/lib)
 install(TARGETS stereoforge-bundle-adjust RUNTIME DESTINATION bin)
 

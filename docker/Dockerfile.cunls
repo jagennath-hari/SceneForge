@@ -31,10 +31,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         uv pip install --no-deps /opt/third_party/cuNLS/python && \
     rm -rf /opt/third_party/cuNLS/python/build
 
+# Native in-process map builder dependencies.
+RUN apt-get update && apt-get install -y --no-install-recommends libeigen3-dev python3-dev && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/root/.cache/uv uv pip install 'pybind11>=2.13,<3'
+
 # StereoForge factors and native solver; upstream cuNLS remains unchanged.
 COPY stereoforge/optimization/ /opt/stereoforge/optimization/
 RUN cmake -S /opt/stereoforge/optimization -B /tmp/stereoforge-optimization -G Ninja \
-        -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local && \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DPython_EXECUTABLE=/opt/stereoforge-venv/bin/python && \
     cmake --build /tmp/stereoforge-optimization --parallel "${BUILD_JOBS}" && \
     cmake --install /tmp/stereoforge-optimization && \
     rm -rf /tmp/stereoforge-optimization

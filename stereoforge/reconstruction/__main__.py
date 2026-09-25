@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from stereoforge.geometry.inputs import validate_image_paths
 from stereoforge.geometry.checkpoint import resolve_checkpoint
-from stereoforge.refinement.cunls import CuNLSBundleAdjuster
+from .native_map import native_backend
 from stereoforge.utils.artifacts import write_json
 from stereoforge.video.sampling import VideoFrameSampler
 from .windowed import WindowReconstructor, WindowOptions, POLICY
@@ -27,6 +27,8 @@ def signature(video: Path, keyframe_config: Path) -> dict:
     for path in sorted(files):
         digest.update(str(path.relative_to(ROOT)).encode())
         digest.update(path.read_bytes())
+    backend = native_backend()
+    digest.update(Path(backend.__file__).read_bytes())
     executable = shutil.which("stereoforge-match-pairs")
     if executable:
         digest.update(Path(executable).read_bytes())
@@ -48,14 +50,14 @@ def main() -> int:
     parser.add_argument('--device', help='cuda: visible GPUs for VGGT, first GPU for BA; cuda:N: one GPU')
     parser.add_argument('--lm-iterations', type=int, help='Joint BA iteration budget (default 300)')
     parser.add_argument('--keyframe-config', type=Path)
-    parser.add_argument('--diagnostics', action='store_true', help='Write intermediate viewers and check CUDA Jacobians')
+    parser.add_argument('--diagnostics', action='store_true', help='Check native CUDA Jacobians (slower; no intermediate map dumps)')
     parser.add_argument('--debug', action='store_true', help='Show exception traceback')
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
     logging.getLogger('dinov3').setLevel(logging.WARNING)
     output = None
     try:
-        CuNLSBundleAdjuster.preflight()
+        native_backend()
         if args.resume:
             if any(value is not None for value in (args.output, args.checkpoint, args.window_size,
                     args.overlap, args.neighbors, args.device, args.keyframe_config)):

@@ -35,6 +35,9 @@ std::vector<float> ReadVector(const Json& value, std::size_t size) {
 }
 
 void ValidatePose(const std::vector<float>& pose) {
+    if (pose.size() != 16 || !std::all_of(pose.begin(), pose.end(), [](float v) { return std::isfinite(v); })) {
+        throw std::invalid_argument("Invalid or nonfinite pose");
+    }
     for (int i = 0; i < 4; ++i) {
         if (std::abs(pose[12+i] - (i == 3 ? 1.0f : 0.0f)) > 1e-5f) {
             throw std::invalid_argument("Pose must be a homogeneous world-to-camera matrix");
@@ -195,13 +198,12 @@ Json ErrorStatistics(const std::vector<float>& errors, float c2) {
 
 BundleAdjuster::BundleAdjuster(int device) : device_(device) {}
 
-nlohmann::json BundleAdjuster::Solve(const nlohmann::json& input) const {
-    if (input.at("format_version") != 1) { throw std::invalid_argument("Unsupported input format"); }
+BAResult BundleAdjuster::Solve(const BAInput& input) const {
     int device_count = 0;
     THROW_ON_CUDA_ERROR(cudaGetDeviceCount(&device_count));
     if (this->device_ < 0 || this->device_ >= device_count) { throw std::invalid_argument("CUDA device outside visible devices"); }
     THROW_ON_CUDA_ERROR(cudaSetDevice(this->device_));
-    const Json options = input.value("options", Json::object());
+    const Json& options = input.options;
     const float threshold = PositiveOption(options, "threshold_pixels", 3);
     const float focal_sigma = PositiveOption(options, "focal_sigma_pixels", 10);
     const float rotation_sigma = PositiveOption(options, "rotation_sigma_radians", 0.1f);
@@ -216,43 +218,45 @@ nlohmann::json BundleAdjuster::Solve(const nlohmann::json& input) const {
     if (rounds < 1 || rounds > 128 || iterations < 1 || iterations > 500) {
         throw std::invalid_argument("Invalid GNC/LM iteration limits");
     }
-    const Json& cameras = input.at("cameras");
-    const Json& points = input.at("points");
-    const Json& observations = input.at("observations");
+    const std::vector<BACamera>& cameras = input.cameras;
+    const std::vector<std::array<float, 3>>& points = input.points;
+    const std::vector<BAObservation>& observations = input.observations;
     if (cameras.size() < 3 || points.size() < 3 || observations.empty()) {
         throw std::invalid_argument("Need at least three cameras and three supported landmarks");
     }
     std::vector<cunls::SE3Transform> poses(cameras.size());
     std::vector<float> focals, log_focals;
     for (std::size_t i = 0; i < cameras.size(); ++i) {
-        const std::vector<float> pose = ReadVector(cameras[i].at("world_to_camera"), 16);
+        const std::vector<float> pose = std::vector<float>(cameras[i].world_to_camera.begin(), cameras[i].world_to_camera.end());
         ValidatePose(pose);
         std::copy(pose.begin(), pose.end(), poses[i].data());
-        const std::vector<float> k = ReadVector(cameras[i].at("intrinsics"), 4);
-        if (k[0] <= 0 || k[1] <= 0) { throw std::invalid_argument("Focals must be positive"); }
+        const std::vector<float> k = std::vector<float>(cameras[i].intrinsics.begin(), cameras[i].intrinsics.end());
+        if (!std::all_of(k.begin(), k.end(), [](float v) { return std::isfinite(v); }) || k[0] <= 0 || k[1] <= 0) { throw std::invalid_argument("Intrinsics must be finite with positive focals"); }
         focals.insert(focals.end(), {k[0], k[1]});
         log_focals.insert(log_focals.end(), {std::log(k[0]), std::log(k[1])});
     }
     std::vector<cunls::Vector<3>> positions(points.size());
     for (std::size_t i = 0; i < points.size(); ++i) {
-        const std::vector<float> xyz = ReadVector(points[i], 3);
+        const std::vector<float> xyz = std::vector<float>(points[i].begin(), points[i].end());
+        if (!std::all_of(xyz.begin(), xyz.end(), [](float v) { return std::isfinite(v); })) { throw std::invalid_argument("Nonfinite input point"); }
         std::copy(xyz.begin(), xyz.end(), positions[i].data());
     }
     std::vector<float> pixels, principal;
     std::vector<std::size_t> camera_ids, point_ids;
     std::vector<std::set<std::size_t>> views(points.size());
     std::vector<std::size_t> support(cameras.size(), 0);
-    for (const Json& observation : observations) {
-        const std::size_t camera = observation.at("camera").get<std::size_t>();
-        const std::size_t point = observation.at("point").get<std::size_t>();
+    for (const BAObservation& observation : observations) {
+        const std::size_t camera = observation.camera;
+        const std::size_t point = observation.point;
         if (camera >= cameras.size() || point >= points.size() || !views[point].insert(camera).second) {
             throw std::invalid_argument("Unknown or duplicate camera/landmark observation");
         }
         ++support[camera];
-        const std::vector<float> uv = ReadVector(observation.at("pixel"), 2);
+        const std::vector<float> uv = std::vector<float>(observation.pixel.begin(), observation.pixel.end());
+        if (!std::all_of(uv.begin(), uv.end(), [](float v) { return std::isfinite(v); })) { throw std::invalid_argument("Nonfinite input pixel"); }
         pixels.insert(pixels.end(), uv.begin(), uv.end());
-        principal.push_back(cameras[camera].at("intrinsics").at(2).get<float>());
-        principal.push_back(cameras[camera].at("intrinsics").at(3).get<float>());
+        principal.push_back(cameras[camera].intrinsics[2]);
+        principal.push_back(cameras[camera].intrinsics[3]);
         camera_ids.push_back(camera); point_ids.push_back(point);
     }
     std::set<std::size_t> connected = {0};
@@ -391,8 +395,8 @@ nlohmann::json BundleAdjuster::Solve(const nlohmann::json& input) const {
             report["lm_budget_exhausted"] = summary.num_iterations >= static_cast<std::size_t>(iterations);
             break;
         }
-        std::cerr << "GNC " << round+1 << "/" << rounds << ": " << stats["within_threshold"]
-                  << "/" << observations.size() << " observations within " << threshold << " px\n";
+        if (options.value("verbose", true)) { std::cerr << "GNC " << round+1 << "/" << rounds << ": " << stats["within_threshold"]
+                  << "/" << observations.size() << " observations within " << threshold << " px\n"; }
         if (mu >= 1 && soft == 0 && std::abs(tls-previous_tls) <= 1e-5*std::max(1.0, previous_tls)) {
             report["gnc_converged"] = true; report["optimization_complete"] = true; break;
         }
@@ -402,7 +406,7 @@ nlohmann::json BundleAdjuster::Solve(const nlohmann::json& input) const {
     device_poses.CopyToHost(poses.data(), poses.size());
     device_points.CopyToHost(positions.data(), positions.size());
     device_focals.CopyToHost(log_focals.data(), log_focals.size());
-    Json output = {{"format_version", 1}, {"cameras", Json::array()}, {"points", Json::array()}};
+    BAResult output;
     for (std::size_t i = 0; i < poses.size(); ++i) {
         const std::vector<float> pose(poses[i].begin(), poses[i].end());
         ValidatePose(pose);
@@ -411,18 +415,48 @@ nlohmann::json BundleAdjuster::Solve(const nlohmann::json& input) const {
             std::exp(log_focals[2*i]) <= 0 || std::exp(log_focals[2*i+1]) <= 0) {
             throw std::runtime_error("Invalid optimized camera");
         }
-        output["cameras"].push_back({{"world_to_camera", pose},
-            {"intrinsics", {std::exp(log_focals[2*i]), std::exp(log_focals[2*i+1]),
-                             cameras[i]["intrinsics"][2].get<float>(), cameras[i]["intrinsics"][3].get<float>()}}});
+        BACamera camera;
+        std::copy(pose.begin(), pose.end(), camera.world_to_camera.begin());
+        camera.intrinsics = {std::exp(log_focals[2*i]), std::exp(log_focals[2*i+1]),
+                             cameras[i].intrinsics[2], cameras[i].intrinsics[3]};
+        output.cameras.push_back(camera);
     }
     for (const cunls::Vector<3>& point : positions) {
         if (!std::all_of(point.begin(), point.end(), [](float v) { return std::isfinite(v); })) {
             throw std::runtime_error("Invalid optimized point");
         }
-        output["points"].push_back(std::vector<float>(point.begin(), point.end()));
+        output.points.push_back({point[0], point[1], point[2]});
     }
     report["after"] = ErrorStatistics(errors, c2);
-    output["report"] = report;
+    output.report = std::move(report);
+    return output;
+}
+nlohmann::json BundleAdjuster::Solve(const nlohmann::json& input) const {
+    if (input.at("format_version") != 1) { throw std::invalid_argument("Unsupported input format"); }
+    BAInput request;
+    request.options = input.value("options", Json::object());
+    for (const Json& value : input.at("cameras")) {
+        BACamera camera;
+        const std::vector<float> pose = ReadVector(value.at("world_to_camera"), 16);
+        const std::vector<float> k = ReadVector(value.at("intrinsics"), 4);
+        std::copy(pose.begin(), pose.end(), camera.world_to_camera.begin());
+        std::copy(k.begin(), k.end(), camera.intrinsics.begin());
+        request.cameras.push_back(camera);
+    }
+    for (const Json& value : input.at("points")) {
+        const std::vector<float> xyz = ReadVector(value, 3);
+        request.points.push_back({xyz[0], xyz[1], xyz[2]});
+    }
+    for (const Json& value : input.at("observations")) {
+        const std::vector<float> uv = ReadVector(value.at("pixel"), 2);
+        request.observations.push_back({value.at("camera").get<std::size_t>(),
+            value.at("point").get<std::size_t>(), {uv[0], uv[1]}});
+    }
+    const BAResult result = this->Solve(request);
+    Json output = {{"format_version", 1}, {"cameras", Json::array()}, {"points", result.points}, {"report", result.report}};
+    for (const BACamera& camera : result.cameras) {
+        output["cameras"].push_back({{"world_to_camera", camera.world_to_camera}, {"intrinsics", camera.intrinsics}});
+    }
     return output;
 }
 } // namespace stereoforge::optimization

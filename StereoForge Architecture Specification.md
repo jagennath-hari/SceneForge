@@ -35,15 +35,22 @@ GTSfM reproduction. Non-overlap child landmarks are preserved during reconciliat
 `--window-size` and `--overlap` count keyframes. All keyframes are covered, with a
 possibly shorter final window. VGGT inference is scheduled across visible GPUs
 (or one selected device) and workers exit before sequential cuNLS BA begins.
-Single-GPU operation uses the same code. Native optimization is C++/CUDA; Python
-coordinates video preparation, VGGT, the small CPU Sim(3) fit, artifact IO and
-publication. The production path does not instantiate or call pyCuSFM.
+Single-GPU operation uses the same code. A persistent C++ MapBuilder owns cameras,
+global landmark IDs, observations and validation boundaries. Eigen implements depth
+initialization, quality checks, RANSAC/Sim(3), track extension and validation on CPU.
+Local and joint BA use typed in-memory buffers with the existing CUDA/cuNLS factors.
+Python loads VGGT tensors, verifies processed image grids, invokes the native builder
+through pybind11 and publishes the final map. No per-window solver JSON files,
+subprocesses or intermediate COLMAP exports are used. Native Eigen LM replaces the
+SciPy seven-parameter solve with the same objective and acceptance thresholds;
+sampling and solver numerics differ, so runtime equivalence is not yet established. The production path does not instantiate or call pyCuSFM.
 
 The default output has one viewer, `trajectory.json`, and an uncapped colored
 `point_cloud.ply`. Units are arbitrary reconstruction units. VGGT depth is retained
 as an initialization artifact and is not silently warped or claimed to be refined
-by sparse BA. `--diagnostics` enables intermediate viewers and numerical Jacobian
-checks; essential logs and acceptance checks remain available by default.
+by sparse BA. `--diagnostics` enables CUDA Jacobian checks. One progress bar shows
+the native stage; final status includes aggregate stage timings and a failure reason.
+Input caches and final output metadata remain, without per-window diagnostic dumps.
 
 `--resume` reuses immutable prepared inputs and VGGT windows of this pipeline,
 then recomputes the map in a fresh attempt. It does not reuse previously optimized
@@ -52,8 +59,9 @@ changes require a fresh run. Failed merges preserve and publish a labelled parti
 map if a validated prefix exists. Missing cameras prevent complete status.
 
 The earlier experimental paths below document development history. The active
-entry point is `reconstruction/__main__.py`, using `cluster.py` for initialization
-and `merging.py` for common-map fusion; it does not import the demo entry points.
+entry point is `reconstruction/__main__.py`, using `native_map.py` to invoke the
+C++ implementation under `optimization/`. The earlier Python cluster/merging helpers
+are not on the production path.
 The 26 approved legacy source files have been removed; earlier experimental
 sections below are historical records, not supported commands. Dense/stereo rendering
 and full-sequence runtime validation remain pending. No compilation, inference or
@@ -903,12 +911,15 @@ dense-depth refinement remain outside this experiment.
 
 ### Preserve child support and robustify joint BA
 
-Current reconciliation preserves validated nonshared landmarks whose observations
-lie entirely outside the merge overlap. Their child positions and observations
-remain intact after the incoming child's Sim(3); low parallax alone no longer
-causes them to be retriangulated or discarded. Only weak shared global tracks
-are retriangulated. Unshared tracks touching reconciled cameras keep their child
-position but still pass the existing observation reprojection filter.
+Current reconciliation preserves every established map landmark and its existing
+observations before joint BA. Incoming observations of a shared global track are
+proposals: admit them only within four pixels of the established point's projection
+under the reconciled cameras. Conflicting tracks or rejected observations do not
+replace or delete the established track. Shared tracks are not retriangulated at
+this step. Incoming-only landmarks retain the existing support/reprojection checks.
+Joint BA subsequently refines positions and cameras; its outlier filtering and all
+current/ancestor holdout checks remain mandatory. Reconciliation reports proposed,
+accepted and rejected observation counts separately from retained map landmarks.
 
 New joint solves apply radial Huber loss to the two-dimensional pixel residual,
 with delta=3 pixels. The CUDA factor represents rho(||e||²) exactly as the squared

@@ -7,17 +7,16 @@ from pathlib import Path
 
 import numpy as np
 
-from stereoforge.refinement.cunls import CuNLSBundleAdjuster
 from stereoforge.refinement.sparse_model import SparseModel
 from stereoforge.utils.artifacts import write_json
 from stereoforge.utils.progress import Progress, progress_group
 from stereoforge.utils.visualization import GeometryReportWriter
-from .merging import WindowMerger, RefinedCluster
+from .native_map import NativeMap
 from .frontend import ReconstructionFrontend
 from .inference import infer_clusters
 from .view_graph import Cluster, VerifiedGraph
 
-POLICY = 'windowed_cunls_v1'
+POLICY = 'native_windowed_cunls_v2'
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,21 +52,19 @@ class WindowReconstructor(ReconstructionFrontend):
     def __init__(self, options: WindowOptions, output: Path, keyframe_config: Path,
                  attempt: Path, diagnostics: bool = False) -> None:
         super().__init__(options, output, keyframe_config)
-        CuNLSBundleAdjuster.preflight()
+        self.native = NativeMap(self.device, options.lm_iterations, diagnostics)
         self.attempt, self.diagnostics = attempt, diagnostics
-        self.current: RefinedCluster | None = None
-        self.active: WindowMerger | None = None
+        self.current: SparseModel | None = None
         self.timestamps: tuple | None = None
         self.summary: dict = {}
 
     def publish(self, status: str, error: str | None = None) -> dict:
-        model = self.current.model if self.current else None
-        self.summary.update(status=status, registered_frames=len(model.cameras) if model else 0,
+        model = self.current
+        self.summary.update(native_stage_seconds=self.native.stage_seconds, status=status, registered_frames=len(model.cameras) if model else 0,
                             error=error, dense_depth_refined=False,
                             reconstruction_name='StereoForge · VGGT windows + cuNLS',
                             units='reconstruction_units', attempt=str(self.attempt.relative_to(self.output)))
         self.summary['missing_frames'] = sorted(set(range(self.summary['input_frames'])) - (set(model.cameras) if model else set()))
-        write_json(self.attempt / 'report.json', self.summary)
         write_json(self.output / 'status.json', self.summary)
         if model is not None:
             # One viewer/trajectory for the current common map. A partial map
@@ -109,39 +106,23 @@ class WindowReconstructor(ReconstructionFrontend):
             write_json(self.output / 'windows.json', {'windows': [window.document() for window in windows]})
             self.summary['stage'] = 'vggt'
             infer_clusters(checkpoint, paths, windows, self.output / 'vggt', self.devices)
-            validations = []
+            with Progress('Loading native feature tracks'):
+                self.native.load_tracks(tracks)
             with progress_group('Building common map') as progress:
                 for index, window in enumerate(windows):
-                    progress.status(f'window {index+1}/{len(windows)}')
                     self.summary['stage'] = f'window_{index}'
-                    directory = self.attempt / f'window_{index:04d}'
-                    directory.mkdir()
-                    node = WindowMerger(self.output, directory, self.device, self.diagnostics,
-                                          self.options.lm_iterations, self.diagnostics)
-                    self.active = node
-                    node.publish()
-                    local = node.refine('local', self.output / 'vggt' / f'{window.identifier}.pt')
-                    if self.current is None:
-                        self.current = local
-                        node.report.update(status='diagnostic_complete', stage='seed',
-                                           input_frames=len(local.model.cameras), registered_frames=len(local.model.cameras))
-                        node.publish()
-                    else:
-                        node.merge(self.current, local, tuple(validations))
-                        if node.result is None:
-                            raise ValueError(f'Window {index} could not be merged; inspect {directory / "report.json"}')
-                        self.current = node.result
-                        validations = node.validations
-                    self.summary['accepted_windows'] = index+1
-                    write_json(self.attempt / 'progress.json', self.summary)
-            if self.current is None or set(self.current.model.cameras) != set(range(len(paths))):
+                    def update(stage: str) -> None:
+                        progress.status(f'window {index+1}/{len(windows)} | {stage}')
+                    self.native.add_window(self.output / 'vggt' / f'{window.identifier}.pt', self.images, update)
+                    self.summary['accepted_windows'] = self.native.accepted_windows
+            self.current = self.native.export()
+            if self.current is None or set(self.current.cameras) != set(range(len(paths))):
                 raise ValueError('Common map does not contain every selected keyframe')
             self.summary['stage'] = 'finished'
             return self.publish('complete')
         except (Exception, KeyboardInterrupt) as error:
-            if self.active is not None and self.active.report['status'] == 'running':
-                self.active.report.update(status='failed', error=str(error) or 'Interrupted')
-                self.active.publish()
+            self.current = self.native.export()
+            self.summary['accepted_windows'] = self.native.accepted_windows
             try:
                 self.publish('partial' if self.current else 'failed', str(error) or 'Interrupted')
             except Exception:

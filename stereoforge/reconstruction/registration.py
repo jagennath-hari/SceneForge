@@ -6,7 +6,6 @@ import numpy as np
 
 from .similarity import fit_similarity
 from stereoforge.refinement.sparse_model import SparseModel, SparsePoint, reprojection_error
-from .triangulation import TrackTriangulator
 from .camera_alignment import refine_camera_alignment
 
 
@@ -180,58 +179,55 @@ def merge_sparse_sections(reference: SparseModel, local: SparseModel, report: di
     partners = dict(pairs)
     paired_local = {j for _, j in pairs}
     cameras = {**local.cameras, **reference.cameras}
-    candidates: list[tuple[SparsePoint, bool, bool]] = []
-    conflicts = 0
-    for i, point in enumerate(reference.points):
-        if i not in partners:
-            candidates.append((point, False, not landmark_quality(reference, point)["reliable"]))
-            continue
-        other = local.points[partners[i]]
-        common = point.observations.keys() & other.observations.keys()
-        if any(np.linalg.norm(point.observations[f] - other.observations[f]) > 1e-3 for f in common):
-            conflicts += 1
-            continue
-        observations = {**other.observations, **point.observations}
-        # Choose the seed with lower median error under the reconciled cameras.
-        xyz = min((point.xyz, other.xyz), key=lambda value: np.median([
-            reprojection_error(cameras[f], value, uv) for f, uv in observations.items()]))
-        weak = not (landmark_quality(reference, point)["reliable"] and landmark_quality(local, other)["reliable"])
-        candidates.append((replace(point, xyz=xyz, observations=observations), True, weak))
-    candidates.extend((p, False, not landmark_quality(local, p)["reliable"])
-                      for j, p in enumerate(local.points) if j not in paired_local)
-    points = []
-    bridges = 0
-    joined_count = 0
+    points: list[SparsePoint] = []
+    claimed: set[tuple] = set()
+    joined_count = bridges = conflicts = 0
+    proposed = accepted = unchanged = 0
     reference_only = reference.cameras.keys() - local.cameras.keys()
     local_only = local.cameras.keys() - reference.cameras.keys()
-    claimed = set()
-    retriangulated, rejected = 0, 0
-    preserved = 0
-    shared_frames = reference.cameras.keys() & local.cameras.keys()
-    for point, joined, weak in candidates:
-        outside_overlap = not joined and not (point.observations.keys() & shared_frames)
-        if outside_overlap:
-            # A validated child landmark away from the reconciled cameras has
-            # identical projection geometry after Sim(3). Preserve its depth
-            # and observations, including low-parallax but validated tracks.
-            observations = point.observations
-            keys = {(f, *np.round(uv, 4)) for f, uv in observations.items()}
-            if len(observations) < 3 or keys & claimed:
-                raise ValueError('Validated non-overlap track has insufficient or conflicting observations')
-            claimed.update(keys)
-            points.append(point)
-            preserved += 1
+
+    # The reference cameras remain unchanged during reconciliation. Its existing
+    # points and observations are therefore valid seeds regardless of whether
+    # an incoming track can extend them. Only joint BA may refine these seeds.
+    for i, point in enumerate(reference.points):
+        observations = dict(point.observations)
+        added = 0
+        if i in partners:
+            other = local.points[partners[i]]
+            common = point.observations.keys() & other.observations.keys()
+            conflict = any(np.linalg.norm(point.observations[f] - other.observations[f]) > 1e-3
+                           for f in common)
+            additions = {f: uv for f, uv in other.observations.items() if f not in observations}
+            proposed += len(additions)
+            if conflict:
+                conflicts += 1
+            else:
+                for frame, uv in additions.items():
+                    if reprojection_error(cameras[frame], point.xyz, uv) <= 4:
+                        observations[frame] = uv
+                        added += 1
+                # Count only compatible measured support from the incoming
+                # window, never a fallback with no usable incoming observations.
+                incoming_support = sum(
+                    reprojection_error(cameras[f], point.xyz, uv) <= 4
+                    for f, uv in other.observations.items())
+                joined_count += int(incoming_support >= 3)
+                if (incoming_support >= 3 and observations.keys() & reference_only
+                        and observations.keys() & local_only):
+                    bridges += 1
+            accepted += added
+            unchanged += int(added == 0)
+        keys = {(f, *np.round(uv, 4)) for f, uv in observations.items()}
+        if len(observations) < 3 or keys & claimed:
+            raise ValueError('Established map track has insufficient or conflicting observations')
+        claimed.update(keys)
+        points.append(replace(point, observations=observations) if added else point)
+
+    # New landmarks still need support under the reconciled cameras. An incoming
+    # copy of an established global track is never inserted as a second point.
+    for j, point in enumerate(local.points):
+        if j in paired_local:
             continue
-        if weak and joined:
-            # Use measured observations before the old coordinate can filter
-            # them out. An unsupported depth is never retained as a fallback.
-            result = TrackTriangulator.triangulate(point.observations, cameras)
-            if result is None:
-                rejected += 1
-                continue
-            xyz, observations = result
-            point = replace(point, xyz=xyz, observations=observations)
-            retriangulated += 1
         observations = {f: uv for f, uv in point.observations.items()
                         if reprojection_error(cameras[f], point.xyz, uv) <= 14}
         keys = {(f, *np.round(uv, 4)) for f, uv in observations.items()}
@@ -239,17 +235,15 @@ def merge_sparse_sections(reference: SparseModel, local: SparseModel, report: di
             continue
         claimed.update(keys)
         points.append(replace(point, observations=observations))
-        joined_count += int(joined)
-        # A bridge must really connect the sections, not just duplicate overlap tracks.
-        if joined and observations.keys() & reference_only and observations.keys() & local_only:
-            bridges += 1
     # Shared cameras themselves connect the optimization; joined overlap tracks
     # are still required even if no track spans the entire overlap interval.
     report.update(joined_track_candidates=len(pairs), conflicting_tracks=conflicts,
-                  weak_tracks_retriangulated=retriangulated, weak_tracks_rejected=rejected,
-                  preserved_nonoverlap_landmarks=preserved,
-                  retriangulation_scope="Shared global tracks only; other tracks retain child positions",
-                  retriangulation_max_reprojection_pixels=4, retriangulation_minimum_angle_degrees=1,
+                  preserved_reference_landmarks=len(reference.points),
+                  shared_tracks_kept_without_extension=unchanged,
+                  proposed_observations=proposed, accepted_observations=accepted,
+                  rejected_observations=proposed-accepted,
+                  extension_max_reprojection_pixels=4,
+                  reconciliation_policy="Preserve established tracks; gate incoming observations before joint BA",
                   retained_landmarks=len(points), joined_tracks_passing_reprojection=joined_count,
                   tracks_spanning_both_nonoverlap_regions=bridges)
     if joined_count < 20:

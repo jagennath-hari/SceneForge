@@ -26,7 +26,11 @@ must be at least six and smaller than the window size. Each window is refined
 locally, then added to the current common map using shared cameras and measured
 track identities. Joint BA uses a three-pixel Huber loss; local BA uses GNC-TLS.
 The first window establishes the coordinate system. Shared keyframes have one
-camera pose, and shared tracks are fused into one landmark.
+camera pose, and shared tracks are fused into one landmark. Reconciliation keeps
+established landmark positions and observations, admitting new observations only
+within four pixels of their predicted position. A rejected extension cannot delete
+its established track. Joint BA then refines the map, subject to current and older
+overlap validation; its normal outlier filtering still applies.
 
 `--device cuda` uses visible GPUs for VGGT windows and the first visible GPU for
 BA. `--device cuda:0` selects one GPU. Single-GPU systems use the same pipeline.
@@ -41,7 +45,7 @@ contains:
 - `status.json`: completion status, registered/missing keyframes and failing stage.
 - `selection.json`: selected keyframes mapped to original video frames/timestamps.
 - `vggt/`: initial per-window depth, calibration and camera estimates.
-- `map_TIMESTAMP/`: solver inputs, logs, validation and the final COLMAP model.
+- `map_TIMESTAMP/`: attempt settings and the final COLMAP model.
 
 Distances are in reconstruction units, not established meters. Sparse BA does
 not refine VGGT's dense depth. Full-video dense reconstruction, stereo synthesis
@@ -54,9 +58,21 @@ checks stay enabled, including checks on previously merged boundaries.
 
 ## Optional diagnostics and retry
 
-Add `--diagnostics` for intermediate viewers and CUDA Jacobian checks. Without
-it, the command produces one viewer; solver logs and essential validation records
-are still retained for failures. `--debug` adds a traceback.
+The common map stays inside one C++ object, called through pybind11. Eigen handles
+landmark initialization, Sim(3), merging and validation on the CPU; custom CUDA and
+cuNLS handle local/joint BA. Typed buffers go directly into BA without per-window
+JSON requests, subprocesses, COLMAP round trips or intermediate viewers. Track
+identities remain stable; earlier-boundary validation uses indexed lookups.
+Python loads VGGT tensors and exports the final map once. Input caches and final
+viewer/trajectory/status metadata remain; they are not solver interchange files.
+
+Add `--diagnostics` for CUDA Jacobian checks; `--debug` adds a traceback.
+The progress bar names the current native stage. Aggregate native stage timings
+are included in the final status, including when a window fails. No speedup has
+yet been measured. Eigen's Sim(3) refinement optimizes the same seven-parameter
+objective, but its LM implementation and deterministic RANSAC samples differ from
+SciPy/NumPy; results are not guaranteed to be bitwise identical. Geometry and
+held-out validation thresholds remain unchanged.
 
 To reuse unchanged inputs, feature tracks and VGGT windows from a run of this
 new pipeline, recomputing BA in a new map attempt:
@@ -93,6 +109,8 @@ our existing venv. CuPy stays below v14 to preserve NumPy 1.26. Upstream pycunls
 metadata still names CUDA 12 CuPy; its dependencies are installed explicitly, so
 package dependency checkers may report that metadata mismatch. The source is not patched.
 `find_package(cunls CONFIG REQUIRED)` exposes `cunls::cunls` for our native solver.
+The image also installs Eigen3 and builds `_stereoforge_map` into the Python venv.
+Rebuild the image after native changes; old images cannot run the new map builder.
 
 The active reconstruction command uses our custom cuNLS C++/CUDA backend.
 pyCuSFM is no longer installed. Older experimental commands that require it are

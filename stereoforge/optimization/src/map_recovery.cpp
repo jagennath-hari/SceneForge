@@ -106,10 +106,13 @@ std::optional<Landmark> Triangulate(const Observations& observations, const Spar
 }
 Camera RegisterCamera(const Camera& calibration, const std::vector<Correspondence>& train,
                       const std::vector<Correspondence>& held, FrameId frame) {
-    if (train.size() < 30 || held.size() < 10 || Coverage(train,calibration) < 6 || Coverage(held,calibration) < 3) {
+    const std::size_t training_cells = Coverage(train,calibration);
+    const std::size_t held_cells = Coverage(held,calibration);
+    if (train.size() < 30 || held.size() < 10 || training_cells < 6 || held_cells < 3) {
         throw std::runtime_error("PnP recovery frame " + std::to_string(frame) +
             ": insufficient map support/coverage (" + std::to_string(train.size()) + " training, " +
-            std::to_string(held.size()) + " held out; need 30/10 and 6/3 grid cells)");
+            std::to_string(held.size()) + " held out; occupied 4x4 cells " + std::to_string(training_cells) +
+            " training, " + std::to_string(held_cells) + " held out; need 30/10 points and 6/3 cells). PnP not attempted");
     }
     Eigen::Vector3d origin = Eigen::Vector3d::Zero();
     for (const Correspondence& pair : train) { origin += pair.position; } origin /= train.size();

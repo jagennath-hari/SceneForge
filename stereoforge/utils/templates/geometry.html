@@ -8,11 +8,11 @@
 <body>
 <header><div><h1>StereoForge</h1><p id="summary"></p><a id="refinement-link" hidden></a></div><span class="badge" id="reconstruction-name">VGGT-Ω · Reconstruction</span></header>
 <div class="workspace"><section>
-<div class="stage"><canvas id="cloud" aria-label="Interactive reconstruction. Drag to orbit, Shift-drag to pan, scroll to zoom." tabindex="0"></canvas><div class="overlay" id="scene-label"></div><div class="legend">Cyan · camera trajectory　 Amber · selected camera</div></div>
+<div class="stage"><canvas id="cloud" aria-label="Interactive reconstruction. Drag to orbit, Shift-drag to pan, scroll to zoom." tabindex="0"></canvas><div class="overlay" id="scene-label"></div><div class="legend">Cyan · camera trajectory　 Amber · selected camera<br>Selected axes: red X right · green Y down · blue Z forward</div></div>
 <div id="error" role="alert"></div>
 <div class="timeline"><button id="play" aria-label="Play reconstruction">Play</button><button id="previous" aria-label="Previous frame">‹</button><input id="frame" aria-label="Frame timeline" type="range" min="0" value="0" step="1"><button id="next" aria-label="Next frame">›</button><span id="number"></span><select id="speed" aria-label="Playback speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></div>
-<div class="toolbar"><label><input id="progressive" type="checkbox" checked>Progressive reveal</label><label><input id="cameras" type="checkbox" checked>Cameras</label><label>Point size <input id="size" type="range" min="1" max="6" value="2" step="0.5"></label><button id="reset">Reset view</button></div>
-<p class="notes">Drag to orbit · Shift-drag or right-drag to pan · Scroll to zoom. Playback reveals the final aligned geometry in video-frame order. It does not replay inference or optimization history. Points are sampled; dense surfaces are not fused.</p>
+<div class="toolbar"><label><input id="progressive" type="checkbox" checked>Progressive reveal</label><label><input id="cameras" type="checkbox" checked>Cameras</label><label><input id="axes" type="checkbox" checked>Selected camera axes</label><label>Point size <input id="size" type="range" min="1" max="6" value="2" step="0.5"></label><button id="reset">Reset view</button></div>
+<p class="notes">Drag to orbit · Shift-drag or right-drag to pan · Scroll to zoom. This is an external orbit view: screen-right is not necessarily camera-right. Playback reveals the final aligned geometry in video-frame order. It does not replay inference or optimization history. Points are sampled; dense surfaces are not fused.</p>
 </section><aside class="sidebar"><figure><img id="rgb" alt="Selected RGB frame"><figcaption>Processed RGB</figcaption></figure><figure><img id="depth" alt="Selected depth map"><figcaption>Depth · yellow near, purple far</figcaption></figure><figure><img id="confidence" alt="Selected confidence map"><figcaption>Confidence · yellow high</figcaption></figure><pre id="stats"></pre></aside></div>
 <p><a href="geometry.npz">Geometry arrays</a> · <a href="metadata.json">Metadata</a> · <a href="point_cloud.ply">Point cloud</a> · <a href="contact_sheet.jpg">Contact sheet</a></p>
 <script id="data" type="application/json">__GEOMETRY_DATA__</script>
@@ -70,7 +70,7 @@ class ReconstructionViewer {
    const corners=[[0,0],[w,0],[w,h],[0,h]].map(world);this.cameraOffsets.push(frustums.length/7);
    for(let j=0;j<4;j++){edge(frustums,this.cameras[i],corners[j],[.3,.65,.7],i);edge(frustums,corners[j],corners[(j+1)%4],[.3,.65,.7],i);}
   });
-  this.path=this.buffer(lines);this.frustums=this.buffer(frustums);this.frustumVertices=frustums;this.highlight=this.buffer([]);
+  this.path=this.buffer(lines);this.frustums=this.buffer(frustums);this.frustumVertices=frustums;this.highlight=this.buffer([]);this.selectedAxes=this.buffer([]);
  }
  drawBuffer(object,mode,round=false,first=0,count=object.count){
   const gl=this.gl;gl.bindBuffer(gl.ARRAY_BUFFER,object.buffer);
@@ -86,6 +86,7 @@ class ReconstructionViewer {
   gl.uniform1f(this.uniforms.limit,$('progressive').checked?this.index:this.frames.length);
   this.drawBuffer(this.points,gl.POINTS,true);
   if($('cameras').checked){this.drawBuffer(this.path,gl.LINES);this.drawBuffer(this.frustums,gl.LINES);gl.disable(gl.DEPTH_TEST);this.drawBuffer(this.highlight,gl.LINES);gl.enable(gl.DEPTH_TEST);}
+  if($('axes').checked){gl.disable(gl.DEPTH_TEST);this.drawBuffer(this.selectedAxes,gl.LINES);gl.enable(gl.DEPTH_TEST);}
  }
  update(){
   const f=this.frames[this.index];$('frame').value=this.index;$('number').textContent=`${this.index+1} / ${this.frames.length}`;
@@ -93,6 +94,23 @@ class ReconstructionViewer {
   for(const kind of ['rgb','depth','confidence'])if(f.previews[kind])$(kind).src=f.previews[kind];
   $('stats').textContent=`Frame ${f.frame_index}\nValid depth: ${(f.valid_fraction*100).toFixed(1)}%\nMedian depth: ${f.depth_p50===null?'unavailable':f.depth_p50.toPrecision(4)}\nUnits: ${data.units}\nProcessed: ${f.processed_size_hw[1]} × ${f.processed_size_hw[0]}\n${f.source}`;
   if(data.sparse_only)$('stats').textContent=`Frame ${f.frame_index}\nSparse BA reconstruction\nScale uncalibrated\nProcessed: ${f.processed_size_hw[1]} × ${f.processed_size_hw[0]}\n${f.source}`;
+  const pose=f.camera_to_world,center=pose.slice(0,3).map(row=>row[3]);
+  const format=v=>v.map(x=>Number(x).toFixed(4)).join(', ');
+  $('stats').textContent+=`\nCamera center (world XYZ): ${format(center)}`;
+  if(this.index){
+   const previous=this.frames[this.index-1].camera_to_world;
+   const delta=center.map((value,k)=>value-previous[k][3]);
+   const relative=[0,1,2].map(axis=>delta.reduce((sum,value,k)=>sum+previous[k][axis]*value,0));
+   let trace=0;for(let row=0;row<3;row++)for(let col=0;col<3;col++)trace+=previous[row][col]*pose[row][col];
+   const angle=Math.acos(Math.max(-1,Math.min(1,(trace-1)/2)))*180/Math.PI;
+   $('stats').textContent+=`\nStep in previous camera axes\n(right, down, forward): ${format(relative)}\nRotation step: ${angle.toFixed(2)}°`;
+  }
+  const axes=[],origin=this.cameras[this.index],colors=[[1,.2,.2],[.2,1,.3],[.3,.5,1]];
+  for(let axis=0;axis<3;axis++){
+   const end=origin.map((value,k)=>value+.09*pose[k][axis]);
+   axes.push(...origin,...colors[axis],this.index,...end,...colors[axis],this.index);
+  }
+  this.gl.bindBuffer(this.gl.ARRAY_BUFFER,this.selectedAxes.buffer);this.gl.bufferData(this.gl.ARRAY_BUFFER,new Float32Array(axes),this.gl.DYNAMIC_DRAW);this.selectedAxes.count=6;
   const start=this.cameraOffsets[this.index]*7,selected=this.frustumVertices.slice(start,start+16*7);
   for(let i=0;i<selected.length;i+=7){selected[i+3]=1;selected[i+4]=.65;selected[i+5]=.2;}
   this.gl.bindBuffer(this.gl.ARRAY_BUFFER,this.highlight.buffer);this.gl.bufferData(this.gl.ARRAY_BUFFER,new Float32Array(selected),this.gl.DYNAMIC_DRAW);this.highlight.count=16;this.draw();
@@ -102,7 +120,7 @@ class ReconstructionViewer {
   $('frame').max=this.frames.length-1;$('frame').oninput=()=>this.select(Number($('frame').value));
   $('play').onclick=()=>{if(this.index===this.frames.length-1)this.select(0);this.playing=!this.playing;$('play').textContent=this.playing?'Pause':'Play';};
   $('previous').onclick=()=>this.select(this.index-1);$('next').onclick=()=>this.select(this.index+1);
-  for(const id of ['progressive','cameras','size'])$(id).oninput=()=>this.update();
+  for(const id of ['progressive','cameras','axes','size'])$(id).oninput=()=>this.update();
   $('reset').onclick=()=>{this.yaw=0;this.pitch=-.3;this.zoom=1;this.pan=[0,0];this.draw();};
   let pointer=null;this.canvas.oncontextmenu=e=>e.preventDefault();
   this.canvas.onpointerdown=e=>{pointer={x:e.clientX,y:e.clientY,pan:e.shiftKey||e.button===2};this.canvas.setPointerCapture(e.pointerId);};

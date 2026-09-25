@@ -5,6 +5,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image
+from scipy.optimize import least_squares
 
 from stereoforge.refinement.sparse_model import SparseCamera, SparseModel, SparsePoint, reprojection_error
 from stereoforge.refinement.bundle_adjustment import SparseBundleAdjuster
@@ -21,6 +22,9 @@ class MapRegistration:
 
     Subclasses initialize the map, track identities, calibration and report state.
     """
+
+    refine_focal: bool = False
+    validate_after_ba: bool = False
 
     run: Path
     output: Path
@@ -86,6 +90,9 @@ class MapRegistration:
         pose = np.eye(4)
         pose[:3, :3], pose[:3, 3] = r.T, -r.T @ translation.ravel()
         candidate = replace(camera, pose=pose)
+        if self.refine_focal:
+            candidate, record['focal_refinement'] = self.refine_training_calibration(
+                candidate, xyz, uv, selected, rotation, translation)
         good = [t for t in train if reprojection_error(candidate, self.model.points[mapping[t]].xyz, self.tracks[t][frame]) <= 3]
         h, w = camera.size_hw
         cells = {(min(3, max(0, int(self.tracks[t][frame][0]*4/w))),
@@ -95,7 +102,8 @@ class MapRegistration:
                                                         self.tracks[t][frame]) <= 3 for t in held)
         record.update(training_inliers=len(good), training_fraction=len(good)/len(train),
                       held_out_count=len(held), held_out_fraction=passed/len(held), grid_cells=len(cells))
-        if len(good) < 30 or len(good)/len(train) < 0.7 or passed/len(held) < 0.7 or len(cells) < 6:
+        training_passed = len(good) >= 30 and len(good)/len(train) >= 0.7 and len(cells) >= 6
+        if not training_passed or (not self.validate_after_ba and passed/len(held) < 0.7):
             record['status'] = 'pose_validation_failed'
             self.save_report()
             return False
@@ -104,9 +112,90 @@ class MapRegistration:
             i = mapping[t]
             points[i] = replace(points[i], observations={**points[i].observations, frame: self.tracks[t][frame]})
         self.model = SparseModel({**self.model.cameras, frame: candidate}, tuple(points))
-        record['status'] = 'registered'
+        record['status'] = 'provisional_for_ba' if self.validate_after_ba else 'registered'
         self.save_report()
         return True
+
+    @staticmethod
+    def refine_training_calibration(camera: SparseCamera, xyz: np.ndarray, uv: np.ndarray,
+                                    selected: np.ndarray, rotation: np.ndarray,
+                                    translation: np.ndarray) -> tuple[SparseCamera, dict]:
+        """Fit pose and one focal multiplier; this API never receives holdouts.
+
+        Use RANSAC training inliers for fitting and all training observations for
+        model selection. Preserve principal point and fx/fy ratio. The +/-10%
+        bound is a conservative experiment, not a general zoom calibration model.
+        """
+        initial_rotation = cv2.Rodrigues(rotation)[0]
+        initial_translation = translation.ravel()
+        camera_xyz = xyz @ initial_rotation.T + initial_translation
+        positive = camera_xyz[:, 2] > 0
+        details = {'status': 'insufficient_positive_depth', 'selected': False,
+                   'initial_focal': camera.intrinsics.diagonal()[:2].tolist(),
+                   'multiplier_bounds': [0.9, 1.1]}
+        if not positive.any():
+            return camera, details
+        length = float(np.median(camera_xyz[positive, 2]))
+        near = max(length * 1e-8, np.finfo(float).eps)
+
+        def project(parameters: np.ndarray, points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+            # Local increments and scene-normalized translation keep the solver
+            # independent of the arbitrary reconstruction scale.
+            delta_rotation = cv2.Rodrigues(parameters[:3])[0]
+            transformed = (points @ initial_rotation.T + initial_translation) @ delta_rotation.T
+            transformed += parameters[3:6] * length
+            focal = camera.intrinsics.diagonal()[:2] * np.exp(parameters[6])
+            pixels = transformed[:, :2] / np.maximum(transformed[:, 2:3], near)
+            return pixels * focal + camera.intrinsics[:2, 2], transformed[:, 2]
+
+        def residual(parameters: np.ndarray) -> np.ndarray:
+            pixels, depth = project(parameters, xyz[selected])
+            # Penalize crossing the camera plane as well as reprojection error.
+            return np.concatenate(((pixels - uv[selected]).ravel(),
+                                   np.minimum(depth - near, 0) / length * 1000))
+
+        def score(parameters: np.ndarray) -> tuple[int, float]:
+            pixels, depth = project(parameters, xyz)
+            errors = np.linalg.norm(pixels - uv, axis=1)
+            errors[depth <= near] = np.inf
+            return int(np.count_nonzero(errors <= 3)), float(np.mean(np.minimum(errors, 3)**2))
+
+        initial = np.zeros(7)
+        lower, upper = np.full(7, -np.inf), np.full(7, np.inf)
+        lower[6], upper[6] = np.log(0.9), np.log(1.1)
+        result = least_squares(residual, initial, bounds=(lower, upper),
+                               loss='soft_l1', f_scale=1.5, max_nfev=100, x_scale='jac')
+        if not np.all(np.isfinite(result.x)) or not np.all(np.isfinite(result.jac)):
+            details['status'] = 'nonfinite_solution'
+            return camera, details
+        multiplier = float(np.exp(result.x[6]))
+        singular = np.linalg.svd(result.jac, compute_uv=False)
+        ratio = float(singular[-1] / singular[0]) if singular[0] > 0 else 0.0
+        baseline_count, baseline_cost = score(initial)
+        refined_count, refined_cost = score(result.x)
+        at_bound = min(multiplier - 0.9, 1.1 - multiplier) < 0.001
+        accepted = bool(result.success and not at_bound and ratio > 1e-8
+                        and refined_count >= baseline_count and refined_cost < baseline_cost)
+        details.update(status='selected' if accepted else 'kept_fixed_calibration',
+                       selected=accepted, solver_success=bool(result.success),
+                       solver_message=str(result.message), evaluations=int(result.nfev),
+                       proposed_multiplier=multiplier, at_bound=at_bound,
+                       jacobian_singular_ratio=ratio,
+                       training_inliers_before=baseline_count, training_inliers_after=refined_count,
+                       training_clipped_mse_before=baseline_cost, training_clipped_mse_after=refined_cost,
+                       final_focal=(camera.intrinsics.diagonal()[:2] * (multiplier if accepted else 1)).tolist())
+        if not accepted:
+            return camera, details
+        delta_rotation = cv2.Rodrigues(result.x[:3])[0]
+        refined_rotation = delta_rotation @ initial_rotation
+        refined_translation = delta_rotation @ initial_translation + result.x[3:6] * length
+        pose = np.eye(4)
+        pose[:3, :3] = refined_rotation.T
+        pose[:3, 3] = -refined_rotation.T @ refined_translation
+        intrinsics = camera.intrinsics.copy()
+        intrinsics[0, 0] *= multiplier
+        intrinsics[1, 1] *= multiplier
+        return replace(camera, pose=pose, intrinsics=intrinsics), details
 
     def extend_tracks(self) -> int:
         mapping = self.associations()

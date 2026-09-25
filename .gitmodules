@@ -6,10 +6,10 @@
 	path = third_party/stereospace
 	url = https://github.com/prs-eth/stereospace.git
 	branch = main
-[submodule "third_party/pycusfm"]
-	path = third_party/pycusfm
-	url = https://github.com/nvidia-isaac/pyCuSFM.git
-	branch = main
 [submodule "third_party/lightglue-onnx"]
 	path = third_party/lightglue-onnx
 	url = https://github.com/fabio-sim/LightGlue-ONNX.git
+[submodule "third_party/cuNLS"]
+	path = third_party/cuNLS
+	url = https://github.com/nvidia-isaac/cuNLS.git
+	branch = main

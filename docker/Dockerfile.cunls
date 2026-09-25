@@ -1,0 +1,62 @@
+# syntax=docker/dockerfile:1
+ARG BASE_FROM=stereoforge/stereo:latest
+FROM ${BASE_FROM} AS cunls
+
+# Build the checked-out submodule against the same CUDA toolkit as StereoForge.
+# No edits to upstream source, GPU access, examples, or tests are required here.
+ARG BUILD_JOBS=4
+COPY third_party/cuNLS/ /opt/third_party/cuNLS/
+RUN cmake -S /opt/third_party/cuNLS -B /tmp/cunls-build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/opt/cunls \
+        -DBUILD_SHARED_LIBS=ON \
+        -DBUILD_PYTHON_BINDINGS=OFF \
+        -DBUILD_TESTING=OFF && \
+    cmake --build /tmp/cunls-build --parallel "${BUILD_JOBS}" && \
+    cmake --install /tmp/cunls-build && \
+    cp -a /tmp/cunls-build/_deps/cudss-src /opt/cudss && \
+    rm -rf /tmp/cunls-build
+
+# cuNLS loads cuDSS with dlopen; expose both native libraries to future callers.
+ENV CMAKE_PREFIX_PATH=/opt/cunls \
+    LD_LIBRARY_PATH=/opt/cunls/lib:/opt/cudss/lib:${LD_LIBRARY_PATH}
+
+# CuPy 14 requires NumPy 2, whereas VGGT-Omega uses our pinned NumPy 1.26.
+# Upstream pycunls metadata requests cupy-cuda12x; install the CUDA 13 variant
+# explicitly and skip dependency resolution for pycunls without patching upstream.
+# Its wheel statically builds cuNLS; the shared installation above is for C++.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install 'cupy-cuda13x>=13.6,<14' && \
+    CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS}" \
+        uv pip install --no-deps /opt/third_party/cuNLS/python && \
+    rm -rf /opt/third_party/cuNLS/python/build
+
+ARG USER_UID=1000
+ARG USER_GID=1000
+
+# Ubuntu images can already have a user at UID 1000. Reuse that UID safely.
+RUN if ! getent group "${USER_GID}" >/dev/null; then \
+        groupadd --gid "${USER_GID}" stereoforge; \
+    fi && \
+    if getent passwd "${USER_UID}" >/dev/null; then \
+        existing_user="$(getent passwd "${USER_UID}" | cut -d: -f1)"; \
+        usermod --gid "${USER_GID}" --home /home/stereoforge \
+            --shell /bin/bash "${existing_user}"; \
+    else \
+        useradd --uid "${USER_UID}" --gid "${USER_GID}" \
+            --home-dir /home/stereoforge --shell /bin/bash stereoforge; \
+    fi && \
+    mkdir -p /home/stereoforge/.cache /workspace/StereoForge/data && \
+    chown -R "${USER_UID}:${USER_GID}" /home/stereoforge /workspace/StereoForge
+
+# Include source defaults so the image also contains the project without mounts.
+COPY --chown=${USER_UID}:${USER_GID} stereoforge/ /workspace/StereoForge/stereoforge/
+COPY --chown=${USER_UID}:${USER_GID} configs/ /workspace/StereoForge/configs/
+ENV HOME=/home/stereoforge \
+    XDG_CACHE_HOME=/home/stereoforge/.cache \
+    HF_HOME=/home/stereoforge/.cache/huggingface \
+    TORCH_HOME=/home/stereoforge/.cache/torch
+
+USER ${USER_UID}:${USER_GID}
+WORKDIR /workspace/StereoForge
+CMD ["/bin/bash"]

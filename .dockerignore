@@ -7,8 +7,8 @@
 !third_party/vggt-omega/**
 !third_party/stereospace/
 !third_party/stereospace/**
-!third_party/pycusfm/
-!third_party/pycusfm/**
+!third_party/cuNLS/
+!third_party/cuNLS/**
 !third_party/lightglue-onnx/
 !third_party/lightglue-onnx/**
 !stereoforge/
@@ -24,8 +24,9 @@ stereoforge/native/**/build/
 **/.venv
 **/.secrets
 **/.secrets/**
-third_party/pycusfm/pycusfm/x86_cuda12/
-# The application only uses ALIKED and its matching LightGlue models.
-third_party/pycusfm/pycusfm/models/superpoint_lightglue/
+# Ignore local cuNLS build products; Docker compiles the checked-out source.
+third_party/cuNLS/build*/
+third_party/cuNLS/python/build/
+third_party/cuNLS/dist/
 
 third_party/lightglue-onnx/weights/

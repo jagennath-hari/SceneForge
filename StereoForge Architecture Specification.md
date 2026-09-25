@@ -60,7 +60,7 @@ StereoForge/
 │   ├── Dockerfile.base
 │   ├── Dockerfile.geometry
 │   ├── Dockerfile.stereo
-│   ├── Dockerfile.pycusfm
+│   ├── Dockerfile.cunls
 │   └── constraints.txt
 ├── scripts/build_and_start.sh        # Build environment and enter/attach to it
 ├── stereoforge/
@@ -98,7 +98,7 @@ StereoForge/
 │       └── templates/geometry.html # Self-contained WebGL viewer
 ├── third_party/                     # Pinned Git submodules
 │   ├── vggt-omega/
-│   ├── pycusfm/
+│   ├── cuNLS/
 │   └── stereospace/
 ├── data/                            # Local inputs and generated artifacts; ignored
 ├── .cache/                          # Persistent download/engine cache; ignored
@@ -112,11 +112,20 @@ from the mounted workspace; dependency installation belongs to Dockerfiles and
 
 ## Environment boundary
 
-The image chain is CUDA → base → geometry → stereo → pyCuSFM. Each Dockerfile has
+The image chain is CUDA → base → geometry → stereo → cuNLS. Each Dockerfile has
 an explicit named stage and accepts `BASE_FROM`. The current base is
 `nvidia/cuda:13.2.1-cudnn-devel-ubuntu24.04`. PyTorch uses the CUDA 13.2 wheel index;
-TensorRT is pinned to the version selected for the bundled pyCuSFM CUDA-13 binaries.
-This does not mean the closed upstream binaries were rebuilt for CUDA 13.2.
+TensorRT retains its working version for native keyframe inference. cuNLS is built
+from the pinned, unchanged submodule using this image's CUDA toolkit. Its shared
+C++ library, headers and CMake config install under `/opt/cunls`; cuDSS libraries
+from the matching upstream dependency archive install under `/opt/cudss/lib`.
+Python bindings install into the existing venv with CUDA 13 CuPy <14 to retain NumPy
+1.26 compatibility. Upstream's CUDA-12-specific Python dependency is bypassed with
+explicit installation, not a source patch. Builds do not execute GPU tests.
+
+This is an environment migration only: the older reconstruction paths documented
+below still require pyCuSFM and must be replaced before they run in the new image.
+The planned custom cuNLS optimization backend is not implemented yet.
 
 One uv-created virtual environment is shared by all Python dependencies. The
 legacy TensorRT installation uses pip in that same environment. BuildKit caches
@@ -725,19 +734,35 @@ and held-out validation used by both bounded and full-sequence reconstruction.
 selects this path for new videos. Legacy hierarchy orchestration remains separate.
 
 The seed must retain all initial cameras with at least sixty points through BA.
-Subsequent PINHOLE calibration starts from the median seed intrinsics; significant
-zoom or changing image dimensions are outside this initialization model. No later
+Subsequent PINHOLE calibration starts from the median seed intrinsics. Incremental
+registration optionally selects a joint pose/focal fit using only training observations:
+RANSAC inliers drive robust least squares; all training observations score the candidate.
+One focal multiplier is bounded to [0.9, 1.1]; aspect ratio and principal point remain
+fixed. Nonconverged, poorly conditioned or bound-hitting fits retain the fixed-calibration
+pose, as do fits that lose training inliers or fail to improve clipped training error.
+Held-out observations never select the calibration hypothesis. This bounded correction
+is not general self-calibration and does not establish that calibration caused a failure.
+Changing image dimensions and substantial zoom remain outside this model. No later
 VGGT camera pose is inserted. PnP retains the bounded experiment's 40-correspondence,
 30-training-inlier, 70% three-pixel train/holdout and six-grid-cell requirements.
 Held-out target observations remain excluded from PnP, triangulation and BA.
 
 The map extends in temporal proximity order, capable of growing in either direction
-from its registered frames. Global BA follows every eight accepted cameras and each
-pass's remaining registrations. Loss of supported cameras or failed held-out checks
-stops the run. The last validated sparse model and its holdout identities, calibration,
+from its registered frames. Training-qualified PnP proposals enter temporary maps for joint BA before held-out
+acceptance; the 70% held-out threshold is unchanged. Held-out pixels remain excluded
+from fitting, track extension and BA. Loss of any supported camera or failure of any
+registered target's held-out check rejects the proposal, rolls back the entire map,
+and allows other candidates to proceed. Native execution errors still stop the run.
+Only validated proposals advance camera counts and the committed sparse-model pointer.
+Per-attempt reports retain both pre-BA metrics and post-BA validation, including rejected
+BA artifact paths. No-progress checkpoints preserve new holdout identities and attempt
+history while retaining the previous validated map. The last validated sparse model and its holdout identities, calibration,
 target list, track digest and report are referenced by an atomic state file. Native
 failed/uncommitted rounds remain separate and are never reused as accepted state.
-Resume restarts from that validated checkpoint. Completion requires all selected
+Resume restarts from that validated checkpoint. The checkpoint format stays compatible
+with earlier incremental runs, preserving their held-out identities and map; registration
+policy metadata records the new training-only calibration and per-camera BA behavior.
+The bounded boundary demo retains its supplied per-frame calibration without this fit. Completion requires all selected
 frames; no-progress runs publish partial coverage with missing IDs and nonzero exit.
 
 The result is a colored sparse map and camera trajectory, not dense geometry or a

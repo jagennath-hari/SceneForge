@@ -19,10 +19,14 @@ from .map_registration import MapRegistration, key
 from .triangulation import TrackTriangulator
 from .view_graph import Cluster, VerifiedGraph
 
-POLICY = 'incremental_map_v1'
+POLICY = 'incremental_map_v1'  # Checkpoint format remains compatible.
+REGISTRATION_POLICY = 'training_proposal_validated_ba_v3'
 
 
 class IncrementalMapper(MapRegistration):
+    refine_focal = True
+    validate_after_ba = True
+
     def __init__(self, frontend: ReconstructionFrontend, tracks: list[dict], model: SparseModel,
                  count: int, calibration: np.ndarray, size: tuple[int, int], state: dict | None) -> None:
         self.run = self.output = frontend.output
@@ -42,43 +46,66 @@ class IncrementalMapper(MapRegistration):
         self.report = ({'status': 'running', 'pipeline': POLICY, 'input_frames': count,
                         'anchor_frames': sorted(model.cameras), 'target_frames': self.targets,
                         'attempts': [], 'ba_rounds': [], 'units': 'reconstruction_units',
-                        'calibration_policy': 'Seed median PINHOLE intrinsics initialize later frames; fixed processed image size, no zoom model',
                         'validation_scope': 'Held-out target pixels excluded from registration, triangulation and BA; seed has no independent ground truth'}
                        if state is None else state['report'])
+        self.report.update(
+            registration_policy=REGISTRATION_POLICY,
+            calibration_policy='Seed median PINHOLE; training-only pose/focal refinement within +/-10%; fixed aspect ratio and principal point',
+            ba_policy='Training-qualified proposal, joint BA, then held-out acceptance or full rollback')
+        self.committed_directory = None if state is None else self.output / state['directory']
         require_connected(model)
 
     def checkpoint(self, directory: Path, tracks_digest: str) -> None:
-        state = {'policy': POLICY, 'directory': str(directory.relative_to(self.output)),
+        state = {'policy': POLICY, 'registration_policy': REGISTRATION_POLICY, 'directory': str(directory.relative_to(self.output)),
                  'tracks_sha256': tracks_digest, 'input_frames': len(self.ids),
                  'intrinsics': self.intrinsics.tolist(), 'size_hw': self.size,
                  'holdouts': self.holdouts, 'targets': self.targets, 'report': self.report}
         temporary = self.output / 'incremental_state.tmp'
         write_json(temporary, state)
         temporary.replace(self.output / 'incremental_state.json')
+        self.committed_directory = directory
 
-    def optimize(self, tracks_digest: str) -> None:
+    def optimize(self, tracks_digest: str, previous: SparseModel, frame: int) -> bool:
+        """Commit a training-qualified proposal only after joint held-out validation."""
         seed = self.model
+        attempt = self.report['attempts'][-1]
         directory = self.output / 'map_ba' / uuid4().hex
-        optimized = self.optimizer.optimize_sparse(seed, directory, self.ids, self.package)
-        self.model = optimized
-        validation = self.validate()
+        attempt['ba_directory'] = str(directory.relative_to(self.output))
+        try:
+            optimized = self.optimizer.optimize_sparse(seed, directory, self.ids, self.package)
+            self.model = optimized
+            validation = self.validate()
+        except Exception:
+            # Native/IO failures remain visible. Never leave a provisional map
+            # in memory or advance the committed checkpoint after an exception.
+            self.model = previous
+            attempt['status'] = 'ba_error'
+            self.save_report()
+            raise
         lost = sorted(seed.cameras.keys() - optimized.cameras.keys())
-        record = {'directory': str(directory.relative_to(self.output)), 'registered_frames': len(optimized.cameras),
+        accepted = not lost and validation['passed']
+        record = {'directory': str(directory.relative_to(self.output)), 'candidate_frame': frame,
+                  'accepted': accepted, 'registered_frames': len(optimized.cameras),
                   'lost_cameras': lost, 'validation': validation}
         write_json(directory / 'map_validation.json', record)
-        if lost or not validation['passed']:
-            # The last committed map remains resumable; the rejected BA is retained separately.
-            self.model = seed
-            self.report.update(status='failed', rejected_ba=record)
-            self.save_report()
-            raise ValueError(f'Map BA lost cameras or failed held-out checks; inspect {directory / "map_validation.json"}')
         self.report['ba_rounds'].append(record)
+        attempt['post_ba_validation'] = next(
+            (check for check in validation['frames'] if check['frame'] == frame), None)
+        if not accepted:
+            # Discard the candidate, its triangulated points, and every BA change
+            # together. Reserved holdout identities remain fixed for future tries.
+            self.model = previous
+            attempt['status'] = 'post_ba_validation_failed'
+            self.save_report()
+            return False
+        attempt['status'] = 'registered'
         self.report['status'] = 'running'
         self.save_report()
         self.checkpoint(directory / 'workspace/sparse', tracks_digest)
+        return True
 
     def grow(self, tracks_digest: str) -> dict:
-        pass_id = 0
+        pass_id = 1 + max((attempt['pass'] for attempt in self.report['attempts']), default=-1)
         with progress_group('Incremental reconstruction'):
             with Progress('Registered cameras', len(self.ids), 'frame') as progress:
                 progress.advance(len(self.model.cameras))
@@ -87,19 +114,15 @@ class IncrementalMapper(MapRegistration):
                     registered = sorted(self.model.cameras)
                     # Grow from the current map in either temporal direction.
                     candidates = sorted(missing, key=lambda f: (min(abs(f-r) for r in registered), f))
-                    accepted = pending = 0
+                    accepted = 0
                     for frame in candidates:
                         progress.status(f'{len(self.model.cameras)}/{len(self.ids)} registered; trying frame {frame}')
+                        previous = self.model
                         if self.register(frame, pass_id):
-                            accepted += 1
-                            pending += 1
                             self.extend_tracks()
-                            progress.advance()
-                            if pending == 8:
-                                self.optimize(tracks_digest)
-                                pending = 0
-                    if pending:
-                        self.optimize(tracks_digest)
+                            if self.optimize(tracks_digest, previous, frame):
+                                accepted += 1
+                                progress.advance()
                     if not accepted:
                         break
                     pass_id += 1
@@ -108,6 +131,10 @@ class IncrementalMapper(MapRegistration):
                            registered_frames=len(self.model.cameras), dense_depth_refined=False,
                            reconstruction_name='Incremental pyCuSFM', statistics=model_statistics(self.model))
         self.save_report()
+        if self.committed_directory is not None:
+            # Persist failed attempts and fixed holdouts even when no camera grew
+            # the map. The sparse-model pointer still names a validated checkpoint.
+            self.checkpoint(self.committed_directory, tracks_digest)
         return self.report
 
 

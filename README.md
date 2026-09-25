@@ -22,12 +22,14 @@ The default seed is the first 32 selected keyframes (`--seed-frames 16–64`).
 Only the seed receives VGGT poses. All later poses are estimated from 2D–3D
 correspondences against the growing map. There is no required section Sim(3).
 The same registration code is shared with the successful bounded experiment.
-BA runs every eight accepted frames and at the end of each pass. Missing frames
+A camera passing the training PnP checks enters a temporary map for joint BA.
+The unchanged held-out checks then decide whether to commit it. Failed proposals
+roll back the camera, added landmarks and all BA changes; other candidates can proceed. Missing frames
 are retried after map growth; a pass with no progress produces an explicit partial
 result. Completion requires every selected keyframe, including all seed cameras.
 
 Open `data/intermediate/incremental_TIMESTAMP/index.html`; `report.json` lists
-missing frames, PnP attempts and validation. `map_ba/` retains native logs and
+missing frames, PnP attempts and validation before/after candidate BA. `map_ba/` retains native logs and
 COLMAP models. `incremental_state.json` atomically points to the last BA checkpoint
 that preserved supported cameras and passed withheld-pixel checks. Resume with:
 
@@ -42,8 +44,13 @@ are checked. The root viewer covers the whole requested sequence; a partial map
 is never labeled complete. Sparse reconstruction is not dense surface reconstruction.
 
 Initial calibration for later frames is the median optimized seed intrinsics.
-This assumes constant image dimensions and no substantial zoom; it is not a general
-self-calibration solution. PnP and triangulation run on CPU, TensorRT matching and
+A training-only refinement can adjust pose and a common fx/fy multiplier within
+±10%, keeping the principal point and aspect ratio fixed. Bounds, conditioning,
+and training scores determine whether to retain this adjustment; unchanged held-out
+checks decide camera acceptance after joint BA. Held-out pixels never enter that BA. Per-attempt focal diagnostics are in `report.json`.
+This assumes constant image dimensions and is not a general self-calibration solution.
+Existing incremental checkpoints retain their map and held-out observation identities
+when resumed under this registration policy. PnP and triangulation run on CPU, TensorRT matching and
 pyCuSFM BA use the selected GPU. One VGGT seed uses one GPU and unloads before BA.
 No nonlocal loop retrieval or dense-depth refinement is added by this path.
 End-to-end runtime validation remains user-run.
@@ -72,11 +79,24 @@ git submodule update --init --recursive
 bash scripts/build_and_start.sh
 ```
 
-The script builds the CUDA → base → geometry → stereo → pyCuSFM image chain with
+The script builds the CUDA → base → geometry → stereo → cuNLS image chain with
 BuildKit and starts an interactive container. If the named container is already
 running, it attaches without rebuilding. Exit/stop it before rebuilding changed
 Dockerfiles or native code. Python source and configuration changes are visible
 through their explicit workspace mounts.
+
+The final image builds the unchanged `third_party/cuNLS` checkout against CUDA 13.2.
+It installs C++ headers/library and CMake targets under `/opt/cunls`, the matching
+cuDSS shared libraries under `/opt/cudss/lib`, and `pycunls` plus CUDA 13 CuPy in
+our existing venv. CuPy stays below v14 to preserve NumPy 1.26. Upstream pycunls
+metadata still names CUDA 12 CuPy; its dependencies are installed explicitly, so
+package dependency checkers may report that metadata mismatch. The source is not patched.
+`find_package(cunls CONFIG REQUIRED)` exposes `cunls::cunls` for our future native solver.
+
+**Backend migration in progress:** pyCuSFM is no longer installed. The existing
+reconstruction/refinement commands still call it and will not run in this image
+until the custom cuNLS backend is implemented. Video decoding and keyframe selection
+remain available; installing cuNLS does not yet migrate reconstruction.
 
 The environment uses the NVIDIA runtime, all visible GPUs, privileged mode,
 host network/PID/IPC, and X11 mounts. It mounts source, configuration, data

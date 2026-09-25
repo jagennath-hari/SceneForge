@@ -9,9 +9,9 @@ CUDA_IMAGE="nvidia/cuda:13.2.1-cudnn-devel-ubuntu24.04"
 BASE_IMAGE="${ORG}/base:${TAG}"
 GEOMETRY_IMAGE="${ORG}/geometry:${TAG}"
 STEREO_IMAGE="${ORG}/stereo:${TAG}"
-PYCUSFM_IMAGE="${ORG}/pycusfm:${TAG}"
+CUNLS_IMAGE="${ORG}/cunls:${TAG}"
 RUN_CONTAINER="stereoforge"
-RUN_IMAGE="${PYCUSFM_IMAGE}"
+RUN_IMAGE="${CUNLS_IMAGE}"
 
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
@@ -29,20 +29,20 @@ if docker ps --format '{{.Names}}' | grep -Fxq "${RUN_CONTAINER}"; then
     exec docker exec -it "${RUN_CONTAINER}" bash
 fi
 
-# Build order: NVIDIA CUDA → base → geometry → stereo → pyCuSFM.
+# Build order: NVIDIA CUDA → base → geometry → stereo → cuNLS.
 declare -A DOCKERFILES=(
     ["${BASE_IMAGE}"]="docker/Dockerfile.base"
     ["${GEOMETRY_IMAGE}"]="docker/Dockerfile.geometry"
     ["${STEREO_IMAGE}"]="docker/Dockerfile.stereo"
-    ["${PYCUSFM_IMAGE}"]="docker/Dockerfile.pycusfm"
+    ["${CUNLS_IMAGE}"]="docker/Dockerfile.cunls"
 )
 declare -A PARENTS=(
     ["${BASE_IMAGE}"]="${CUDA_IMAGE}"
     ["${GEOMETRY_IMAGE}"]="${BASE_IMAGE}"
     ["${STEREO_IMAGE}"]="${GEOMETRY_IMAGE}"
-    ["${PYCUSFM_IMAGE}"]="${STEREO_IMAGE}"
+    ["${CUNLS_IMAGE}"]="${STEREO_IMAGE}"
 )
-BUILD_SEQUENCE=("${BASE_IMAGE}" "${GEOMETRY_IMAGE}" "${STEREO_IMAGE}" "${PYCUSFM_IMAGE}")
+BUILD_SEQUENCE=("${BASE_IMAGE}" "${GEOMETRY_IMAGE}" "${STEREO_IMAGE}" "${CUNLS_IMAGE}")
 
 # Optional runtime credential file; never pass its contents to Docker or builds.
 HF_SECRET_ARGS=()

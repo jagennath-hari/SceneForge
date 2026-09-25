@@ -4,8 +4,7 @@ torchvision==0.27.1+cu132
 numpy==1.26.4
 # Newer OpenCV releases require NumPy 2, while VGGT-Omega requires NumPy <2.
 opencv-python==4.11.0.86
-# pyCuSFM uses pkg_resources, removed in newer setuptools releases.
-setuptools<81
-# Match pyCuSFM's CUDA 13 reference container: tensorrt:25.09-py3.
-# Prefer its TensorRT version over choosing a newer release by CUDA minor alone.
+# Retain the working TensorRT version for the native RaCo/LightGlue frontend.
 tensorrt-cu13==10.13.3.9
+# CUDA 13 CuPy compatible with the NumPy 1.x VGGT environment.
+cupy-cuda13x>=13.6,<14

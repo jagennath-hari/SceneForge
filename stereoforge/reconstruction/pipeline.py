@@ -153,6 +153,9 @@ class HierarchicalReconstructor:
                 alignment = {"status": "rejected"}
                 try:
                     aligned = align_sparse_sections(reference, local, alignment)
+                except ValueError as exc:
+                    raise ValueError(f"Merge node {node.identifier}: {exc}. "
+                                     f"Inspect {folder / 'alignment.json'}") from exc
                 finally:
                     write_json(folder / "alignment.json", alignment)
                 details = {}

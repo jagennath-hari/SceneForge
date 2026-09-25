@@ -32,6 +32,55 @@ class TrackTriangulator:
         xyz = vt[-1, :3] / vt[-1, 3]
         return xyz if np.isfinite(xyz).all() else None
 
+    @classmethod
+    def triangulate(cls, observations: dict[int, np.ndarray], cameras: dict[int, SparseCamera],
+                    max_error: float = 4.0) -> tuple[np.ndarray, dict[int, np.ndarray]] | None:
+        """Re-estimate a track from measured rays, independent of old point depth."""
+        if len(observations) < 3:
+            return None
+        ids = sorted(observations)
+        sampled = [ids[i] for i in np.linspace(0, len(ids)-1, min(12, len(ids)), dtype=int)]
+        rays = {}
+        for f in sampled:
+            ray = cameras[f].pose[:3, :3] @ np.linalg.solve(cameras[f].intrinsics, [*observations[f], 1])
+            rays[f] = ray / np.linalg.norm(ray)
+        pairs = []
+        for a, b in combinations(sampled, 2):
+            angle = float(np.degrees(np.arccos(np.clip(rays[a] @ rays[b], -1, 1))))
+            if 1 <= angle <= 90:
+                pairs.append((angle, a, b))
+        best, best_support, best_error = None, {}, float("inf")
+        for _, a, b in sorted(pairs, reverse=True)[:16]:
+            xyz = cls._fit({a: observations[a], b: observations[b]}, cameras)
+            if xyz is None:
+                continue
+            errors = {f: reprojection_error(cameras[f], xyz, uv) for f, uv in observations.items()}
+            valid = {f: observations[f] for f, error in errors.items() if error <= max_error}
+            error = float(np.median([errors[f] for f in valid])) if valid else float("inf")
+            if (len(valid), -error) > (len(best_support), -best_error):
+                best, best_support, best_error = xyz, valid, error
+        if best is None or len(best_support) < 3:
+            return None
+        xyz = cls._fit(best_support, cameras)
+        if xyz is None:
+            return None
+        valid = {f: uv for f, uv in best_support.items() if reprojection_error(cameras[f], xyz, uv) <= max_error}
+        if len(valid) < 3:
+            return None
+        # The wide-baseline hypothesis may have lost one of its views during
+        # filtering. Require parallax in the observations that actually remain.
+        retained_rays = []
+        for frame, uv in valid.items():
+            ray = cameras[frame].pose[:3, :3] @ np.linalg.solve(cameras[frame].intrinsics, [*uv, 1])
+            retained_rays.append(ray / np.linalg.norm(ray))
+        retained_rays = np.asarray(retained_rays)
+        cosine = min(float(np.min(retained_rays[start:start+128] @ retained_rays.T))
+                     for start in range(0, len(retained_rays), 128))
+        angle = float(np.degrees(np.arccos(np.clip(cosine, -1, 1))))
+        if not np.isfinite(angle) or not 1 <= angle <= 90:
+            return None
+        return xyz, valid
+
     def build(self, cameras: dict[int, SparseCamera], max_error: float = 4.0) -> tuple[SparseModel, dict]:
         points, supports = [], {f: 0 for f in cameras}
         colors: dict[int, np.ndarray] = {}
@@ -40,35 +89,10 @@ class TrackTriangulator:
                 observations = {f: uv for f, uv in track.items() if f in cameras}
                 if len(observations) < 3:
                     continue
-                ids = sorted(observations)
-                sampled = [ids[i] for i in np.linspace(0, len(ids)-1, min(12, len(ids)), dtype=int)]
-                rays = {}
-                for f in sampled:
-                    ray = cameras[f].pose[:3, :3] @ np.linalg.solve(cameras[f].intrinsics, [*observations[f], 1])
-                    rays[f] = ray / np.linalg.norm(ray)
-                pairs = []
-                for a, b in combinations(sampled, 2):
-                    angle = float(np.degrees(np.arccos(np.clip(rays[a] @ rays[b], -1, 1))))
-                    if 1 <= angle <= 90:
-                        pairs.append((angle, a, b))
-                best, best_support, best_error = None, {}, float("inf")
-                for _, a, b in sorted(pairs, reverse=True)[:16]:
-                    xyz = self._fit({a: observations[a], b: observations[b]}, cameras)
-                    if xyz is None:
-                        continue
-                    errors = {f: reprojection_error(cameras[f], xyz, uv) for f, uv in observations.items()}
-                    valid = {f: observations[f] for f, error in errors.items() if error <= max_error}
-                    error = float(np.median([errors[f] for f in valid])) if valid else float("inf")
-                    if (len(valid), -error) > (len(best_support), -best_error):
-                        best, best_support, best_error = xyz, valid, error
-                if best is None or len(best_support) < 3:
+                result = self.triangulate(observations, cameras, max_error)
+                if result is None:
                     continue
-                xyz = self._fit(best_support, cameras)
-                if xyz is None:
-                    continue
-                valid = {f: uv for f, uv in best_support.items() if reprojection_error(cameras[f], xyz, uv) <= max_error}
-                if len(valid) < 3:
-                    continue
+                xyz, valid = result
                 rgb = []
                 for f, uv in valid.items():
                     if f not in colors:

@@ -117,6 +117,35 @@ triangulation/alignment/BA diagnostics, and `global_retriangulation.json`.
 Every completed BA stage also has its own `index.html` sparse viewer, linked from
 the failure report when a later stage stops.
 
+Sim(3) now uses landmarks with reliable depth in both child reconstructions:
+at least 5° maximum viewing-ray separation, three observations, median
+reprojection error at most 1.5 pixels, and no observation above three pixels.
+These are initial conservative settings, not universally validated cutoffs.
+At least 60 shared landmarks must qualify before the training/held-out split.
+Each split must cover at least six shared cameras in both children, with three
+observations occupying at least three cells of a 4×4 image grid per supported camera.
+Weak landmarks remain diagnostic; their disagreement does not veto the reliable
+3D fit. All shared-camera checks still apply.
+
+After landmark RANSAC, a seven-parameter camera-aware Sim(3) fit uses reliable
+training landmarks plus shared-camera centers and orientations. Every third shared
+camera is withheld from its objective, in addition to the held-out landmarks.
+Three robust residual groups receive equal weight, normalized by the existing
+5%-of-scene-distance and 10° limits. No individual camera, calibration or point
+is changed by this fit. `alignment.json` includes the initial transform, objective
+before/after, convergence, training/held-out camera IDs and group residuals.
+A converged optimizer is not acceptance: all existing landmark/camera checks and
+post-BA withheld-pixel checks still apply. Pre-BA cross-projection error remains
+a diagnostic. A failed local fit is not proof that no Sim(3) can exist.
+SciPy is explicitly included in the geometry image for this small CPU optimization.
+
+Before joint BA, weaker tracks are re-triangulated from measured pixels and the
+combined camera poses. At least three observations, one degree of retained ray
+separation and four-pixel reprojection support are required; unsupported old depths
+are discarded. `alignment.json` records reliability and coverage; `merge.json`
+records re-triangulated and rejected track counts. Existing final validation stays
+in place, and insufficient support stops the run rather than relaxing thresholds.
+
 Merging has two stages: robust Sim(3) and shared-camera checks authorize a
 **provisional** merge, then joint BA must pass withheld-observation validation.
 At least 40 overlap observations, including five per shared camera, are excluded
@@ -507,3 +536,38 @@ Native file conventions: custom CUDA kernels and their launch implementations us
 `include/`. Host C++ code uses `.cpp`/`.hpp`, including CUDA runtime/driver and
 TensorRT callers. `cuda_resize.hpp` is a host class interface; its custom kernels
 are implemented in `cuda_resize.cu`. Both language targets use C++20.
+
+## Bounded registration against a saved map
+
+To investigate node 34 without rerunning video processing, matching or VGGT:
+
+```bash
+python -m stereoforge.reconstruction.boundary_demo \
+  --run data/intermediate/hierarchical_20260917_042617_082322 \
+  --node 34 --extension 16 --device 0
+```
+
+This separate experiment uses the left child's map before the overlap as its
+anchor. It removes overlap cameras and observations, then estimates those cameras
+and up to 16 subsequent keyframes from saved global tracks using CPU PnP/RANSAC.
+The right child supplies intrinsics only; its poses and 3D points are not imported.
+No Sim(3) or five-degree landmark eligibility rule is used.
+
+Registration requires 40 unambiguous 2D–3D correspondences, at least 30 training
+inliers, 70% three-pixel support in both training and held-out observations, and
+six occupied cells of a 4×4 image grid. Held-out observations stay excluded from
+subsequent PnP retries, triangulation and BA. Missing validation landmarks count
+as failures. These observations are not independent of the earlier anchor BA.
+
+After each accepted frame, new tracks are triangulated and pyCuSFM refines the
+map. The first camera is fixed; the remaining anchor cameras can refine. Loss of
+supported cameras or failed held-out checks stops the experiment. At most three
+passes are attempted, stopping earlier if a pass registers no cameras. `--extension`
+is limited to 0–32 frames; zero tests only the overlap.
+
+Outputs go into a new `boundary_TIMESTAMP/` folder inside the original run:
+`report.json` contains registration/rejection counts and per-round BA validation;
+`ba_*/` retains native logs and sparse models. Completed or stalled runs also save
+`sparse/`, `point_cloud.ply`, and `index.html`. A stalled/failed run returns nonzero.
+This does not resume the full hierarchy or establish metric scale. Runtime validation
+remains pending; no new feature matching or ACE0 training is performed.

@@ -6,6 +6,39 @@ import numpy as np
 
 from stereoforge.geometry.alignment import _fit
 from stereoforge.refinement.sparse_model import SparseModel, SparsePoint, reprojection_error
+from .triangulation import TrackTriangulator
+from .camera_alignment import refine_camera_alignment
+
+
+def landmark_quality(model: SparseModel, point: SparsePoint) -> dict:
+    """Depth observability from measured rays in one child, before alignment."""
+    rays, errors = [], []
+    for frame, uv in point.observations.items():
+        camera = model.cameras[frame]
+        ray = camera.pose[:3, :3] @ np.linalg.solve(camera.intrinsics, [*uv, 1])
+        rays.append(ray / np.linalg.norm(ray))
+        errors.append(reprojection_error(camera, point.xyz, uv))
+    if len(rays) < 3 or not np.isfinite(rays).all() or not np.isfinite(errors).all():
+        return {"reliable": False, "observations": len(rays), "angle_degrees": None}
+    rays = np.asarray(rays)
+    # Bound temporary storage for long tracks.
+    cosine = min(float(np.min(rays[start:start+128] @ rays.T)) for start in range(0, len(rays), 128))
+    angle = float(np.degrees(np.arccos(np.clip(cosine, -1, 1))))
+    median = float(np.median(errors))
+    return {"reliable": bool(5 <= angle <= 90 and median <= 1.5 and max(errors) <= 3),
+            "observations": len(rays), "angle_degrees": angle, "median_reprojection_pixels": median}
+
+
+def landmark_coverage(model: SparseModel, indices: list[int], shared: list[int]) -> dict:
+    frames = []
+    for frame in shared:
+        h, w = model.cameras[frame].size_hw
+        pixels = [model.points[i].observations[frame] for i in indices if frame in model.points[i].observations]
+        cells = {(min(3, max(0, int(4*uv[0]/w))), min(3, max(0, int(4*uv[1]/h)))) for uv in pixels}
+        frames.append({"frame": frame, "observations": len(pixels), "grid_cells": len(cells),
+                       "passed": len(pixels) >= 3 and len(cells) >= 3})
+    return {"passed": sum(f["passed"] for f in frames) >= 6, "frames": frames,
+            "grid": [4, 4], "minimum_supported_cameras": 6}
 
 
 def shared_landmarks(reference: SparseModel, local: SparseModel) -> list[tuple[int, int]]:
@@ -38,6 +71,17 @@ def align_sparse_sections(reference: SparseModel, local: SparseModel, report: di
                   coordinate_tolerance_pixels=0.0001)
     if len(shared) < 6 or len(pairs) < 60:
         raise ValueError("Local BA left insufficient shared support: need 6 cameras and 60 unambiguous landmarks")
+    qualities = [{"reference": landmark_quality(reference, reference.points[i]),
+                  "local": landmark_quality(local, local.points[j])} for i, j in pairs]
+    eligible = [p for p, q in enumerate(qualities) if q["reference"]["reliable"] and q["local"]["reliable"]]
+    report.update(reliable_landmarks=len(eligible), weak_landmarks=len(pairs)-len(eligible),
+                  reliability_policy={"minimum_angle_degrees": 5, "minimum_observations": 3,
+                                      "maximum_median_reprojection_pixels": 1.5,
+                                      "maximum_reprojection_pixels": 3},
+                  landmark_quality=[{"reference_point": i, "local_point": j, **q}
+                                    for (i, j), q in zip(pairs, qualities, strict=True)])
+    if len(eligible) < 60:
+        raise ValueError(f"Insufficient depth-observable shared landmarks: {len(eligible)}/60 required")
     source = np.array([local.points[j].xyz for _, j in pairs])
     target = np.array([reference.points[i].xyz for i, _ in pairs])
     # Normalize the geometric gate by scene depth, independent of either BA gauge.
@@ -50,9 +94,17 @@ def align_sparse_sections(reference: SparseModel, local: SparseModel, report: di
     if not np.isfinite(scene_scale) or scene_scale <= 1e-8:
         raise ValueError("Degenerate overlap scene scale")
     rng = np.random.default_rng(0)
-    permutation = rng.permutation(len(pairs))
+    # Split only after independent child-quality selection, never by cross-map residual.
+    permutation = rng.permutation(eligible)
     held = permutation[::3]
     train = np.setdiff1d(permutation, held)
+    coverage = {}
+    for name, selection in (("training", train), ("held_out", held)):
+        coverage[name] = {"reference": landmark_coverage(reference, [pairs[p][0] for p in selection], shared),
+                          "local": landmark_coverage(local, [pairs[p][1] for p in selection], shared)}
+    report["reliable_landmark_coverage"] = coverage
+    if not all(side["passed"] for split in coverage.values() for side in split.values()):
+        raise ValueError("Reliable alignment landmarks lack camera/image coverage in training or held-out set")
     threshold = 0.05 * scene_scale
     best, best_mask = None, np.zeros(len(train), dtype=bool)
     for _ in range(512):
@@ -69,6 +121,11 @@ def align_sparse_sections(reference: SparseModel, local: SparseModel, report: di
     if best is None or best_mask.sum() < 20:
         raise ValueError("No robust Sim(3) from locally refined shared landmarks")
     scale, rotation, translation = _fit(source[train[best_mask]], target[train[best_mask]])
+    camera_fit = {}
+    report["camera_aware_refinement"] = camera_fit
+    scale, rotation, translation = refine_camera_alignment(
+        (scale, rotation, translation), source[train], target[train],
+        reference, local, shared, scene_scale, camera_fit)
     errors = np.linalg.norm(scale * source @ rotation.T + translation - target, axis=1)
     aligned = local.transformed(scale, rotation, translation)
     camera_checks = []
@@ -78,6 +135,7 @@ def align_sparse_sections(reference: SparseModel, local: SparseModel, report: di
         distance = float(np.linalg.norm(a.pose[:3, 3] - b.pose[:3, 3]) / scene_scale)
         camera_checks.append({"frame": frame, "rotation_degrees": angle,
                               "relative_translation_error": distance,
+                              "used_for_alignment_fit": frame in camera_fit["training_camera_frames"],
                               "passed": angle <= 10 and distance <= 0.05})
     # Independent landmarks were not used for fitting; check measured pixels too.
     pixel_errors = []
@@ -96,9 +154,18 @@ def align_sparse_sections(reference: SparseModel, local: SparseModel, report: di
                   train_inlier_fraction=float(np.mean(errors[train] <= threshold)),
                   held_out_inlier_fraction=float(np.mean(errors[held] <= threshold)),
                   held_out_reprojection_within_5px=pixel_fraction, cameras=camera_checks)
-    if (report["train_inlier_fraction"] < 0.8 or report["held_out_inlier_fraction"] < 0.8
-            or not all(c["passed"] for c in camera_checks)):
-        raise ValueError("Refined sections still disagree: sparse alignment validation failed; inspect alignment.json")
+    report["all_landmark_inlier_fraction_diagnostic"] = float(np.mean(errors <= threshold))
+    failures = []
+    for key, label in (("train_inlier_fraction", "training landmark agreement"),
+                       ("held_out_inlier_fraction", "held-out landmark agreement")):
+        if report[key] < 0.8:
+            failures.append(f"{label} {report[key]:.1%} < 80%")
+    failed_cameras = [c["frame"] for c in camera_checks if not c["passed"]]
+    if failed_cameras:
+        failures.append(f"shared-camera checks failed for frames {failed_cameras}")
+    report["failed_checks"] = failures
+    if failures:
+        raise ValueError("Sparse alignment initialization rejected: " + "; ".join(failures))
     report["status"] = "provisional"
     report["acceptance_requires"] = "Joint BA followed by withheld-observation validation"
     return aligned
@@ -110,11 +177,11 @@ def merge_sparse_sections(reference: SparseModel, local: SparseModel, report: di
     partners = dict(pairs)
     paired_local = {j for _, j in pairs}
     cameras = {**local.cameras, **reference.cameras}
-    candidates: list[tuple[SparsePoint, bool]] = []
+    candidates: list[tuple[SparsePoint, bool, bool]] = []
     conflicts = 0
     for i, point in enumerate(reference.points):
         if i not in partners:
-            candidates.append((point, False))
+            candidates.append((point, False, not landmark_quality(reference, point)["reliable"]))
             continue
         other = local.points[partners[i]]
         common = point.observations.keys() & other.observations.keys()
@@ -125,15 +192,28 @@ def merge_sparse_sections(reference: SparseModel, local: SparseModel, report: di
         # Choose the seed with lower median error under the reconciled cameras.
         xyz = min((point.xyz, other.xyz), key=lambda value: np.median([
             reprojection_error(cameras[f], value, uv) for f, uv in observations.items()]))
-        candidates.append((replace(point, xyz=xyz, observations=observations), True))
-    candidates.extend((p, False) for j, p in enumerate(local.points) if j not in paired_local)
+        weak = not (landmark_quality(reference, point)["reliable"] and landmark_quality(local, other)["reliable"])
+        candidates.append((replace(point, xyz=xyz, observations=observations), True, weak))
+    candidates.extend((p, False, not landmark_quality(local, p)["reliable"])
+                      for j, p in enumerate(local.points) if j not in paired_local)
     points = []
     bridges = 0
     joined_count = 0
     reference_only = reference.cameras.keys() - local.cameras.keys()
     local_only = local.cameras.keys() - reference.cameras.keys()
     claimed = set()
-    for point, joined in candidates:
+    retriangulated, rejected = 0, 0
+    for point, joined, weak in candidates:
+        if weak:
+            # Use measured observations before the old coordinate can filter
+            # them out. An unsupported depth is never retained as a fallback.
+            result = TrackTriangulator.triangulate(point.observations, cameras)
+            if result is None:
+                rejected += 1
+                continue
+            xyz, observations = result
+            point = replace(point, xyz=xyz, observations=observations)
+            retriangulated += 1
         observations = {f: uv for f, uv in point.observations.items()
                         if reprojection_error(cameras[f], point.xyz, uv) <= 14}
         keys = {(f, *np.round(uv, 4)) for f, uv in observations.items()}
@@ -148,6 +228,8 @@ def merge_sparse_sections(reference: SparseModel, local: SparseModel, report: di
     # Shared cameras themselves connect the optimization; joined overlap tracks
     # are still required even if no track spans the entire overlap interval.
     report.update(joined_track_candidates=len(pairs), conflicting_tracks=conflicts,
+                  weak_tracks_retriangulated=retriangulated, weak_tracks_rejected=rejected,
+                  retriangulation_max_reprojection_pixels=4, retriangulation_minimum_angle_degrees=1,
                   retained_landmarks=len(points), joined_tracks_passing_reprojection=joined_count,
                   tracks_spanning_both_nonoverlap_regions=bridges)
     if joined_count < 20:

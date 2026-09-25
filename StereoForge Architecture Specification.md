@@ -581,12 +581,42 @@ hypotheses are scored by positive-depth reprojection support and refitted from
 inliers. This initial implementation uses triangulation rather than depth-averaged
 landmark seeds. Local BA uses Cauchy loss and the native standalone policy. Every
 parent estimates a provisional alignment from shared sparse landmarks: at least
-six shared cameras and sixty unambiguous landmarks are required. Training and
+six shared cameras and sixty unambiguous, depth-observable landmarks are required.
+Eligibility is evaluated independently in each child before looking at cross-map
+residuals: at least three observations, maximum observed-ray separation of 5–90°,
+median reprojection error at most 1.5 pixels and maximum error at most three pixels.
+The deterministic training/held-out split uses only eligible tracks. Both sets must
+cover six shared cameras in each child, with at least three observations in three
+cells of a 4×4 image grid per supported camera. Five degrees is an initial policy
+motivated by the saved indoor overlap diagnostic, not a universal accuracy guarantee.
+Weak tracks are reported separately and do not receive equal 3D trust. Training and
 held-out Sim(3) landmark inlier fractions must each reach 80% within 5% of scene
 depth. Every shared camera must agree within ten degrees and 5% of scene depth.
+Landmark RANSAC initializes a seven-parameter Sim(3) optimization combining
+reliable training-landmark coordinates with shared-camera centers and orientations.
+Every third shared camera is held out from this objective (at least two), with
+at least three remaining training cameras. Landmarks retain their separate held-out
+split. Position residuals use the existing 5%-of-scene-distance normalization;
+rotation residuals use ten degrees. Soft-L1 vector losses are averaged separately
+for the three evidence groups and weighted equally, so track count cannot dominate
+camera evidence. The SciPy trust-region solve adjusts log scale, rotation vector
+and scene-normalized translation around the landmark centroid. Its scale multiplier
+is bounded to [0.25, 4]; nonconvergence or an active scale bound rejects the candidate.
+Camera matrices, intrinsics and section geometry are otherwise fixed. Existing
+acceptance checks remain mandatory, including all shared cameras. Reports expose
+initial/final objectives, training/held-out identities and convergence. This bounded
+local solve diagnoses a candidate; failure is not a global infeasibility proof.
+
 Cross-section pixel errors are recorded before BA but do not alone reject an
 otherwise valid initialization. Reconciliation keeps one camera per image and
 requires at least twenty joined tracks after fourteen-pixel seed filtering.
+Before this filtering, weak tracks (joined or unpaired) are re-triangulated against
+the reconciled cameras from their original surviving child observations. Robust
+ray-pair hypotheses require at least one degree of parallax; retained tracks need
+three positive-depth observations within four pixels and at least one degree of
+parallax after filtering. Failed tracks are dropped with counts; their old 3D
+coordinates are not retained as a fallback. Re-triangulation and global track
+initialization share the same implementation.
 
 Before joint BA, one measured overlap observation is withheld from eligible joined
 tracks, leaving at least three training observations per track and ten per affected
@@ -631,3 +661,53 @@ runtime/driver or TensorRT APIs. The host `CudaResizer` class is declared in
 `cuda_resize.hpp`; its kernels remain in `cuda_resize.cu`. Both language targets
 require C++20. The decoder, keyframe selector
 and pair-matching executable are active components of the supported pipelines.
+
+### Future video-depth integration
+
+Temporally consistent video depth is a future dense stage, not implemented by the
+hierarchical sparse command. Align its scale (and any model-specific ambiguity)
+to reliable reconstructed geometry, check depth against image correspondences and
+occlusions, and retain confidence masks. Corrected sparse cameras do not by themselves
+correct dense depths. A later depth-consistency/refinement stage must precede treating
+those depths as geometrically consistent stereo-synthesis input. Do not assume
+metric units without an external scale reference or verified metric-depth source.
+
+### ACE0 research direction (not implemented)
+
+[ACE0](https://nianticlabs.github.io/acezero/) alternates scene-coordinate regression
+mapping and image relocalization, refining camera poses and calibration during
+mapping. The [upstream partial-reconstruction workflow](https://github.com/nianticlabs/acezero#start-from-a-partial-reconstruction)
+can train a scene model from posed images and use it to register additional images.
+A possible StereoForge experiment is to initialize from a validated partial map and
+re-estimate subsequent poses in that shared scene representation, instead of insisting
+that independently optimized sections stay related by one rigid similarity.
+This requires scene-specific neural training and a separate integration; pyCuSFM
+bundle adjustment alone does not implement ACE0. Its calibration assumptions must
+be reconciled with our per-image intrinsics before using exported poses. Reconstruction
+quality and registration completeness would still need validation on the indoor clip.
+
+### Bounded map-based boundary experiment
+
+`reconstruction/boundary_demo.py` exercises registration in one coordinate system
+using saved global feature tracks. The earlier child's cameras preceding the shared
+interval seed the map; overlap cameras and observations are removed. Landmarks
+retain at least three anchor observations. Their coordinates still originate from
+previous BA involving overlap images, so the experiment is not an independent
+reconstruction benchmark. No neighboring camera pose or landmark position seeds PnP;
+only its per-frame calibration is reused.
+
+Global-track association requires two matching measured observations and rejects
+ambiguous point/track identities. CPU OpenCV EPNP/RANSAC estimates each target pose
+without an initial pose guess; LM refines training inliers. A fixed quarter of
+initial correspondences is held out for each target and remains excluded from all
+later fitting. Forty correspondences, thirty training inliers, 70% support within
+three pixels in both sets, and six cells of spatial coverage are required.
+
+Successful registration extends existing tracks and triangulates new tracks using
+the shared triangulator, then runs native pyCuSFM BA. Only the first camera is fixed
+by the exposed backend; the whole anchor map is not locked, and metric scale is not
+established. All previously supported cameras must survive and every registered
+target must retain 70% held-out three-pixel support. Missing landmarks fail validation.
+The command handles the overlap plus at most 32 additional frames, with a three-pass
+limit and early stopping on no registration progress. It saves a separate colored
+sparse viewer and detailed JSON/native artifacts without modifying the hierarchy.

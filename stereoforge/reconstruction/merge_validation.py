@@ -11,7 +11,7 @@ from stereoforge.refinement.bundle_adjustment import require_connected
 from stereoforge.refinement.sparse_model import SparseModel, reprojection_error
 from .registration import shared_landmarks
 
-POLICY = "overlap_observation_holdout_v1"
+POLICY = "camera_aware_sim3_retriangulation_holdout_v3"
 
 
 def observation_key(frame: int, uv: np.ndarray) -> tuple[int, float, float]:

@@ -3,13 +3,53 @@
 Geometry-aware stereo video synthesis, starting with **one continuous, uncut
 recording** such as drone footage or a walkthrough.
 
-The new experimental hierarchical sparse pipeline is:
+The default reconstruction pipeline grows one sparse map:
 
 ```text
-Video → keyframes → verified RaCo–ALIKED/LightGlue+ image graph and global tracks
-      → small overlapping graph groups → VGGT-Ω → local pyCuSFM BA
-      → hierarchical Sim(3) merging + BA → global retriangulation + BA → colored WebGL report
+Video → keyframes → verified RaCo–ALIKED/LightGlue+ tracks
+      → small VGGT-Ω seed → initial pyCuSFM BA
+      → PnP registration of remaining keyframes → triangulation + periodic BA
+      → full-sequence colored sparse viewer
 ```
+
+Start a new end-to-end run inside Docker:
+
+```bash
+python -m stereoforge.reconstruction.demo --video data/input/barn.mp4
+```
+
+The default seed is the first 32 selected keyframes (`--seed-frames 16–64`).
+Only the seed receives VGGT poses. All later poses are estimated from 2D–3D
+correspondences against the growing map. There is no required section Sim(3).
+The same registration code is shared with the successful bounded experiment.
+BA runs every eight accepted frames and at the end of each pass. Missing frames
+are retried after map growth; a pass with no progress produces an explicit partial
+result. Completion requires every selected keyframe, including all seed cameras.
+
+Open `data/intermediate/incremental_TIMESTAMP/index.html`; `report.json` lists
+missing frames, PnP attempts and validation. `map_ba/` retains native logs and
+COLMAP models. `incremental_state.json` atomically points to the last BA checkpoint
+that preserved supported cameras and passed withheld-pixel checks. Resume with:
+
+```bash
+python -m stereoforge.reconstruction.demo --resume data/intermediate/incremental_TIMESTAMP
+```
+
+Resume reuses frames, tracks, the VGGT seed and the last validated map. Uncommitted
+registrations are recomputed after interruption. Rejected native BA artifacts are
+retained but never committed. Input/checkpoint identity and track/policy identity
+are checked. The root viewer covers the whole requested sequence; a partial map
+is never labeled complete. Sparse reconstruction is not dense surface reconstruction.
+
+Initial calibration for later frames is the median optimized seed intrinsics.
+This assumes constant image dimensions and no substantial zoom; it is not a general
+self-calibration solution. PnP and triangulation run on CPU, TensorRT matching and
+pyCuSFM BA use the selected GPU. One VGGT seed uses one GPU and unloads before BA.
+No nonlocal loop retrieval or dense-depth refinement is added by this path.
+End-to-end runtime validation remains user-run.
+
+Legacy `hierarchical_*` resumes retain the old section-merging behavior; they are
+not silently converted. Use `--video` for the new incremental pipeline.
 
 The existing dense geometry pipeline remains available for comparison:
 
@@ -76,102 +116,8 @@ perform a Hugging Face access check.
 
 ## Run the geometry pipeline
 
-For the new hierarchical approach on the continuous indoor walkthrough, first
-exit/stop the running container and rebuild on the host (native pair matching now
-exports stable feature IDs):
-
-```bash
-bash scripts/build_and_start.sh
-```
-
-Then inside Docker:
-
-```bash
-python -m stereoforge.reconstruction.demo --video data/input/indoor_travel.mp4
-```
-
-Defaults are 32 images per VGGT group, eight separator cameras when available,
-and matching against the next four keyframes. `--device cuda` distributes VGGT
-groups across all visible GPUs; `--device cuda:0` uses one. Matching uses the first
-selected GPU to keep feature identity consistent. BA runs after VGGT workers exit.
-Small group size is a geometry-quality limit, not an attempt to fill all VRAM.
-Use `--cluster-size`, `--neighbors`, `--checkpoint`, or `--keyframe-config` only
-when starting a new run. `--debug` prints tracebacks.
-
-Open the printed `hierarchical_*/index.html`. A complete result contains every
-selected keyframe; missing cameras are listed explicitly and produce a partial
-status/nonzero exit code. Disconnected image graphs or rejected merges stop the
-run and retain diagnostics. Resume with the same inputs, settings and checkpoint:
-
-```bash
-python -m stereoforge.reconstruction.demo --resume data/intermediate/hierarchical_TIMESTAMP
-```
-
-Saved match batches, VGGT groups and leaf BA are reused. Resume verifies that
-recomputed global tracks and the partition hierarchy still match the saved ones.
-Older parent merges are recomputed under the current validation policy; accepted
-merges are reusable only with matching child results and merge implementation.
-Replaced BA attempts are preserved under `.previous_*` directories. Reports
-include `selection.json`, `graph.json`, `tracks.jsonl`, `hierarchy.json`, per-node
-triangulation/alignment/BA diagnostics, and `global_retriangulation.json`.
-Every completed BA stage also has its own `index.html` sparse viewer, linked from
-the failure report when a later stage stops.
-
-Sim(3) now uses landmarks with reliable depth in both child reconstructions:
-at least 5° maximum viewing-ray separation, three observations, median
-reprojection error at most 1.5 pixels, and no observation above three pixels.
-These are initial conservative settings, not universally validated cutoffs.
-At least 60 shared landmarks must qualify before the training/held-out split.
-Each split must cover at least six shared cameras in both children, with three
-observations occupying at least three cells of a 4×4 image grid per supported camera.
-Weak landmarks remain diagnostic; their disagreement does not veto the reliable
-3D fit. All shared-camera checks still apply.
-
-After landmark RANSAC, a seven-parameter camera-aware Sim(3) fit uses reliable
-training landmarks plus shared-camera centers and orientations. Every third shared
-camera is withheld from its objective, in addition to the held-out landmarks.
-Three robust residual groups receive equal weight, normalized by the existing
-5%-of-scene-distance and 10° limits. No individual camera, calibration or point
-is changed by this fit. `alignment.json` includes the initial transform, objective
-before/after, convergence, training/held-out camera IDs and group residuals.
-A converged optimizer is not acceptance: all existing landmark/camera checks and
-post-BA withheld-pixel checks still apply. Pre-BA cross-projection error remains
-a diagnostic. A failed local fit is not proof that no Sim(3) can exist.
-SciPy is explicitly included in the geometry image for this small CPU optimization.
-
-Before joint BA, weaker tracks are re-triangulated from measured pixels and the
-combined camera poses. At least three observations, one degree of retained ray
-separation and four-pixel reprojection support are required; unsupported old depths
-are discarded. `alignment.json` records reliability and coverage; `merge.json`
-records re-triangulated and rejected track counts. Existing final validation stays
-in place, and insufficient support stops the run rather than relaxing thresholds.
-
-Merging has two stages: robust Sim(3) and shared-camera checks authorize a
-**provisional** merge, then joint BA must pass withheld-observation validation.
-At least 40 overlap observations, including five per shared camera, are excluded
-from that BA objective. At least 80% must project within five pixels, globally
-and in each shared camera. Missing landmarks count as failures; losing a supported
-camera rejects the merge. These observations were used in child reconstructions
-and initialization, so this is a check of the joint optimization, not an independent
-test of the entire reconstruction. Withheld observations remain excluded from
-accepted merge tracks; final global retriangulation can reconsider them.
-Inspect `nodes/*/validation_before_ba.json`, `validation_after_ba.json` and
-`withheld_observations.json`. Failure retains the candidate viewer but never
-marks that merge complete.
-
-Superseded two-section BA, camera recovery, cross-section, alignment and
-reprojection experiment commands have been removed. Existing data and saved
-experimental outputs are preserved. The dense pipeline and saved-run refinement
-commands remain supported.
-
-This implements the hierarchical workflow with the exposed pyCuSFM optimizer,
-not the paper's exact optimization. It uses temporal RaCo matches instead of
-MegaLoc/SIFT/PoseLib, balanced BFS graph separators instead of METIS nested
-dissection, triangulated sparse seeds instead of depth averaging, and native
-Cauchy BA instead of GTSAM GNC-TLS and staged pose/calibration priors. No explicit
-prior-release option is available for the final BA. Nonlocal loop retrieval is
-not implemented. Output is uncalibrated sparse geometry; dense depth and stereo
-video synthesis are not produced by this command. Runtime validation is pending.
+The former hierarchical approach is retained only for resuming its saved runs.
+Its section-alignment experiments do not run in new incremental reconstructions.
 
 The earlier dense pipeline is invoked separately below.
 

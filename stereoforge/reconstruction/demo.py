@@ -1,4 +1,4 @@
-"""End-to-end experimental hierarchical reconstruction of a continuous video."""
+"""End-to-end incremental sparse reconstruction of a continuous video."""
 
 import argparse
 from dataclasses import asdict
@@ -17,6 +17,7 @@ from stereoforge.refinement.report import write_refinement_status
 from stereoforge.utils.artifacts import write_json
 from stereoforge.video.sampling import VideoFrameSampler
 from .pipeline import HierarchicalReconstructor, HierarchyOptions
+from .incremental import IncrementalReconstructor, POLICY
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -40,11 +41,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--video", type=Path)
-    source.add_argument("--resume", type=Path, help="Reuse completed stages of an unchanged hierarchical run")
+    source.add_argument("--resume", type=Path, help="Resume saved reconstruction inputs and validated map checkpoints")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--checkpoint", type=Path)
-    parser.add_argument("--device", default=None, help="cuda uses all GPUs for VGGT; cuda:N uses one")
-    parser.add_argument("--cluster-size", type=int, default=None)
+    parser.add_argument("--device", default=None, help="cuda selects the first visible GPU for the seed and BA; cuda:N selects one")
+    parser.add_argument("--seed-frames", "--cluster-size", dest="cluster_size", type=int, default=None,
+                        help="Initial VGGT seed size, 16–64 frames (default 32)")
     parser.add_argument("--neighbors", type=int, default=None)
     parser.add_argument("--keyframe-config", type=Path)
     parser.add_argument("--debug", action="store_true")
@@ -65,11 +67,14 @@ def main() -> int:
             if any(current[key] != saved["signature"][key] for key in immutable):
                 raise ValueError("Video or keyframe configuration changed; use a new output run")
             if current["implementation_sha256"] != saved["signature"]["implementation_sha256"]:
-                logging.info("Code changed: reusing saved inputs and leaf BA; merge caches require the current validation policy")
+                logging.info("Code changed: reusing saved inputs; reconstruction state is checked against its saved policy")
             options = HierarchyOptions(**saved["options"])
             checkpoint = Path(saved["checkpoint"])
             if checkpoint.stat().st_size != saved["checkpoint_bytes"] or checkpoint.stat().st_mtime_ns != saved["checkpoint_mtime_ns"]:
                 raise ValueError("Checkpoint changed; use a new output run")
+            pipeline = saved.get("pipeline", "hierarchical")
+            if pipeline not in (POLICY, "hierarchical"):
+                raise ValueError("Unsupported saved reconstruction pipeline")
             output = candidate
         else:
             video = args.video.expanduser().resolve()
@@ -80,16 +85,22 @@ def main() -> int:
                                        neighbors=args.neighbors if args.neighbors is not None else 4,
                                        device=args.device or "cuda")
             candidate = (args.output or ROOT / "data/intermediate" / datetime.now(timezone.utc).strftime(
-                "hierarchical_%Y%m%d_%H%M%S_%f")).expanduser().resolve()
+                "incremental_%Y%m%d_%H%M%S_%f")).expanduser().resolve()
             candidate.mkdir(parents=True, exist_ok=False)
             output = candidate
             checkpoint = GeometryDemoRunner(DemoConfig())._resolve_checkpoint(
                 DemoRequest(output=output, video=video, checkpoint=args.checkpoint))
-            write_json(output / "request.json", {"video": str(video), "keyframe_config": str(config),
+            pipeline = POLICY
+            write_json(output / "request.json", {"pipeline": pipeline, "video": str(video), "keyframe_config": str(config),
                        "checkpoint": str(checkpoint), "checkpoint_bytes": checkpoint.stat().st_size,
                        "checkpoint_mtime_ns": checkpoint.stat().st_mtime_ns,
                        "signature": signature(video, config), "options": asdict(options)})
-        reconstructor = HierarchicalReconstructor(options, output, config)
+        if pipeline == POLICY:
+            reconstructor = IncrementalReconstructor(options, output, config)
+            logging.info("Incremental map reconstruction: VGGT seed, then PnP/triangulation/BA for all keyframes")
+        else:
+            logging.info("Resuming legacy hierarchical run; use --video to start the new incremental pipeline")
+            reconstructor = HierarchicalReconstructor(options, output, config)
         sampler = VideoFrameSampler(keyframe_config=config)
         folder = output / "input_frames"
         if (folder / "manifest.json").is_file():
@@ -113,9 +124,10 @@ def main() -> int:
             write_refinement_status(output, str(exc) or "Interrupted")
             links = [*output.glob("*.json"), *output.glob("nodes/*/*.json"),
                      *output.glob("nodes/*/ba/*.log"), *output.glob("matching/*.log"),
-                     *output.glob("nodes/*/ba/index.html"), *output.glob("final/*.log")]
+                     *output.glob("nodes/*/ba/index.html"), *output.glob("final/*.log"),
+                     *output.glob("map_ba/*/*.json"), *output.glob("map_ba/*/*.log")]
             with (output / "index.html").open("a") as stream:
-                stream.write("<h2>Hierarchical stage diagnostics</h2><ul>")
+                stream.write("<h2>Reconstruction stage diagnostics</h2><ul>")
                 for path in sorted(links):
                     relative = path.relative_to(output).as_posix()
                     stream.write(f'<li><a href="{relative}">{relative}</a></li>')
@@ -124,7 +136,7 @@ def main() -> int:
         else:
             logging.error("%s", exc)
         if args.debug:
-            logging.exception("Hierarchical reconstruction traceback")
+            logging.exception("Reconstruction traceback")
         return 130 if isinstance(exc, KeyboardInterrupt) else 1
 
 

@@ -13,15 +13,19 @@ StereoSpace inference, and video encoding are outside the implemented scope.
 Their intended behavior is described in the roadmap, not represented by empty
 Python modules or placeholder tests.
 
-The experimental hierarchical sparse path (`stereoforge.reconstruction.demo`)
-now performs:
+The default sparse path (`stereoforge.reconstruction.demo --video ...`) now performs:
 
 ```text
-Continuous video → visual keyframes → one verified image graph and global tracks
-    → balanced overlapping graph groups → independent small VGGT-Ω inference
-    → local pyCuSFM BA → bottom-up shared-camera/track Sim(3) and merge BA
-    → global track retriangulation → final pyCuSFM BA → colored sparse viewer
+Continuous video → selected keyframes → verified global tracks
+    → first 32 keyframes: VGGT-Ω seed + triangulation + pyCuSFM BA
+    → remaining keyframes: PnP/RANSAC against one expanding map
+    → track extension/triangulation → periodic global BA → full-sequence sparse viewer
 ```
+
+Independent section merging is not mandatory in this path. Legacy hierarchical
+runs remain resumable under their saved pipeline identifier. New incremental runs
+have their own output directory and explicit pipeline version.
+
 
 This is an implementation awaiting runtime validation on indoor_travel. It does
 not claim to reproduce GTSfM's optimizer or replace the existing dense path yet.
@@ -711,3 +715,31 @@ target must retain 70% held-out three-pixel support. Missing landmarks fail vali
 The command handles the overlap plus at most 32 additional frames, with a three-pass
 limit and early stopping on no registration progress. It saves a separate colored
 sparse viewer and detailed JSON/native artifacts without modifying the hierarchy.
+
+## Full-sequence incremental reconstruction
+
+`frontend.py` owns shared processed-image preparation, native matching and viewer
+export. `map_registration.py` contains the common PnP, track association, extension
+and held-out validation used by both bounded and full-sequence reconstruction.
+`incremental.py` coordinates seed creation and expansion; the default `demo.py`
+selects this path for new videos. Legacy hierarchy orchestration remains separate.
+
+The seed must retain all initial cameras with at least sixty points through BA.
+Subsequent PINHOLE calibration starts from the median seed intrinsics; significant
+zoom or changing image dimensions are outside this initialization model. No later
+VGGT camera pose is inserted. PnP retains the bounded experiment's 40-correspondence,
+30-training-inlier, 70% three-pixel train/holdout and six-grid-cell requirements.
+Held-out target observations remain excluded from PnP, triangulation and BA.
+
+The map extends in temporal proximity order, capable of growing in either direction
+from its registered frames. Global BA follows every eight accepted cameras and each
+pass's remaining registrations. Loss of supported cameras or failed held-out checks
+stops the run. The last validated sparse model and its holdout identities, calibration,
+target list, track digest and report are referenced by an atomic state file. Native
+failed/uncommitted rounds remain separate and are never reused as accepted state.
+Resume restarts from that validated checkpoint. Completion requires all selected
+frames; no-progress runs publish partial coverage with missing IDs and nonzero exit.
+
+The result is a colored sparse map and camera trajectory, not dense geometry or a
+stereo video. The backend fixes only its first camera; metric scale and global drift
+correction are not guaranteed. No new long-range loop matching is implemented.

@@ -19,7 +19,7 @@ unsigned int Blocks(std::size_t count) {
 
 __global__ void ProjectKernel(const float* pixels, const float* principal,
     const float* weights, float const* const* states, float* residuals,
-    float* jacobians, float* errors, std::size_t count) {
+    float* jacobians, float* errors, std::size_t count, float huber_delta) {
     // No inter-thread dependency or shared reusable tile: barriers/shared memory
     // would add overhead here. Grid-stride loop also bounds launch dimensions.
     for (std::size_t i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -41,9 +41,16 @@ __global__ void ProjectKernel(const float* pixels, const float* principal,
             errors[i] = z > kNear && isfinite(du) && isfinite(dv) ? du*du + dv*dv : INFINITY;
         }
         const float weight = weights == nullptr ? 1.0f : weights[i];
+        // Radial residual transform: ||h(r)*e||^2 = Huber(||e||^2).
+        // Differentiate h too; holding it constant here would give an
+        // inconsistent Jacobian during LM trial evaluations.
+        const float radius = hypotf(du, dv);
+        const bool robust = huber_delta > 0 && radius > huber_delta;
+        const float ratio = robust ? huber_delta/radius : 1.0f;
+        const float h = robust ? sqrtf(ratio*(2.0f-ratio)) : 1.0f;
         if (residuals != nullptr) {
-            residuals[3*i] = weight*du;
-            residuals[3*i+1] = weight*dv;
+            residuals[3*i] = h*weight*du;
+            residuals[3*i+1] = h*weight*dv;
             residuals[3*i+2] = kBarrier*fminf(z-kNear, 0.0f);
         }
         if (jacobians == nullptr) { continue; }
@@ -68,6 +75,21 @@ __global__ void ProjectKernel(const float* pixels, const float* principal,
             jac[row*11+2] = world[1]*point[0] - world[0]*point[1];
             jac[row*11+9] = row == 0 ? weight*u : 0;
             jac[row*11+10] = row == 1 ? weight*v : 0;
+        }
+        if (robust) {
+            const float nx = du/radius, ny = dv/radius;
+            // r * dh/dr = -q(1-q)/h, q=delta/r. This form
+            // avoids subtracting two nearly equal terms at the transition.
+            const float radial = -ratio*(1.0f-ratio)/h;
+            const float a = h + radial*nx*nx;
+            const float b = radial*nx*ny;
+            const float c = h + radial*ny*ny;
+#pragma unroll
+            for (int column = 0; column < 11; ++column) {
+                const float ju = jac[column], jv = jac[11+column];
+                jac[column] = a*ju + b*jv;
+                jac[11+column] = b*ju + c*jv;
+            }
         }
     }
 }
@@ -121,13 +143,13 @@ __global__ void TlsKernel(const float* errors, float* weights, std::size_t count
 } // namespace
 
 PixelReprojectionFactors::PixelReprojectionFactors(const float* pixels, const float* principal,
-    const float* weights, std::size_t count)
-    : pixels_(pixels), principal_points_(principal), sqrt_weights_(weights), count_(count) {}
+    const float* weights, std::size_t count, float huber_delta)
+    : pixels_(pixels), principal_points_(principal), sqrt_weights_(weights), huber_delta_(huber_delta), count_(count) {}
 std::size_t PixelReprojectionFactors::NumFactors() const { return this->count_; }
 bool PixelReprojectionFactors::Evaluate(float* r, float* j, float const* const* states, cudaStream_t stream) const {
     if (this->count_ == 0) { return true; }
     ProjectKernel<<<Blocks(this->count_), kThreads, 0, stream>>>(this->pixels_, this->principal_points_,
-        this->sqrt_weights_, states, r, j, nullptr, this->count_);
+        this->sqrt_weights_, states, r, j, nullptr, this->count_, this->huber_delta_);
     THROW_ON_CUDA_ERROR(cudaGetLastError());
     return true;
 }
@@ -156,7 +178,7 @@ void EvaluatePixelErrors(const float* pixels, const float* principal, float cons
     float* errors, std::size_t count, cudaStream_t stream) {
     if (count == 0) { return; }
     ProjectKernel<<<Blocks(count), kThreads, 0, stream>>>(pixels, principal, nullptr, states,
-        nullptr, nullptr, errors, count);
+        nullptr, nullptr, errors, count, 0.0f);
     THROW_ON_CUDA_ERROR(cudaGetLastError());
 }
 void UpdateTlsWeights(const float* errors, float* weights, std::size_t count, float c2,

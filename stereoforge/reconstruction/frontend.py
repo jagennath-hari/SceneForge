@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,8 +14,6 @@ import numpy as np
 from PIL import Image
 import torch
 
-from stereoforge.geometry.config import RefinementConfig
-from stereoforge.refinement.bundle_adjustment import SparseBundleAdjuster
 from stereoforge.refinement.sparse_model import SparseModel
 from stereoforge.utils.artifacts import write_json
 from stereoforge.utils.progress import Progress, tracked
@@ -24,31 +21,19 @@ from stereoforge.utils.visualization import GeometryReportWriter
 from stereoforge.video.sampling import VideoFrameSampler
 
 if TYPE_CHECKING:
-    from .pipeline import HierarchyOptions
+    from .windowed import WindowOptions
 
 
 class ReconstructionFrontend:
-    def __init__(self, options: HierarchyOptions, output: Path, keyframe_config: Path) -> None:
+    def __init__(self, options: WindowOptions, output: Path, keyframe_config: Path) -> None:
         self.options, self.output, self.keyframe_config = options, output, keyframe_config
-        digest = hashlib.sha256()
-        refinement = Path(__file__).resolve().parents[1] / "refinement"
-        sources = [*Path(__file__).parent.glob("*.py"), refinement / "bundle_adjustment.py",
-                   refinement / "sparse_model.py", refinement / "colmap_validation.py",
-                   refinement / "colmap_binary.py",
-                   Path(__file__).resolve().parents[1] / "geometry/alignment.py"]
-        for source in sorted(sources):
-            digest.update(source.name.encode())
-            digest.update(source.read_bytes())
-        self.merge_implementation = digest.hexdigest()
         if not torch.cuda.is_available():
-            raise RuntimeError("CUDA is required for reconstruction matching and pyCuSFM")
+            raise RuntimeError("CUDA is required for reconstruction matching and optimization")
         self.devices = ([f"cuda:{i}" for i in range(torch.cuda.device_count())] if options.device == "cuda"
                         else [options.device])
         self.device = int(self.devices[0].split(":")[1])
         if self.device >= torch.cuda.device_count():
             raise ValueError("Requested device is outside the visible CUDA devices")
-        self.optimizer = SparseBundleAdjuster(RefinementConfig(device=self.device))
-        self.package = self.optimizer.preflight()
         executable = shutil.which("stereoforge-match-pairs")
         if executable is None:
             raise RuntimeError("Rebuild Docker to install the reconstruction pair matcher")
@@ -135,7 +120,7 @@ class ReconstructionFrontend:
                            "intrinsics": camera.intrinsics.tolist(), "valid_fraction": 0, "depth_p50": None,
                            "previews": {"rgb": os.path.relpath(self.images[frame], destination)}})
         metadata = {"format_version": 1, "units": "reconstruction_units", "meters_per_unit": None,
-                    "reconstruction_name": summary.get("reconstruction_name", "Hierarchical pyCuSFM"), "sparse_only": True,
+                    "reconstruction_name": summary.get("reconstruction_name", "StereoForge reconstruction"), "sparse_only": True,
                     "frames": frames, "input_frames": summary["input_frames"], "sparse_statistics": summary,
                     "dense_depth_refined": False, "provenance": {"video_timestamps_seconds":
                         [timestamps[f] for f in sorted(model.cameras)] if timestamps else None}}

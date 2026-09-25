@@ -9,7 +9,7 @@ from queue import Empty
 
 import torch
 
-from stereoforge.geometry.adaptive import _save
+from stereoforge.geometry.storage import save_sequence
 from stereoforge.geometry.vggt_omega import VGGTOmegaGeometryEstimator
 from stereoforge.utils.progress import Progress
 
@@ -28,7 +28,7 @@ def _worker(device: str, checkpoint: str, paths: list[str], jobs: list[tuple[int
                                                      for i, f in enumerate(result.frames)))
                 destination = Path(directory) / f"{identifier}.pt"
                 temporary = destination.with_suffix(".partial")
-                _save(result, temporary)
+                save_sequence(result, temporary)
                 temporary.rename(destination)
                 del result
                 messages.put(("done", identifier))

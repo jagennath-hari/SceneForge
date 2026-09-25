@@ -13,102 +13,88 @@ StereoSpace inference, and video encoding are outside the implemented scope.
 Their intended behavior is described in the roadmap, not represented by empty
 Python modules or placeholder tests.
 
-The default sparse path (`stereoforge.reconstruction.demo --video ...`) now performs:
+The supported command is `python -m stereoforge.reconstruction --video
+PATH --window-size 32 --overlap 8`. The current pipeline is:
 
 ```text
-Continuous video → selected keyframes → verified global tracks
-    → first 32 keyframes: VGGT-Ω seed + triangulation + pyCuSFM BA
-    → remaining keyframes: PnP/RANSAC against one expanding map
-    → track extension/triangulation → periodic global BA → full-sequence sparse viewer
+Continuous video → ordered keyframes → measured global feature tracks
+    → overlapping VGGT-Ω windows → local cuNLS BA
+    → initialize each window in the first window's gauge with Sim(3)
+    → merge shared cameras/tracks → joint robust cuNLS BA
+    → one camera trajectory, colored sparse cloud and viewer
 ```
 
-Independent section merging is not mandatory in this path. Legacy hierarchical
-runs remain resumable under their saved pipeline identifier. New incremental runs
-have their own output directory and explicit pipeline version.
+The map grows in window order. Each global keyframe has one camera, each fused
+track one sparse landmark. Local GNC-TLS filters initialization outliers; joint
+BA uses a three-pixel radial Huber loss in the custom CUDA pixel factor. Shared
+camera/landmark checks and current/earlier withheld-observation checks remain
+mandatory before a candidate replaces the accepted map. Priors remain those of
+the initialized solve; this is not an unanchored global optimizer or an exact
+GTSfM reproduction. Non-overlap child landmarks are preserved during reconciliation.
 
+`--window-size` and `--overlap` count keyframes. All keyframes are covered, with a
+possibly shorter final window. VGGT inference is scheduled across visible GPUs
+(or one selected device) and workers exit before sequential cuNLS BA begins.
+Single-GPU operation uses the same code. Native optimization is C++/CUDA; Python
+coordinates video preparation, VGGT, the small CPU Sim(3) fit, artifact IO and
+publication. The production path does not instantiate or call pyCuSFM.
 
-This is an implementation awaiting runtime validation on indoor_travel. It does
-not claim to reproduce GTSfM's optimizer or replace the existing dense path yet.
-The existing geometry application performs:
+The default output has one viewer, `trajectory.json`, and an uncapped colored
+`point_cloud.ply`. Units are arbitrary reconstruction units. VGGT depth is retained
+as an initialization artifact and is not silently warped or claimed to be refined
+by sparse BA. `--diagnostics` enables intermediate viewers and numerical Jacobian
+checks; essential logs and acceptance checks remain available by default.
 
-```text
-Continuous video or ordered image folder
-    → decoded RGB frames and timestamps
-    → RaCo–ALIKED/LightGlue+ and CUDA RANSAC keyframe selection (video inputs)
-    → adaptive multi-GPU VGGT-Ω inference
-    → CPU alignment and merging
-    → saved dense geometry and source previews
-    → ALIKED/LightGlue matching
-    → multi-frame tracks initialized from VGGT depth
-    → pyCuSFM standalone bundle adjustment
-    → validated colored sparse reconstruction and final viewer
-```
+`--resume` reuses immutable prepared inputs and VGGT windows of this pipeline,
+then recomputes the map in a fresh attempt. It does not reuse previously optimized
+maps under potentially changed priors. Input/settings/checkpoint/implementation
+changes require a fresh run. Failed merges preserve and publish a labelled partial
+map if a validated prefix exists. Missing cameras prevent complete status.
 
-Refinement is enabled by default and can be disabled in configuration. A failed
-refinement must not discard the completed VGGT geometry. A sparse reconstruction
-is a separate result; its poses must not silently replace the dense geometry's
-camera poses.
+The earlier experimental paths below document development history. The active
+entry point is `reconstruction/__main__.py`, using `cluster.py` for initialization
+and `merging.py` for common-map fusion; it does not import the demo entry points.
+The 26 approved legacy source files have been removed; earlier experimental
+sections below are historical records, not supported commands. Dense/stereo rendering
+and full-sequence runtime validation remain pending. No compilation, inference or
+tests were run by the coding agent while consolidating this path.
 
 ## Repository structure
 
 ```text
 StereoForge/
+├── README.md
 ├── StereoForge Architecture Specification.md
-├── README.md                         # Setup, commands, output locations
-├── configs/default.yaml             # Active geometry, preview, refinement settings
-├── docker/
-│   ├── Dockerfile.base
-│   ├── Dockerfile.geometry
-│   ├── Dockerfile.stereo
-│   ├── Dockerfile.cunls
-│   └── constraints.txt
-├── scripts/build_and_start.sh        # Build environment and enter/attach to it
+├── configs/keyframes_raco.json      # Active feature/keyframe settings
+├── docker/                         # BuildKit image chain, including cuNLS
+├── scripts/build_and_start.sh
 ├── stereoforge/
-│   ├── optimization/               # Custom cuNLS C++/CUDA backend
-│   │   ├── CMakeLists.txt
-│   │   ├── include/stereoforge/optimization/
-│   │   └── src/
-│   ├── video/                       # Python adapters plus C++/CUDA video backend
-│   │   ├── sampling.py
-│   │   ├── learned_models.py
-│   │   ├── keyframe_demo.py
-│   │   ├── CMakeLists.txt
-│   │   ├── include/stereoforge/video/ # All .hpp/.cuh headers and RAII declarations
-│   │   └── src/                      # Only .cpp/.cu translation units
-│   ├── geometry/
-│   │   ├── types.py                 # GeometrySequence and FrameGeometry
-│   │   ├── config.py                # Validated demo configuration
-│   │   ├── inputs.py                # Image discovery and input validation
-│   │   ├── vggt_omega.py            # Model adapter and processed-image calibration
-│   │   ├── adaptive.py              # GPU scheduling, memory adaptation, CPU spooling
-│   │   ├── alignment.py             # Robust overlap Sim(3) alignment
-│   │   ├── geometry_utils.py        # Valid-depth masks and confidence statistics
-│   │   ├── runner.py                # Full geometry/refinement orchestration
-│   │   ├── demo.py                  # Full pipeline CLI
-│   │   ├── refine_demo.py           # Refinement from saved VGGT arrays
-│   │   └── ba_demo.py               # BA-only and report-only recovery CLI
+│   ├── reconstruction/
+│   │   ├── __main__.py              # The end-to-end command
+│   │   ├── windowed.py              # Ordered windows and common-map growth
+│   │   ├── frontend.py              # Image preparation, matching and final viewer
+│   │   ├── view_graph.py            # Verified feature tracks and frame identities
+│   │   ├── inference.py             # VGGT window scheduling
+│   │   ├── cluster.py               # Depth initialization and local cuNLS BA
+│   │   ├── merging.py               # Common-map fusion and joint cuNLS BA
+│   │   ├── registration.py          # Shared-landmark correspondence and validation
+│   │   ├── similarity.py            # Scale-aware 3D correspondence fit
+│   │   ├── camera_alignment.py      # Shared-camera constraints on Sim(3)
+│   │   ├── triangulation.py
+│   │   └── merge_validation.py      # Current and earlier boundary checks
+│   ├── geometry/                   # VGGT adapter, types, input/config helpers
+│   │   ├── checkpoint.py            # Authorized checkpoint/cache resolution
+│   │   └── storage.py               # Window tensor serialization
 │   ├── refinement/
-│   │   ├── pycusfm.py               # Native stages, working units, cache, process lifecycle
-│   │   ├── tracks.py                # Native protobuf reader and unambiguous tracks
-│   │   ├── landmarks.py             # Depth initialization and COLMAP text seeds
-│   │   ├── colmap_binary.py         # Binary seed serialization and native BA command
-│   │   ├── colmap_validation.py     # Output identity and geometric validation
-│   │   └── report.py                # Sparse import, alignment, viewer, failure report
-│   └── utils/
-│       ├── artifacts.py            # Staged publication and JSON artifacts
-│       ├── camera.py               # Pose/quaternion convention conversions
-│       ├── progress.py             # Progress displays
-│       ├── validation.py           # Shared scalar validation
-│       ├── visualization.py        # Dense arrays, previews, PLY, HTML
-│       ├── viewer.py               # Regenerate the saved VGGT viewer
-│       └── templates/geometry.html # Self-contained WebGL viewer
-├── third_party/                     # Pinned Git submodules
-│   ├── vggt-omega/
-│   ├── cuNLS/
-│   └── stereospace/
-├── data/                            # Local inputs and generated artifacts; ignored
-├── .cache/                          # Persistent download/engine cache; ignored
-└── .secrets/                        # Optional runtime HF token; ignored
+│   │   ├── cunls.py                 # Custom native BA process adapter
+│   │   └── sparse_model.py          # Cameras, points, observations and COLMAP IO
+│   ├── optimization/               # C++/CUDA solver; include/ and src/
+│   ├── video/                      # Python adapters plus C++/CUDA include/ and src/
+│   └── utils/                      # Reports, progress, validation and camera math
+├── third_party/                    # Pinned upstream dependencies; unchanged
+├── data/                           # Inputs and saved results; ignored
+├── .cache/                         # Models/engines; ignored
+└── .secrets/                       # Runtime credentials; ignored
 ```
 
 Package `__init__.py` files identify real packages. Empty future-stage modules,
@@ -560,7 +546,7 @@ source audio where feasible. None of these downstream behaviors is implemented y
   are not verification. The current user workflow reserves builds, tests and
   inference execution for the user.
 
-## Experimental hierarchical sparse reconstruction
+## Historical: experimental hierarchical sparse reconstruction (removed)
 
 The `stereoforge/reconstruction/` package separates reconstruction responsibilities:
 `demo.py` handles the video, authorization-gated checkpoint resolution, request
@@ -731,7 +717,7 @@ The command handles the overlap plus at most 32 additional frames, with a three-
 limit and early stopping on no registration progress. It saves a separate colored
 sparse viewer and detailed JSON/native artifacts without modifying the hierarchy.
 
-## Full-sequence incremental reconstruction
+## Historical: incremental reconstruction experiment (removed)
 
 `frontend.py` owns shared processed-image preparation, native matching and viewer
 export. `map_registration.py` contains the common PnP, track association, extension
@@ -776,7 +762,7 @@ stereo video. The backend fixes only its first camera; metric scale and global d
 correction are not guaranteed. No new long-range loop matching is implemented.
 
 
-## Custom cuNLS optimization: local and two-cluster diagnostics
+## Custom cuNLS optimization (standalone diagnostic CLIs removed)
 
 The saved-cluster diagnostic has been run successfully by the user, including
 its pixel Jacobian check. The next implemented stage joins two overlapping
@@ -796,7 +782,8 @@ error and an unweighted cheirality barrier. It uses cuNLS right-multiplicative
 world-to-camera SE3 updates, Euclidean 3D points, and log(fx)/log(fy) states. All
 11 tangent columns have analytic derivatives. Principal points are fixed and
 lens distortion is outside this initial implementation. An optional runtime
-central-difference check uses cuNLS's actual Plus operation on eight observations.
+central-difference check compares the CUDA Jacobian to an independent CPU FP64
+reference of the right-SE3 update on eight observations.
 
 For each measured track, initialization takes the coordinate-wise median of
 VGGT depth-unprojected positions. Observations above 14 pixels are removed;
@@ -834,7 +821,7 @@ support, all original cameras, and the GNC convergence criterion. No fitting
 statistic is presented as held-out validation or ground-truth accuracy.
 
 
-### Two-cluster cuNLS experiment
+### Historical two-cluster cuNLS experiment (CLI removed)
 
 `python -m stereoforge.reconstruction.cunls_pair_demo --run RUN --device 0`
 uses keyframe ranges [0,32) and [24,56) by default. The first saved VGGT seed is
@@ -876,3 +863,75 @@ viewers, raw/filtered COLMAP models, solver logs, correspondence identities,
 reconciliation details and validation results. Failure retains every artifact and
 publishes the failing stage in the root report. The experiment covers only the
 union of these two clusters (56 cameras by default), and never refines dense depth.
+
+
+Joint-only retries use `reconstruction/cunls_joint_demo.py --pair PAIR
+--lm-iterations 200`. The adapter forwards the original `joint_ba/input.json`
+with only its iteration budget changed, preserving normalization, initialization
+priors and measured pixels exactly. Validation reuses the saved excluded
+observations and rejects policy mismatches or overlap with training pixels.
+No upstream stages run. Fresh `joint_retry_TIMESTAMP` artifacts preserve the
+previous result. A retry remains partial if either optimization completion or
+pixel validation fails; thresholds are unchanged.
+
+
+### Historical four-cluster cuNLS experiment (CLI removed)
+
+`reconstruction/cunls_four_demo.py` runs a bounded balanced tree: locally refine
+four 32-keyframe clusters at offsets 0,24,48,72, merge leaves 0+1 and 2+3, then
+merge those accepted maps. The union contains 104 selected keyframes. Shared
+`PairDiagnostic.merge` code implements each node; local solves retain GNC-TLS,
+while joint solves now default to 200 LM iterations. Existing native C++/CUDA
+factors are unchanged. Inference and optimization run sequentially on the chosen
+device, including single-GPU systems.
+
+Stable global track identities survive every merge and are used to fuse duplicate
+landmarks even if local filtering removed their common pixels. Sim(3) estimation
+still uses the existing shared-image correspondence and camera validation policy.
+Earlier held-out observations are removed if another child would reintroduce them
+into training. Root acceptance also reevaluates both child boundary holdouts;
+missing landmarks count as failures. `ancestor_holdouts.json` preserves their
+scope for joint-only retries, which repeat those checks as well.
+
+A new `cunls_four_TIMESTAMP` contains `left`, `right`, and `root` merge reports
+and viewers. The previous pair experiment is not modified or silently adopted:
+local BA is recomputed, the existing first VGGT seed can be reused, and three
+new clusters are inferred by default. The command does not rerun decoding or
+matching. No parent consumes a rejected child. Full-sequence orchestration and
+dense-depth refinement remain outside this experiment.
+
+
+### Preserve child support and robustify joint BA
+
+Current reconciliation preserves validated nonshared landmarks whose observations
+lie entirely outside the merge overlap. Their child positions and observations
+remain intact after the incoming child's Sim(3); low parallax alone no longer
+causes them to be retriangulated or discarded. Only weak shared global tracks
+are retriangulated. Unshared tracks touching reconciled cameras keep their child
+position but still pass the existing observation reprojection filter.
+
+New joint solves apply radial Huber loss to the two-dimensional pixel residual,
+with delta=3 pixels. The CUDA factor represents rho(||e||²) exactly as the squared
+norm of a transformed residual and differentiates the radial multiplier as well.
+The cheirality barrier and pose/focal priors remain unrobustified. Local GNC-TLS
+is unchanged, and combining it with Huber is rejected. Unweighted error reporting,
+post-BA filtering and all withheld-observation acceptance thresholds are unchanged.
+The optional finite-difference diagnostic also evaluates shifted observations to
+exercise the Huber branch. These source changes have not been compiled or run by
+the coding agent.
+
+`validation_support.json` saves earlier-boundary unusable observation indices and
+finite-error failure indices for each child, after reconciliation, after ancestor
+holdout exclusion, in joint training, and after BA. Missing support remains a
+validation failure. Saved-input retries preserve their original loss; a fresh
+merge is required to recover landmarks discarded under the previous policy.
+
+The optional pixel-Jacobian checker now uses an independent CPU FP64 residual
+reference instead of perturbing and subtracting FP32 GPU residuals. It implements
+right-multiplicative SE3 coordinate perturbations, projection and radial Huber
+loss, and compares against the production CUDA analytic Jacobian. Unperturbed
+CUDA/reference residual values are also compared. Finite differences refine from
+0.001 through twelve halvings/levels, requiring two consecutive consistent passing
+estimates. Original derivative tolerances remain unchanged. Production BA retains
+its CUDA FP32 factors; FP64 is only for the optional diagnostic. Failure records
+all estimates and still stops the solve.

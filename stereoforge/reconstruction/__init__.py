@@ -1,1 +1,1 @@
-"""Experimental graph-first hierarchical sparse reconstruction with pyCuSFM BA."""
+"""Video keyframes, overlapping VGGT windows and a common cuNLS-refined map."""

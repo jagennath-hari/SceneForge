@@ -7,7 +7,10 @@ from pathlib import Path
 
 import numpy as np
 
-from stereoforge.refinement.tracks import Observation
+@dataclass(frozen=True, slots=True, order=True)
+class Observation:
+    frame: int
+    keypoint: int
 
 
 @dataclass(slots=True)

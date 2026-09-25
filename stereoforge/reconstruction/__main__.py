@@ -1,0 +1,127 @@
+"""Video → keyframes → overlapping VGGT windows → one cuNLS-refined sparse map."""
+
+import argparse
+from dataclasses import asdict, replace
+from datetime import datetime, timezone
+import hashlib
+import json
+import logging
+from pathlib import Path
+import shutil
+from uuid import uuid4
+
+from stereoforge.geometry.inputs import validate_image_paths
+from stereoforge.geometry.checkpoint import resolve_checkpoint
+from stereoforge.refinement.cunls import CuNLSBundleAdjuster
+from stereoforge.utils.artifacts import write_json
+from stereoforge.video.sampling import VideoFrameSampler
+from .windowed import WindowReconstructor, WindowOptions, POLICY
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def signature(video: Path, keyframe_config: Path) -> dict:
+    digest = hashlib.sha256()
+    files = [*Path(__file__).parent.glob("*.py"), *(ROOT / "stereoforge/refinement").glob("*.py"),
+             ROOT / "stereoforge/geometry/vggt_omega.py", ROOT / "stereoforge/geometry/storage.py"]
+    for path in sorted(files):
+        digest.update(str(path.relative_to(ROOT)).encode())
+        digest.update(path.read_bytes())
+    executable = shutil.which("stereoforge-match-pairs")
+    if executable:
+        digest.update(Path(executable).read_bytes())
+    stat = video.stat()
+    return {"video": str(video), "bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns,
+            "implementation_sha256": digest.hexdigest(), "keyframe_config": keyframe_config.read_text()}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument('--video', type=Path)
+    source.add_argument('--resume', type=Path, help='Reuse inputs/VGGT windows from this pipeline; recompute map in a fresh attempt')
+    parser.add_argument('--output', type=Path)
+    parser.add_argument('--checkpoint', type=Path)
+    parser.add_argument('--window-size', type=int)
+    parser.add_argument('--overlap', type=int)
+    parser.add_argument('--neighbors', type=int, help='Temporal feature matching neighbors (default 4)')
+    parser.add_argument('--device', help='cuda: visible GPUs for VGGT, first GPU for BA; cuda:N: one GPU')
+    parser.add_argument('--lm-iterations', type=int, help='Joint BA iteration budget (default 300)')
+    parser.add_argument('--keyframe-config', type=Path)
+    parser.add_argument('--diagnostics', action='store_true', help='Write intermediate viewers and check CUDA Jacobians')
+    parser.add_argument('--debug', action='store_true', help='Show exception traceback')
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+    logging.getLogger('dinov3').setLevel(logging.WARNING)
+    output = None
+    try:
+        CuNLSBundleAdjuster.preflight()
+        if args.resume:
+            if any(value is not None for value in (args.output, args.checkpoint, args.window_size,
+                    args.overlap, args.neighbors, args.device, args.keyframe_config)):
+                raise ValueError('--resume keeps saved input/window settings; only the BA budget and diagnostics may change')
+            candidate = args.resume.expanduser().resolve()
+            saved = json.loads((candidate / 'request.json').read_text())
+            if saved.get('pipeline') != POLICY:
+                raise ValueError('This is an older experimental run. Start with --video; decoded/keyframe caches remain reusable')
+            video, config = Path(saved['video']), Path(saved['keyframe_config'])
+            if signature(video, config) != saved['signature']:
+                raise ValueError('Inputs or implementation changed; start a fresh --video run to avoid stale derived inputs')
+            options = WindowOptions(**saved['options'])
+            if args.lm_iterations is not None:
+                options = replace(options, lm_iterations=args.lm_iterations)
+            checkpoint = Path(saved['checkpoint'])
+            if (checkpoint.stat().st_size != saved['checkpoint_bytes'] or
+                    checkpoint.stat().st_mtime_ns != saved['checkpoint_mtime_ns']):
+                raise ValueError('Checkpoint changed; start a fresh run')
+            output = candidate
+        else:
+            video = args.video.expanduser().resolve()
+            if not video.is_file():
+                raise FileNotFoundError(f'Video not found: {video}')
+            config = (args.keyframe_config or ROOT / 'configs/keyframes_raco.json').expanduser().resolve()
+            options = WindowOptions(window_size=args.window_size if args.window_size is not None else 32,
+                                    overlap=args.overlap if args.overlap is not None else 8,
+                                    neighbors=args.neighbors if args.neighbors is not None else 4,
+                                    device=args.device or 'cuda',
+                                    lm_iterations=args.lm_iterations if args.lm_iterations is not None else 300)
+            output = (args.output or ROOT / 'data/intermediate' / datetime.now(timezone.utc).strftime(
+                'reconstruction_%Y%m%d_%H%M%S_%f')).expanduser().resolve()
+            output.mkdir(parents=True, exist_ok=False)
+            checkpoint = resolve_checkpoint(args.checkpoint)
+            write_json(output / 'request.json', {'pipeline': POLICY, 'video': str(video),
+                       'keyframe_config': str(config), 'checkpoint': str(checkpoint),
+                       'checkpoint_bytes': checkpoint.stat().st_size,
+                       'checkpoint_mtime_ns': checkpoint.stat().st_mtime_ns,
+                       'signature': signature(video, config), 'options': asdict(options)})
+        attempt = output / datetime.now(timezone.utc).strftime('map_%Y%m%d_%H%M%S_%f')
+        attempt.mkdir()
+        write_json(attempt / 'options.json', {**asdict(options), 'diagnostics': args.diagnostics})
+        reconstructor = WindowReconstructor(options, output, config, attempt, args.diagnostics)
+        logging.info('Video → keyframes → overlapping VGGT windows → common map + cuNLS BA')
+        sampler = VideoFrameSampler(keyframe_config=config)
+        folder = output / 'input_frames'
+        if (folder / 'manifest.json').is_file():
+            sampled = sampler._read_manifest(folder)
+        else:
+            if folder.exists():
+                folder.rename(folder.with_name('input_frames.failed_' + uuid4().hex[:8]))
+            sampled = sampler.sample(video, folder)
+        validate_image_paths(sampled.paths)
+        write_json(output / 'selection.json', {'frames': len(sampled.paths),
+                   'decoded_candidates': sampled.candidate_frame_count,
+                   'source_frame_indices': sampled.source_frame_indices,
+                   'timestamps_seconds': sampled.timestamps_seconds})
+        result = reconstructor.run(list(sampled.paths), checkpoint, sampled.timestamps_seconds)
+        logging.info('%s: %d/%d keyframes. Open %s', result['status'], result['registered_frames'],
+                     result['input_frames'], output / 'index.html')
+        return 0 if result['status'] == 'complete' else 1
+    except (Exception, KeyboardInterrupt) as error:
+        logging.error('%s%s', str(error) or 'Interrupted', f'\nArtifacts retained in {output}' if output else '')
+        if args.debug:
+            logging.exception('Reconstruction traceback')
+        return 130 if isinstance(error, KeyboardInterrupt) else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

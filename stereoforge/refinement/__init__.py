@@ -1,1 +1,1 @@
-"""ALIKED tracks, depth-initialized pyCuSFM optimization, and sparse reports."""
+"""Custom cuNLS optimization, sparse camera/landmark models and COLMAP exchange."""

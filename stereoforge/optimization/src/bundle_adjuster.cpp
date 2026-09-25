@@ -2,6 +2,7 @@
 #include "stereoforge/optimization/factors.cuh"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <set>
@@ -59,60 +60,118 @@ float PositiveOption(const Json& options, const char* name, float fallback) {
     return value;
 }
 
-// Optional runtime diagnostic: compare the analytic reprojection Jacobian with
-// central differences through cuNLS's actual SE3 Plus operation. No solver run.
+// Independent double-precision residual reference used only by the optional
+// diagnostic. For a single tangent coordinate, T*Exp(delta)*P is either an
+// axis rotation of P or a translation of P before applying T. This is the
+// right-multiplicative [rotation, translation] convention used by the solver.
+std::array<double, 3> ReferencePixelResidual(
+    const cunls::SE3Transform& pose, const cunls::Vector<3>& point,
+    const std::vector<float>& focal, const std::vector<float>& pixel,
+    const std::vector<float>& principal, int column, double step, double huber_delta) {
+    std::array<double, 3> p = {point[0], point[1], point[2]};
+    if (column >= 0 && column < 3) {
+        std::array<double, 3> axis = {0, 0, 0};
+        axis[column] = 1;
+        const std::array<double, 3> cross = {
+            axis[1]*p[2]-axis[2]*p[1], axis[2]*p[0]-axis[0]*p[2], axis[0]*p[1]-axis[1]*p[0]};
+        const double along = p[column];
+        for (int j = 0; j < 3; ++j) {
+            p[j] = std::cos(step)*p[j] + std::sin(step)*cross[j] +
+                   (1-std::cos(step))*axis[j]*along;
+        }
+    } else if (column >= 3 && column < 6) { p[column-3] += step; }
+    else if (column >= 6 && column < 9) { p[column-6] += step; }
+    std::array<double, 3> camera = {};
+    for (int row = 0; row < 3; ++row) {
+        camera[row] = static_cast<double>(pose[4*row+3]);
+        for (int j = 0; j < 3; ++j) { camera[row] += static_cast<double>(pose[4*row+j])*p[j]; }
+    }
+    const double near = static_cast<double>(1e-4f);
+    const double z = std::max(camera[2], near);
+    const double fx = std::exp(static_cast<double>(focal[0]) + (column == 9 ? step : 0));
+    const double fy = std::exp(static_cast<double>(focal[1]) + (column == 10 ? step : 0));
+    const double u = fx*camera[0]/z + principal[0] - pixel[0];
+    const double v = fy*camera[1]/z + principal[1] - pixel[1];
+    const double radius = std::hypot(u, v);
+    const double q = huber_delta > 0 && radius > huber_delta ? huber_delta/radius : 1;
+    const double h = std::sqrt(q*(2-q));
+    return {h*u, h*v, 1000*std::min(camera[2]-near, 0.0)};
+}
+
+// Compare the production CUDA Jacobian against double-precision differences.
 float CheckPixelJacobian(const cunls::SE3Transform& pose, const cunls::Vector<3>& point,
                          const std::vector<float>& focal, const std::vector<float>& pixel,
-                         const std::vector<float>& principal, cudaStream_t stream,
-                         cunls::cuBLASHandle& blas) {
-    cunls::dvector<cunls::SE3Transform> base_pose(std::vector<cunls::SE3Transform>{pose});
+                         const std::vector<float>& principal, cudaStream_t stream, float huber_delta) {
     cunls::dvector<cunls::SE3Transform> changed_pose(std::vector<cunls::SE3Transform>{pose});
     cunls::dvector<cunls::Vector<3>> changed_point(std::vector<cunls::Vector<3>>{point});
     cunls::dvector<float> changed_focal(focal), pixels(pixel), principal_device(principal);
-    cunls::dvector<float> weight(std::vector<float>{1}), residual(3), jacobian(33), delta(6);
-    cunls::SE3StateBatch state(blas, reinterpret_cast<const float*>(base_pose.data()), 1);
+    cunls::dvector<float> weight(std::vector<float>{1}), residual(3), jacobian(33);
     const std::vector<const float*> pointers = {reinterpret_cast<const float*>(changed_pose.data()),
         reinterpret_cast<const float*>(changed_point.data()), changed_focal.data()};
     cunls::dvector<const float*> links(pointers);
-    PixelReprojectionFactors factor(pixels.data(), principal_device.data(), weight.data(), 1);
+    PixelReprojectionFactors factor(pixels.data(), principal_device.data(), weight.data(), 1, huber_delta);
     if (!factor.Evaluate(residual.data(), jacobian.data(), links.data(), stream)) {
         throw std::runtime_error("Jacobian diagnostic evaluation failed");
     }
     THROW_ON_CUDA_ERROR(cudaStreamSynchronize(stream));
     std::vector<float> analytic(33);
     jacobian.CopyToHost(analytic.data(), analytic.size());
+    std::vector<float> cuda_residual(3);
+    residual.CopyToHost(cuda_residual.data(), cuda_residual.size());
+    const std::array<double, 3> reference = ReferencePixelResidual(
+        pose, point, focal, pixel, principal, -1, 0, huber_delta);
+    for (int row = 0; row < 3; ++row) {
+        if (!std::isfinite(reference[row]) || !std::isfinite(cuda_residual[row]) ||
+            std::abs(reference[row]-cuda_residual[row]) > 0.01 + 1e-4*std::abs(reference[row])) {
+            throw std::runtime_error("CUDA residual disagrees with FP64 reference: " +
+                Json({{"row", row}, {"cuda", cuda_residual[row]}, {"reference", reference[row]}}).dump());
+        }
+    }
     float maximum = 0;
     for (int column = 0; column < 11; ++column) {
-        const float epsilon = 1e-3f;
-        std::vector<float> plus(3), minus(3);
-        for (const int sign : {-1, 1}) {
-            changed_pose.CopyFromHost(&pose, 1);
-            cunls::Vector<3> perturbed = point;
-            std::vector<float> perturbed_focal = focal;
-            if (column < 6) {
-                std::vector<float> twist(6, 0);
-                twist[column] = sign*epsilon;
-                delta.CopyFromHost(twist.data(), 6);
-                state.Plus(reinterpret_cast<const float*>(base_pose.data()), delta.data(),
-                            reinterpret_cast<float*>(changed_pose.data()), stream);
-            } else if (column < 9) { perturbed[column-6] += sign*epsilon; }
-            else { perturbed_focal[column-9] += sign*epsilon; }
-            changed_point.CopyFromHost(&perturbed, 1);
-            changed_focal.CopyFromHost(perturbed_focal.data(), 2);
-            if (!factor.Evaluate(residual.data(), nullptr, links.data(), stream)) {
-                throw std::runtime_error("Finite-difference diagnostic evaluation failed");
+        // FP64 avoids cancellation from perturbing/subtracting FP32 pixels.
+        // Still require two successive passing, mutually consistent estimates.
+        std::vector<double> previous(3, 0);
+        bool previous_passed = false;
+        bool accepted = false;
+        double previous_error = 0;
+        Json attempts = Json::array();
+        for (int refinement = 0; refinement < 12; ++refinement) {
+            const double epsilon = std::ldexp(1e-3, -refinement);
+            const std::array<double, 3> plus = ReferencePixelResidual(
+                pose, point, focal, pixel, principal, column, epsilon, huber_delta);
+            const std::array<double, 3> minus = ReferencePixelResidual(
+                pose, point, focal, pixel, principal, column, -epsilon, huber_delta);
+            std::vector<double> numerical(3), normalized_errors(3);
+            bool passed = true;
+            bool stable = refinement > 0;
+            double current_error = 0;
+            for (int row = 0; row < 3; ++row) {
+                numerical[row] = (plus[row]-minus[row])/(2*epsilon);
+                const double exact = analytic[11*row+column];
+                const double tolerance = 0.05 + 0.01*std::max(std::abs(numerical[row]), std::abs(exact));
+                normalized_errors[row] = std::abs(numerical[row]-exact)/tolerance;
+                passed = passed && std::isfinite(normalized_errors[row]) && normalized_errors[row] <= 1;
+                stable = stable && std::isfinite(numerical[row]) &&
+                    std::abs(numerical[row]-previous[row]) <= tolerance;
+                current_error = std::max(current_error, normalized_errors[row]);
             }
-            THROW_ON_CUDA_ERROR(cudaStreamSynchronize(stream));
-            residual.CopyToHost(sign > 0 ? plus.data() : minus.data(), 3);
+            attempts.push_back({{"epsilon", epsilon}, {"numerical", numerical},
+                                {"tolerance_ratios", normalized_errors}});
+            if (passed && previous_passed && stable) {
+                maximum = std::max(maximum, static_cast<float>(std::max(current_error, previous_error)));
+                accepted = true;
+                break;
+            }
+            previous = numerical;
+            previous_passed = passed;
+            previous_error = current_error;
         }
-        for (int row = 0; row < 3; ++row) {
-            const float numerical = (plus[row]-minus[row])/(2*epsilon);
-            const float exact = analytic[11*row+column];
-            const float error = std::abs(numerical-exact)/(0.05f + 0.01f*std::max(std::abs(numerical), std::abs(exact)));
-            if (!std::isfinite(error) || error > 1) {
-                throw std::runtime_error("Reprojection Jacobian failed central-difference check");
-            }
-            maximum = std::max(maximum, error);
+        if (!accepted) {
+            const Json diagnostic = {{"column", column}, {"pixel", pixel}, {"huber_delta", huber_delta},
+                {"analytic", {analytic[column], analytic[11+column], analytic[22+column]}},
+                {"attempts", attempts}};
+            throw std::runtime_error("Reprojection Jacobian failed FP64 reference check: " + diagnostic.dump());
         }
     }
     return maximum;
@@ -148,6 +207,10 @@ nlohmann::json BundleAdjuster::Solve(const nlohmann::json& input) const {
     const float rotation_sigma = PositiveOption(options, "rotation_sigma_radians", 0.1f);
     const float translation_sigma = PositiveOption(options, "translation_sigma", 0.1f);
     const bool use_gnc = options.value("use_gnc", true);
+    const float huber_delta = options.value("huber_delta_pixels", 0.0f);
+    if (!std::isfinite(huber_delta) || huber_delta < 0 || (use_gnc && huber_delta > 0)) {
+        throw std::invalid_argument("Huber delta must be nonnegative and used only without GNC");
+    }
     const int rounds = use_gnc ? options.value("gnc_rounds", 64) : 1;
     const int iterations = options.value("lm_iterations", 50);
     if (rounds < 1 || rounds > 128 || iterations < 1 || iterations > 500) {
@@ -221,7 +284,7 @@ nlohmann::json BundleAdjuster::Solve(const nlohmann::json& input) const {
                                    poses.size(), constants.data(), 1);
     cunls::VectorStateBatch<3> point_states(reinterpret_cast<const float*>(device_points.data()), positions.size());
     cunls::VectorStateBatch<2> focal_states(device_focals.data(), cameras.size());
-    PixelReprojectionFactors reprojection(device_pixels.data(), device_principal.data(), device_weights.data(), observations.size());
+    PixelReprojectionFactors reprojection(device_pixels.data(), device_principal.data(), device_weights.data(), observations.size(), huber_delta);
     PosePriorFactors pose_priors(prior_poses.data(), poses.size(), rotation_sigma, translation_sigma);
     FocalPriorFactors focal_priors(prior_focals.data(), poses.size(), focal_sigma);
     std::vector<float*> links, pose_links, focal_links;
@@ -252,7 +315,7 @@ nlohmann::json BundleAdjuster::Solve(const nlohmann::json& input) const {
     float mu = std::max(1e-6f, c2 / std::max(c2, 2*maximum-c2));
     Json report = {{"before", ErrorStatistics(errors, c2)}, {"rounds", Json::array()},
                    {"gnc_converged", false}, {"optimization_complete", false},
-                   {"use_gnc", use_gnc}, {"solver", "cuNLS LM/cuDSS"}};
+                   {"use_gnc", use_gnc}, {"huber_delta_pixels", huber_delta}, {"solver", "cuNLS LM/cuDSS"}};
     if (options.value("check_jacobians", false)) {
         float maximum_error = 0;
         const std::size_t samples = std::min<std::size_t>(8, observations.size());
@@ -261,10 +324,20 @@ nlohmann::json BundleAdjuster::Solve(const nlohmann::json& input) const {
             const std::size_t camera = camera_ids[i];
             maximum_error = std::max(maximum_error, CheckPixelJacobian(poses[camera], positions[point_ids[i]],
                 {log_focals[2*camera], log_focals[2*camera+1]}, {pixels[2*i], pixels[2*i+1]},
-                {principal[2*i], principal[2*i+1]}, stream.GetStream(), blas));
+                {principal[2*i], principal[2*i+1]}, stream.GetStream(), huber_delta));
+            if (huber_delta > 0) {
+                // Exercise the robust branch even when all sampled data fit
+                // inside the quadratic region. This changes diagnostics only.
+                maximum_error = std::max(maximum_error, CheckPixelJacobian(poses[camera], positions[point_ids[i]],
+                    {log_focals[2*camera], log_focals[2*camera+1]},
+                    {pixels[2*i] + 10*huber_delta, pixels[2*i+1]},
+                    {principal[2*i], principal[2*i+1]}, stream.GetStream(), huber_delta));
+            }
         }
         report["jacobian_check"] = {{"observations", samples}, {"maximum_tolerance_ratio", maximum_error},
-            {"passed", true}, {"scope", "pixel factor, all 11 tangent columns; initial positive-depth states"}};
+            {"passed", true}, {"huber_shifted_samples", huber_delta > 0 ? samples : 0},
+            {"reference", "CPU FP64 right-SE3 residual differences; production CUDA analytic Jacobian"},
+            {"scope", "pixel factor, all 11 tangent columns; initial positive-depth states, plus shifted Huber samples when enabled"}};
     }
     double previous_tls = report["before"]["tls_cost"].get<double>();
     for (int round = 0; round < rounds; ++round) {
@@ -311,7 +384,8 @@ nlohmann::json BundleAdjuster::Solve(const nlohmann::json& input) const {
             {"weighted_cost_before", summary.initial_cost}, {"weighted_cost_after", summary.final_cost},
             {"soft_weights", soft}, {"frozen_landmarks", frozen.size()}, {"errors", stats}});
         if (!use_gnc) {
-            // The joint solve uses locally filtered observations with unit weights.
+            // The joint solve uses fixed external weights; optional Huber
+            // robustification is evaluated inside the pixel factor.
             // A budget-limited LM solve is retained, but not called complete.
             report["optimization_complete"] = summary.num_iterations < static_cast<std::size_t>(iterations);
             report["lm_budget_exhausted"] = summary.num_iterations >= static_cast<std::size_t>(iterations);

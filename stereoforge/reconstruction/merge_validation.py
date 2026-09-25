@@ -7,7 +7,7 @@ import json
 
 import numpy as np
 
-from stereoforge.refinement.bundle_adjustment import require_connected
+from stereoforge.refinement.sparse_model import require_connected
 from stereoforge.refinement.sparse_model import SparseModel, reprojection_error
 from .registration import shared_landmarks
 

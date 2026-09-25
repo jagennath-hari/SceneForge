@@ -24,6 +24,7 @@ class CuNLSOptions:
     lm_iterations: int = 50
     check_jacobians: bool = False
     use_gnc: bool = True
+    huber_delta_pixels: float = 0.0
 
 
 class CuNLSBundleAdjuster:
@@ -41,8 +42,6 @@ class CuNLSBundleAdjuster:
         return executable
 
     def optimize(self, model: SparseModel, directory: Path) -> tuple[SparseModel, dict]:
-        executable = self.preflight()
-        directory.mkdir()
         ids = sorted(model.cameras)
         if len(ids) < 3 or not model.points:
             raise ValueError('Local BA requires at least three cameras and supported landmarks')
@@ -67,9 +66,63 @@ class CuNLSBundleAdjuster:
                    'observations': [{'camera': order[f], 'point': i, 'pixel': uv.tolist()}
                                     for i, p in enumerate(model.points) for f, uv in sorted(p.observations.items())],
                    'options': asdict(self.options)}
+        normalization = {'origin': origin.tolist(), 'scale': scale,
+                         'frame_order': ids, 'units': 'reconstruction_units'}
+        return self._solve(model, directory, request, normalization)
+
+    def retry_joint(self, pair: Path, directory: Path, iterations: int) -> tuple[SparseModel, dict, SparseModel]:
+        """Restart the original joint objective, changing only its iteration budget."""
+        request = json.loads((pair / 'joint_ba/input.json').read_text())
+        normalization = json.loads((pair / 'joint_ba/normalization.json').read_text())
+        if request.get('format_version') != 1 or request['options'].get('use_gnc') is not False:
+            raise ValueError('Expected a saved unit-weight joint BA input')
+        if not request['options']['lm_iterations'] < iterations <= 500:
+            raise ValueError('New iteration budget must exceed the saved budget and be at most 500')
+        ids = normalization['frame_order']
+        if ids != sorted(set(ids)) or len(ids) != len(request['cameras']):
+            raise ValueError('Invalid saved camera identities')
+        seed = SparseModel.read(pair / 'combined_sparse', ids)
+        if set(seed.cameras) != set(ids) or len(seed.points) != len(request['points']):
+            raise ValueError('Combined model does not match saved joint BA identities')
+        origin = np.asarray(normalization['origin'], dtype=float)
+        scale = float(normalization['scale'])
+        if origin.shape != (3,) or not np.isfinite(origin).all() or not np.isfinite(scale) or scale <= 0:
+            raise ValueError('Invalid saved normalization')
+        cameras = {}
+        for frame, record in zip(ids, request['cameras'], strict=True):
+            pose = np.linalg.inv(np.asarray(record['world_to_camera'], dtype=float).reshape(4, 4))
+            pose[:3, 3] = pose[:3, 3]*scale + origin
+            fx, fy, cx, cy = record['intrinsics']
+            cameras[frame] = SparseCamera(pose, np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]]),
+                                          seed.cameras[frame].size_hw)
+        observations: list[dict] = [{} for _ in request['points']]
+        for observation in request['observations']:
+            camera, point = observation['camera'], observation['point']
+            if not 0 <= camera < len(ids) or not 0 <= point < len(observations):
+                raise ValueError('Unknown saved observation identity')
+            frame, uv = ids[camera], np.asarray(observation['pixel'], dtype=float)
+            if frame in observations[point] or frame not in seed.points[point].observations:
+                raise ValueError('Duplicate or unknown saved observation')
+            if not np.array_equal(uv, seed.points[point].observations[frame]):
+                raise ValueError('Saved training pixels differ from combined model')
+            observations[point][frame] = uv
+        points = tuple(SparsePoint(np.asarray(xyz)*scale + origin, seed.points[i].rgb, observations[i])
+                       for i, xyz in enumerate(request['points']))
+        training = SparseModel(cameras, points)
+        request['options']['lm_iterations'] = iterations
+        optimizer = CuNLSBundleAdjuster(self.device, CuNLSOptions(**request['options']))
+        refined, report = optimizer._solve(training, directory, request, normalization)
+        return refined, report, training
+
+    def _solve(self, model: SparseModel, directory: Path, request: dict,
+               normalization: dict) -> tuple[SparseModel, dict]:
+        executable = self.preflight()
+        directory.mkdir()
+        ids = normalization['frame_order']
+        origin = np.asarray(normalization['origin'], dtype=float)
+        scale = float(normalization['scale'])
         write_json(directory / 'input.json', request)
-        write_json(directory / 'normalization.json', {'origin': origin.tolist(), 'scale': scale,
-                                                      'frame_order': ids, 'units': 'reconstruction_units'})
+        write_json(directory / 'normalization.json', normalization)
         command = [executable, str(directory / 'input.json'), str(directory / 'output.json'), str(self.device)]
         with Progress('cuNLS local BA' if self.options.use_gnc else 'cuNLS joint BA'), (directory / 'solver.log').open('w') as log:
             process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
@@ -88,6 +141,8 @@ class CuNLSBundleAdjuster:
         if code:
             raise RuntimeError(f'cuNLS BA failed (exit {code}); inspect {directory / "solver.log"}')
         result = json.loads((directory / 'output.json').read_text())
+        if self.options.huber_delta_pixels > 0 and result.get('report', {}).get('huber_delta_pixels') != self.options.huber_delta_pixels:
+            raise RuntimeError('Native solver lacks the requested Huber loss; rebuild Docker')
         if not self.options.use_gnc and result.get('report', {}).get('use_gnc') is not False:
             raise RuntimeError('Native solver lacks joint-BA mode; rebuild Docker before running the pair diagnostic')
         if (result.get('format_version') != 1 or len(result['cameras']) != len(ids)

@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from stereoforge.geometry.alignment import _fit
+from .similarity import fit_similarity
 from stereoforge.refinement.sparse_model import SparseModel, SparsePoint, reprojection_error
 from .triangulation import TrackTriangulator
 from .camera_alignment import refine_camera_alignment
@@ -110,7 +110,7 @@ def align_sparse_sections(reference: SparseModel, local: SparseModel, report: di
     for _ in range(512):
         sample = rng.choice(train, 3, replace=False)
         try:
-            candidate = _fit(source[sample], target[sample])
+            candidate = fit_similarity(source[sample], target[sample])
         except (ValueError, np.linalg.LinAlgError):
             continue
         scale, rotation, translation = candidate
@@ -120,7 +120,7 @@ def align_sparse_sections(reference: SparseModel, local: SparseModel, report: di
             best, best_mask = candidate, mask
     if best is None or best_mask.sum() < 20:
         raise ValueError("No robust Sim(3) from locally refined shared landmarks")
-    scale, rotation, translation = _fit(source[train[best_mask]], target[train[best_mask]])
+    scale, rotation, translation = fit_similarity(source[train[best_mask]], target[train[best_mask]])
     camera_fit = {}
     report["camera_aware_refinement"] = camera_fit
     scale, rotation, translation = refine_camera_alignment(
@@ -171,9 +171,12 @@ def align_sparse_sections(reference: SparseModel, local: SparseModel, report: di
     return aligned
 
 
-def merge_sparse_sections(reference: SparseModel, local: SparseModel, report: dict) -> SparseModel:
+def merge_sparse_sections(reference: SparseModel, local: SparseModel, report: dict, *,
+                          track_pairs: list[tuple[int, int]] | None = None) -> SparseModel:
     """One camera per global frame; fuse only unambiguous measured tracks."""
-    pairs = shared_landmarks(reference, local)
+    pairs = shared_landmarks(reference, local) if track_pairs is None else track_pairs
+    if len({i for i, _ in pairs}) != len(pairs) or len({j for _, j in pairs}) != len(pairs):
+        raise ValueError('Landmark fusion requires one-to-one track identities')
     partners = dict(pairs)
     paired_local = {j for _, j in pairs}
     cameras = {**local.cameras, **reference.cameras}
@@ -203,8 +206,23 @@ def merge_sparse_sections(reference: SparseModel, local: SparseModel, report: di
     local_only = local.cameras.keys() - reference.cameras.keys()
     claimed = set()
     retriangulated, rejected = 0, 0
+    preserved = 0
+    shared_frames = reference.cameras.keys() & local.cameras.keys()
     for point, joined, weak in candidates:
-        if weak:
+        outside_overlap = not joined and not (point.observations.keys() & shared_frames)
+        if outside_overlap:
+            # A validated child landmark away from the reconciled cameras has
+            # identical projection geometry after Sim(3). Preserve its depth
+            # and observations, including low-parallax but validated tracks.
+            observations = point.observations
+            keys = {(f, *np.round(uv, 4)) for f, uv in observations.items()}
+            if len(observations) < 3 or keys & claimed:
+                raise ValueError('Validated non-overlap track has insufficient or conflicting observations')
+            claimed.update(keys)
+            points.append(point)
+            preserved += 1
+            continue
+        if weak and joined:
             # Use measured observations before the old coordinate can filter
             # them out. An unsupported depth is never retained as a fallback.
             result = TrackTriangulator.triangulate(point.observations, cameras)
@@ -229,6 +247,8 @@ def merge_sparse_sections(reference: SparseModel, local: SparseModel, report: di
     # are still required even if no track spans the entire overlap interval.
     report.update(joined_track_candidates=len(pairs), conflicting_tracks=conflicts,
                   weak_tracks_retriangulated=retriangulated, weak_tracks_rejected=rejected,
+                  preserved_nonoverlap_landmarks=preserved,
+                  retriangulation_scope="Shared global tracks only; other tracks retain child positions",
                   retriangulation_max_reprojection_pixels=4, retriangulation_minimum_angle_degrees=1,
                   retained_landmarks=len(points), joined_tracks_passing_reprojection=joined_count,
                   tracks_spanning_both_nonoverlap_regions=bridges)

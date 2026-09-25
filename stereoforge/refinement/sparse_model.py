@@ -124,3 +124,22 @@ def reprojection_error(camera: SparseCamera, xyz: np.ndarray, uv: np.ndarray) ->
         return float("inf")
     pixel = camera.intrinsics @ point
     return float(np.linalg.norm(pixel[:2] / pixel[2] - uv))
+
+
+def require_connected(model: SparseModel) -> None:
+    neighbors = {f: set() for f in model.cameras}
+    for point in model.points:
+        frames = list(point.observations)
+        for frame in frames[1:]:
+            neighbors[frames[0]].add(frame)
+            neighbors[frame].add(frames[0])
+    if not neighbors:
+        raise ValueError("Empty sparse reconstruction")
+    pending, visited = [next(iter(neighbors))], set()
+    while pending:
+        frame = pending.pop()
+        if frame not in visited:
+            visited.add(frame)
+            pending.extend(neighbors[frame] - visited)
+    if len(visited) != len(neighbors):
+        raise ValueError("Sparse camera/track graph is disconnected; one Sim(3) cannot fix independent gauges")

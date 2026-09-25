@@ -13,7 +13,7 @@ namespace stereoforge::optimization {
 class PixelReprojectionFactors final : public cunls::SizedFactorBatch<3, 6, 3, 2> {
 public:
     PixelReprojectionFactors(const float* pixels, const float* principal_points,
-                             const float* sqrt_weights, std::size_t count);
+                             const float* sqrt_weights, std::size_t count, float huber_delta = 0.0f);
     [[nodiscard]] bool Evaluate(float* residuals, float* jacobians,
                                float const* const* states, cudaStream_t stream) const override;
     [[nodiscard]] std::size_t NumFactors() const override;
@@ -21,6 +21,7 @@ private:
     const float* pixels_;
     const float* principal_points_;
     const float* sqrt_weights_;
+    float huber_delta_;
     std::size_t count_;
 };
 

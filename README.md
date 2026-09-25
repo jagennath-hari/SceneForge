@@ -1,5 +1,45 @@
 # StereoForge
 
+## Custom cuNLS backend: one-cluster diagnostic
+
+The first custom backend is now implemented in C++/CUDA under
+`stereoforge/native/optimization`. Python prepares input and publishes reports;
+`stereoforge-bundle-adjust` performs the optimization. It links to unchanged cuNLS,
+not GTSfM or pyCuSFM. This is a **bounded cluster diagnostic**, not the full replacement
+for the old reconstruction command. Native code has not yet been built or runtime-validated.
+
+Exit the existing container and rebuild with `bash scripts/build_and_start.sh`.
+Inside the new container, reuse the Barn inputs and VGGT seed:
+
+```bash
+python -m stereoforge.reconstruction.cunls_demo \
+  --run data/intermediate/incremental_20260925_051358_654232 \
+  --device 0 --check-jacobians
+```
+
+The default cluster is `RUN/seed_vggt/0.pt`. Use `--section PATH.pt` for another
+saved cluster whose frame IDs and processed images match that run's
+`global_tracks.jsonl` and `processed/`. No VGGT inference or matching is repeated.
+A fresh `RUN/cunls_TIMESTAMP/index.html` links the before/after viewers,
+`ba/solver.log`, `report.json`, and saved COLMAP models (`initialized_sparse/`,
+`ba/raw/`, `ba/sparse/`). The cloud covers only the chosen cluster.
+
+The local objective optimizes world-to-camera poses, sparse points, and positive
+fx/fy parameterized as log-focals. Principal points stay fixed; distortion is not
+modeled. VGGT poses and focal lengths supply soft priors. The first camera is fixed,
+and pose priors anchor scale after camera-step normalization. GNC-TLS updates
+per-observation weights between native LM/cuDSS solves. Pixel residuals and their
+analytic Jacobians run on CUDA; no upstream source changes are needed.
+
+`--check-jacobians` compares all 11 pixel-factor tangent columns with central
+finite differences on up to eight input observations before solving. It is a
+runtime diagnostic you run, not a claim that the backend has passed validation.
+The report also checks post-filter camera support and connectivity. Reprojection
+statistics are fitting diagnostics, not independent reconstruction accuracy.
+Hierarchy construction, Sim(3) merging, and final unanchored global refinement are
+still future work; the old end-to-end path has not been redirected to this backend.
+
+
 Geometry-aware stereo video synthesis, starting with **one continuous, uncut
 recording** such as drone footage or a walkthrough.
 
@@ -95,7 +135,7 @@ package dependency checkers may report that metadata mismatch. The source is not
 
 **Backend migration in progress:** pyCuSFM is no longer installed. The existing
 reconstruction/refinement commands still call it and will not run in this image
-until the custom cuNLS backend is implemented. Video decoding and keyframe selection
+until the full reconstruction path is migrated. The standalone cuNLS cluster diagnostic above is available. Video decoding and keyframe selection
 remain available; installing cuNLS does not yet migrate reconstruction.
 
 The environment uses the NVIDIA runtime, all visible GPUs, privileged mode,

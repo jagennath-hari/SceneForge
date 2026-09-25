@@ -125,7 +125,7 @@ explicit installation, not a source patch. Builds do not execute GPU tests.
 
 This is an environment migration only: the older reconstruction paths documented
 below still require pyCuSFM and must be replaced before they run in the new image.
-The planned custom cuNLS optimization backend is not implemented yet.
+The custom cuNLS local optimization diagnostic is implemented below; full pipeline migration remains pending.
 
 One uv-created virtual environment is shared by all Python dependencies. The
 legacy TensorRT installation uses pip in that same environment. BuildKit caches
@@ -768,3 +768,59 @@ frames; no-progress runs publish partial coverage with missing IDs and nonzero e
 The result is a colored sparse map and camera trajectory, not dense geometry or a
 stereo video. The backend fixes only its first camera; metric scale and global drift
 correction are not guaranteed. No new long-range loop matching is implemented.
+
+
+## Custom cuNLS local optimization (implemented, runtime validation pending)
+
+The first migration stage is a standalone saved-cluster diagnostic. It does not
+replace hierarchical orchestration or redirect old pyCuSFM entry points.
+
+- `native/optimization/include/stereoforge/optimization/`: host API `.hpp` and
+  custom CUDA factor interface `.cuh`.
+- `native/optimization/src/`: ordinary C++ graph/IO code and `.cu` factor kernels.
+- `refinement/cunls.py`: typed options, normalization, native process lifecycle,
+  output identity checks, filtering and diagnostics; no pyCuSFM dependency.
+- `reconstruction/cunls_demo.py`: verified saved RGB/track coordinate grids,
+  depth-initialized sparse cluster, before/after HTML reports.
+
+The native pixel factor has three residuals: weighted horizontal/vertical pixel
+error and an unweighted cheirality barrier. It uses cuNLS right-multiplicative
+world-to-camera SE3 updates, Euclidean 3D points, and log(fx)/log(fy) states. All
+11 tangent columns have analytic derivatives. Principal points are fixed and
+lens distortion is outside this initial implementation. An optional runtime
+central-difference check uses cuNLS's actual Plus operation on eight observations.
+
+For each measured track, initialization takes the coordinate-wise median of
+VGGT depth-unprojected positions. Observations above 14 pixels are removed;
+landmarks need three surviving views. This is a StereoForge initialization
+choice, not a claim of an exact GTSfM reproduction. All requested cluster cameras
+must be supported and at least 60 landmarks must survive initialization.
+
+Before solving, subtract the first camera center and divide geometry/translations
+by the median nonzero consecutive camera step. Priors default to 0.1 radians,
+0.1 normalized translation units, and 10 focal pixels. The first camera remains
+fixed; soft pose priors retain the seed scale. These are initialization priors,
+not physical measurements, and should later be released in a correctly gauge-fixed
+global stage. That global stage is not yet implemented.
+
+GNC-TLS uses a 3-pixel cutoff, increasing mu by 1.6 between LM solves, with up to
+64 rounds of 50 LM iterations. The two image residuals and Jacobians are multiplied
+by sqrt(weight). Weights remain fixed within an LM solve. Landmarks with fewer
+than three observations having sqrt(weight)>0.01 are held constant for that round,
+preventing unsupported landmark states from making the system singular. Pose and
+focal priors are not robustified. Each round records costs, support and frozen
+landmarks. GNC termination requires stable truncated cost and no soft weights;
+hitting the round limit is explicitly reported as a partial diagnostic.
+
+CUDA uses bounded grid-stride launches with 128-thread blocks. Each observation
+is independent, so no shared-memory tile or block barrier is required. Factor
+work uses the cuNLS stream; synchronization occurs before CPU diagnostic reads.
+This first subprocess/file interface copies data at the Python/native boundary;
+it does not claim zero-copy or multi-GPU solving. A single visible device index
+is selected, and the same path supports single-GPU machines.
+
+Raw optimized models and filtered models are retained separately. Filtering uses
+positive depth, at most three pixels reprojection error, and three views per point.
+Complete diagnostic status also requires six observations per camera, connected
+support, all original cameras, and the GNC convergence criterion. No fitting
+statistic is presented as held-out validation or ground-truth accuracy.

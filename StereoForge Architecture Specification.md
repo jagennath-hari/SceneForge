@@ -40,10 +40,11 @@ camera poses/depths seed recovery directly in the common gauge. No incoming dept
 scale is inferred or copied. CPU Eigen triangulation adds previously absent tracks
 only after three registered views and >=1 degree of parallax support them.
 
-PnP uses a deterministic training/holdout split: >=30/10 correspondences with
->=6/3 occupied cells on a 4x4 image grid. RANSAC uses a four-pixel threshold, 1000
-iterations and 0.999 confidence; refined training support must retain >=20 points,
->=50% of training candidates and six image cells. At least 80% of held-out pixels
+PnP uses a deterministic training/holdout split: >=30/10 correspondences.
+Concentrated image features are allowed; no image-grid coverage gate is applied
+before or after pose estimation. RANSAC uses a four-pixel threshold, 1000
+iterations and 0.999 confidence; refined training support must retain >=20 points
+and >=50% of training candidates. At least 80% of held-out pixels
 must be within five pixels with positive depth. Holdouts are excluded from BA and
 future extensions, stored only in native memory, and validated after joint BA and
 subsequent merges. Old-boundary checks remain mandatory. A failed recovery leaves

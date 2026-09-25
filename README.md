@@ -40,8 +40,9 @@ tracks supply the correspondences; there is no new descriptor-matching pass.
 
 Recovery uses C++ OpenCV PnP and Eigen triangulation on CPU, followed by CUDA/cuNLS
 joint BA. Each new camera needs at least 30 training and 10 held-out correspondences,
-image coverage, 20 training inliers and at least 80% held-out agreement within five
-pixels. Held-out pixels stay excluded from BA and are rechecked at later merges.
+at least 20 training inliers covering 50% of training candidates, and at least 80%
+held-out agreement within five pixels. Concentrated features do not block PnP;
+there is no image-grid coverage requirement. Held-out pixels stay excluded from BA and are rechecked at later merges.
 New landmarks require three registered views, positive depth, at most four-pixel
 reprojection error and at least one degree of ray separation. Existing tracks are
 not replaced by incoming VGGT depths. Recovery commits only after all incoming

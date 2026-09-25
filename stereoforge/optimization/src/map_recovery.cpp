@@ -20,14 +20,6 @@ struct Correspondence {
     Eigen::Vector3d position;
     Eigen::Vector2d pixel;
 };
-std::size_t Coverage(const std::vector<Correspondence>& pairs, const Camera& camera) {
-    std::set<std::pair<int,int>> cells;
-    for (const Correspondence& pair : pairs) {
-        cells.emplace(std::clamp(static_cast<int>(4*pair.pixel.x()/camera.width),0,3),
-                      std::clamp(static_cast<int>(4*pair.pixel.y()/camera.height),0,3));
-    }
-    return cells.size();
-}
 Eigen::Vector3d Ray(const Camera& camera, const Eigen::Vector2d& pixel) {
     return (camera.rotation*camera.intrinsics.inverse()*Eigen::Vector3d(pixel.x(),pixel.y(),1)).normalized();
 }
@@ -106,13 +98,12 @@ std::optional<Landmark> Triangulate(const Observations& observations, const Spar
 }
 Camera RegisterCamera(const Camera& calibration, const std::vector<Correspondence>& train,
                       const std::vector<Correspondence>& held, FrameId frame) {
-    const std::size_t training_cells = Coverage(train,calibration);
-    const std::size_t held_cells = Coverage(held,calibration);
-    if (train.size() < 30 || held.size() < 10 || training_cells < 6 || held_cells < 3) {
+    // Concentrated image features can still constrain PnP. Let RANSAC and
+    // held-out reprojection validate the pose instead of requiring grid coverage.
+    if (train.size() < 30 || held.size() < 10) {
         throw std::runtime_error("PnP recovery frame " + std::to_string(frame) +
-            ": insufficient map support/coverage (" + std::to_string(train.size()) + " training, " +
-            std::to_string(held.size()) + " held out; occupied 4x4 cells " + std::to_string(training_cells) +
-            " training, " + std::to_string(held_cells) + " held out; need 30/10 points and 6/3 cells). PnP not attempted");
+            ": insufficient map support (" + std::to_string(train.size()) + " training, " +
+            std::to_string(held.size()) + " held out; need 30/10 points). PnP not attempted");
     }
     Eigen::Vector3d origin = Eigen::Vector3d::Zero();
     for (const Correspondence& pair : train) { origin += pair.position; } origin /= train.size();
@@ -163,7 +154,7 @@ Camera RegisterCamera(const Camera& calibration, const std::vector<Correspondenc
     }
     std::vector<Correspondence> valid;
     for (const Correspondence& pair : train) { if (Reprojection(camera,pair.position,pair.pixel) <= 4) { valid.push_back(pair); } }
-    if (valid.size() < 20 || valid.size() < .5*train.size() || Coverage(valid,camera) < 6) {
+    if (valid.size() < 20 || valid.size() < .5*train.size()) {
         throw std::runtime_error("PnP refined training support failed at frame " + std::to_string(frame));
     }
     std::size_t passed = 0;

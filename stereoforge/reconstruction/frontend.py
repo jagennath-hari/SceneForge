@@ -60,12 +60,7 @@ class ReconstructionFrontend:
                     pixels = (tensor.numpy().transpose(1, 2, 0) * 255).round().astype(np.uint8)
                     temporary = destination.with_suffix(".partial")
                     Image.fromarray(pixels).save(temporary, format="PNG", compress_level=1)
-                    combined = {pair: reused[pair] for pair in pairs if pair in reused}
-                combined.update({(record["source"], record["target"]): record for record in records})
-                with temporary.open("w") as stream:
-                    for pair in pairs:
-                        stream.write(json.dumps(combined[pair]) + "\n")
-                temporary.rename(destination)
+                    temporary.rename(destination)
                 with Image.open(destination) as image:
                     sizes.add(image.size)
                 result[index] = destination

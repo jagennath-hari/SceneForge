@@ -419,5 +419,5 @@ with a tighter margin. The staging sphere and camera trajectory do not determine
 this final framing; a few peripheral points may lie outside the close-up.
 
 Accepted-map cameras use 25% image opacity and approximately 45% frustum opacity,
-so they obscure less of the cloud. The trajectory stays opaque. Schematic and
+so they obscure less of the cloud. Camera poses show the path without trajectory lines. Schematic and
 VGGT-window image planes remain opaque; opacity updates reuse cached RGB textures.

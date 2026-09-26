@@ -1,5 +1,5 @@
 //! Camera-to-world extrinsics and pinhole intrinsics are distinct entities.
-use rerun::{Color, LineStrips3D, Pinhole, Points3D, RecordingStream, Transform3D};
+use rerun::{Color, Pinhole, Points3D, RecordingStream, Transform3D};
 use rerun::components::{Radius, ViewCoordinates};
 use crate::{Result, staging::Thumbnail};
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,7 +12,6 @@ pub fn log(rec: &RecordingStream, root: &str, cameras: &[f32], ids: &[i64], imag
         Color::from_unmultiplied_rgba(50,200,255,115)
     } else { color };
     let image_opacity = if root == "world/map" { 0.25_f32 } else { 1.0_f32 };
-    let mut trajectory: Vec<Vec<[f32; 3]>> = Vec::new();
     for (index, c) in cameras.chunks_exact(18).enumerate() {
         if !c.iter().all(|v| v.is_finite()) || c[12] <= 0.0 || c[13] <= 0.0 || c[16] <= 0.0 || c[17] <= 0.0 {
             return Err("Invalid camera supplied to viewer".into());
@@ -43,13 +42,8 @@ pub fn log(rec: &RecordingStream, root: &str, cameras: &[f32], ids: &[i64], imag
                 rec.log(image_path, &rerun::Image::from_rgb24(image.rgb.clone(), [image.width,image.height]).with_opacity(image_opacity))?;
             }
         }
-        if index > 0 && ids[index] == ids[index-1]+1 {
-            trajectory.push(vec![centers[index-1], centers[index]]);
-        }
     }
     rec.log(format!("{root}/camera_centers"), &Points3D::new(centers)
         .with_radii([Radius::new_ui_points(2.0)]).with_colors([color]))?;
-    rec.log(format!("{root}/trajectory"), &LineStrips3D::new(trajectory).with_colors([color])
-        .with_radii([Radius::new_ui_points(0.75)]))?;
     Ok(())
 }

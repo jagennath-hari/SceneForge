@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1
+ARG BASE_FROM=stereoforge/cunls:latest
+FROM ${BASE_FROM} AS rerun
+
+ARG USER_UID=1000
+ARG USER_GID=1000
+ARG RUST_TOOLCHAIN=stable
+
+# Rust build dependencies and native viewer support for X11/Wayland and Vulkan.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates pkg-config libssl-dev libclang-dev \
+        libvulkan1 mesa-vulkan-drivers libxkbcommon0 libxkbcommon-x11-0 \
+        libwayland-client0 libwayland-cursor0 libwayland-egl1 \
+        libxcb1 libxcb-render0 libxcb-shape0 libxcb-xfixes0 libxi6 libxrandr2 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Keep toolchains outside HOME, which is inherited from the cuNLS image.
+ENV RUSTUP_HOME=/opt/rustup \
+    CARGO_HOME=/opt/cargo \
+    PATH=/opt/cargo/bin:${PATH}
+RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh && \
+    sh /tmp/rustup-init.sh -y --no-modify-path --profile minimal \
+        --default-toolchain "${RUST_TOOLCHAIN}" --component rustfmt --component clippy && \
+    rm /tmp/rustup-init.sh && \
+    chown -R "${USER_UID}:${USER_GID}" /opt/rustup /opt/cargo
+
+# Official, unmodified viewer binary. Keep our future Rust SDK crate on this
+# same release. Installing the viewer does not install a Rust SDK dependency.
+ENV RERUN_VERSION=0.38.1
+RUN case "$(dpkg --print-architecture)" in \
+        amd64) target=x86_64-unknown-linux-gnu; checksum=060acc4fb061927ec4cc8c9f30d063941682a75cda5dcff29d0b4532700829cf ;; \
+        arm64) target=aarch64-unknown-linux-gnu; checksum=699e1ff34dbcbe3b70176a009376b37f69867d111879ed216569a8d9f33ae235 ;; \
+        *) echo 'Unsupported Rerun viewer architecture' >&2; exit 1 ;; \
+    esac && \
+    curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
+        "https://github.com/rerun-io/rerun/releases/download/${RERUN_VERSION}/rerun-cli-${RERUN_VERSION}-${target}" \
+        -o /tmp/rerun && \
+    echo "${checksum}  /tmp/rerun" | sha256sum --check - && \
+    install -m 0755 /tmp/rerun /usr/local/bin/rerun && rm /tmp/rerun

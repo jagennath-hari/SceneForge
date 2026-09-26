@@ -68,7 +68,3 @@ ENV HOME=/home/stereoforge \
     XDG_CACHE_HOME=/home/stereoforge/.cache \
     HF_HOME=/home/stereoforge/.cache/huggingface \
     TORCH_HOME=/home/stereoforge/.cache/torch
-
-USER ${USER_UID}:${USER_GID}
-WORKDIR /workspace/StereoForge
-CMD ["/bin/bash"]

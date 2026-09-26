@@ -187,13 +187,13 @@ git submodule update --init --recursive
 bash scripts/build_and_start.sh
 ```
 
-The script builds the CUDA → base → geometry → stereo → cuNLS image chain with
+The script builds the CUDA → base → geometry → stereo → cuNLS → Rust/Rerun image chain with
 BuildKit and starts an interactive container. If the named container is already
 running, it attaches without rebuilding. Exit/stop it before rebuilding changed
 Dockerfiles or native code. Python source and configuration changes are visible
 through their explicit workspace mounts.
 
-The final image builds the unchanged `third_party/cuNLS` checkout against CUDA 13.2.
+The cuNLS image builds the unchanged `third_party/cuNLS` checkout against CUDA 13.2.
 It installs C++ headers/library and CMake targets under `/opt/cunls`, the matching
 cuDSS shared libraries under `/opt/cudss/lib`, and `pycunls` plus CUDA 13 CuPy in
 our existing venv. CuPy stays below v14 to preserve NumPy 1.26. Upstream pycunls
@@ -267,3 +267,13 @@ is needed. Sim(3) uses shared camera orientations and centers, with shared-frame
 depth ratios as a scale prior during low translation. Joint cuNLS BA then refines the
 combined map using measured 2D observations. Similarity alignment initializes BA;
 it does not by itself correct internal distortion.
+
+The final `docker/Dockerfile.rerun` layer installs Rust stable (Cargo, rustfmt,
+Clippy) and the official Rerun 0.38.1 viewer binary, checked against its release
+SHA-256 digest. No Rerun source is modified. Rebuild after stopping the existing
+container, using `bash scripts/build_and_start.sh`. Inside the new container,
+`rerun` opens the viewer using the existing display mounts. This installs the
+environment only: reconstruction logging is not connected yet. Our future Rust
+visualization package will declare the matching `rerun` crate in `Cargo.toml`;
+no Python or C++ Rerun SDK is installed by this layer. Cargo's registry cache and
+Rust toolchain currently live in the container and are not persisted on the host.

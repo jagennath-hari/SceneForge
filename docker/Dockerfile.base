@@ -32,5 +32,3 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install torch torchvision \
         --index-url https://download.pytorch.org/whl/cu132 && \
     uv pip install PyYAML tqdm
-
-WORKDIR /workspace/StereoForge

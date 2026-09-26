@@ -19,7 +19,7 @@ from .frontend import ReconstructionFrontend
 from .inference import infer_clusters
 from .view_graph import Cluster, VerifiedGraph
 
-POLICY = 'native_graph_dense_cunls_v5'
+POLICY = 'native_graph_dense_cunls_v6'
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,13 +68,13 @@ class WindowReconstructor(ReconstructionFrontend):
         model = self.current
         self.summary.update(native_stage_seconds=self.native.stage_seconds, status=status, registered_frames=len(model.cameras) if model else 0,
                             error=error, dense_depth_refined=bool(self.summary.get("dense_refinement")),
-                            shared_calibration_stage=self.native.builder.calibration_stage,
+                            shared_calibration_complete=self.native.builder.shared_calibration_complete,
                             native_stage=self.native.last_stage,
                             alignment_warnings=self.native.alignment_warnings,
                             alignment_confidence_warning=bool(self.native.alignment_warnings),
                             reconstruction_name='StereoForge · VGGT windows + cuNLS',
                             units='reconstruction_units', attempt=str(self.attempt.relative_to(self.output)))
-        if model is not None and self.native.builder.calibration_stage:
+        if model is not None and self.native.builder.shared_calibration_complete:
             self.summary['shared_intrinsics'] = next(iter(model.cameras.values())).intrinsics.tolist()
         self.summary['missing_frames'] = sorted(set(range(self.summary['input_frames'])) - (set(model.cameras) if model else set()))
         write_json(self.output / 'status.json', self.summary)

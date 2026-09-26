@@ -33,14 +33,14 @@ mandatory before a candidate replaces the accepted map. Priors remain those of
 the initialized solve; this is not an unanchored global optimizer or an exact
 GTSfM reproduction. Non-overlap child landmarks are preserved during reconciliation.
 
-After merging, final BA first optimizes one shared `fx, fy` block with a fixed
-principal point, then shared `cx, cy` with a two-pixel prior per camera. Poses and
-sparse landmarks move in both stages; the first camera remains fixed. All cameras
-must have identical processed dimensions. Shared calibration assumes unchanged
-zoom/crop; principal refinement is rolled back to the validated focal-only result
-if its solve or boundary checks fail. Status records `shared_calibration_stage`
-(1=focal-only, 2=principal refinement accepted). Optional Jacobian diagnostics cover
-all 13 reprojection tangent coordinates, including the principal point.
+After merging, one global BA jointly optimizes shared `fx, fy, cx, cy`, camera
+poses and sparse landmarks. Focal lengths have a ten-pixel prior; principal points
+have a conservative two-pixel prior per camera. The first camera remains fixed.
+There is no intermediate focal-only acceptance gate. All cameras must have identical
+processed dimensions; shared calibration assumes unchanged zoom/crop. A failed
+solve or boundary check preserves the accepted sparse map and stops before dense
+refinement. Status records `shared_calibration_complete` and the final intrinsics.
+Optional Jacobian diagnostics cover all 13 reprojection tangent coordinates.
 
 Dense refinement is a separate, conservative geometric pass using the final map.
 Sparse observations calibrate each VGGT depth map to the map's arbitrary scale.

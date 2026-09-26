@@ -187,7 +187,7 @@ SparseMap MapBuilder::Initialize(const std::vector<DepthFrame>& frames) const {
     CheckSupport(model, "VGGT landmark initialization", nullptr, nullptr, false);
     return model;
 }
-void MapBuilder::Optimize(SparseMap& model, bool local, int calibration_stage) const {
+void MapBuilder::Optimize(SparseMap& model, bool local, bool shared_calibration) const {
     const std::string stage = local ? "local BA" : "joint BA";
     CheckSupport(model, stage + " input");
     const SupportCounts before = CountSupport(model);
@@ -205,8 +205,8 @@ void MapBuilder::Optimize(SparseMap& model, bool local, int calibration_stage) c
     if (steps.empty()) { throw std::runtime_error("Degenerate camera baseline"); }
     const double scale = Median(steps);
     BAInput input;
-    input.options.shared_intrinsics = calibration_stage > 0;
-    input.options.optimize_principal = calibration_stage == 2;
+    input.options.shared_intrinsics = shared_calibration;
+    input.options.optimize_principal = shared_calibration;
     input.options.use_gnc = local;
     input.options.huber_delta_pixels = local ? 0 : 3;
     input.options.lm_iterations = local ? 50 : this->iterations_;
@@ -348,23 +348,30 @@ Boundary MapBuilder::Withhold(SparseMap& combined, const SparseMap& local,
     return boundary;
 }
 void MapBuilder::Validate(const SparseMap& model, const Boundary& boundary) const {
-    std::map<FrameId, std::size_t> counts, passed;
+    std::map<FrameId, std::size_t> counts, passed, missing, unsupported, reprojection_failed;
     std::size_t total = 0;
     for (const Holdout& held : boundary.observations) {
         ++counts[held.frame];
-        if (!model.landmarks.contains(held.track) || !model.cameras.contains(held.frame)) { continue; }
+        if (!model.landmarks.contains(held.track) || !model.cameras.contains(held.frame)) { ++missing[held.frame]; continue; }
         const Landmark& point = model.landmarks.at(held.track);
         std::size_t support = 0;
         for (const std::pair<const FrameId, Eigen::Vector2d>& obs : held.training) {
             if (point.observations.contains(obs.first) && SamePixel(obs.second, point.observations.at(obs.first))) { ++support; }
         }
-        if (support >= 2 && Reprojection(model.cameras.at(held.frame), point.position, held.pixel) <= 5) { ++total; ++passed[held.frame]; }
+        if (support < 2) { ++unsupported[held.frame]; }
+        else if (Reprojection(model.cameras.at(held.frame), point.position, held.pixel) <= 5) { ++total; ++passed[held.frame]; }
+        else { ++reprojection_failed[held.frame]; }
     }
-    if (total < .8*boundary.observations.size()) { throw std::runtime_error("Overlap validation below 80% overall"); }
+    if (total < .8*boundary.observations.size()) { throw std::runtime_error("Overlap validation below 80% overall: " + std::to_string(total) + "/" + std::to_string(boundary.observations.size()) + " held-out observations passed"); }
     for (const FrameId frame : boundary.shared) {
         // A tiny holdout sample is insufficient evidence for a per-camera
         // verdict. Its observations still count in the mandatory overall check.
-        if (counts[frame] >= 5 && passed[frame] < .8*counts[frame]) { throw std::runtime_error("Overlap validation below 80% at frame " + std::to_string(frame)); }
+        if (counts[frame] >= 5 && passed[frame] < .8*counts[frame]) { throw std::runtime_error("Overlap validation below 80% at frame " + std::to_string(frame) +
+            ": " + std::to_string(passed[frame]) + "/" + std::to_string(counts[frame]) + " passed (" +
+            std::to_string(100.0*passed[frame]/counts[frame]) + "%); missing landmark/camera=" + std::to_string(missing[frame]) +
+            "; lost training support=" + std::to_string(unsupported[frame]) +
+            "; reprojection above 5px or invalid depth=" + std::to_string(reprojection_failed[frame]) +
+            "; boundary total=" + std::to_string(total) + "/" + std::to_string(boundary.observations.size())); }
     }
     for (const FrameId frame : boundary.cameras) {
         if (!model.cameras.contains(frame)) { throw std::runtime_error("Validation lost camera " + std::to_string(frame)); }
@@ -478,22 +485,25 @@ void MapBuilder::Finalize(const std::function<void(const std::string&)>& progres
     intrinsics(0,0) = Median(values[0]); intrinsics(1,1) = Median(values[1]);
     intrinsics(0,2) = Median(values[2]); intrinsics(1,2) = Median(values[3]);
     for (std::pair<const FrameId,Camera>& entry : candidate.cameras) { entry.second.intrinsics = intrinsics; }
-    progress("global BA: shared fx/fy, fixed principal point");
-    this->Optimize(candidate,false,1);
-    for (const Boundary& boundary : this->boundaries_) { this->Validate(candidate,boundary); }
-    int completed_stage = 1;
-    SparseMap principal_candidate = candidate;
-    progress("global BA: shared fx/fy/cx/cy with principal prior");
+    progress("global BA: joint shared fx/fy/cx/cy, poses and landmarks");
+    this->Optimize(candidate,false,true);
+    progress("validating shared-intrinsics global BA");
     try {
-        this->Optimize(principal_candidate,false,2);
-        for (const Boundary& boundary : this->boundaries_) { this->Validate(principal_candidate,boundary); }
-        candidate = std::move(principal_candidate);
-        completed_stage = 2;
+        for (const Boundary& boundary : this->boundaries_) { this->Validate(candidate,boundary); }
     } catch (const std::runtime_error& error) {
-        progress(std::string("WARNING: Principal-point refinement rejected; keeping validated shared focal BA: ") + error.what());
+        const Eigen::Matrix3d& optimized = candidate.cameras.begin()->second.intrinsics;
+        throw std::runtime_error(std::string(error.what()) +
+            "; shared K initial fx/fy/cx/cy=" + std::to_string(intrinsics(0,0)) + "/" +
+            std::to_string(intrinsics(1,1)) + "/" + std::to_string(intrinsics(0,2)) + "/" + std::to_string(intrinsics(1,2)) +
+            "; optimized=" + std::to_string(optimized(0,0)) + "/" + std::to_string(optimized(1,1)) + "/" +
+            std::to_string(optimized(0,2)) + "/" + std::to_string(optimized(1,2)) +
+            "; landmarks before/after=" + std::to_string(this->map_.landmarks.size()) + "/" +
+            std::to_string(candidate.landmarks.size()) + "; accepted map preserved");
     }
-
+    // Commit the joint solve only after validation. Dense refinement uses this
+    // calibration; a rejected solve leaves the accepted sparse map intact.
     this->map_ = std::move(candidate);
-    this->calibration_stage_ = completed_stage;
+    this->shared_calibration_complete_ = true;
+
 }
 } // namespace stereoforge::optimization

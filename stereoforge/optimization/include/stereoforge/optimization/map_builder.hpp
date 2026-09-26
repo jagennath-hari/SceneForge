@@ -67,17 +67,17 @@ public:
     void Finalize(const std::function<void(const std::string&)>& progress);
     [[nodiscard]] const SparseMap& Map() const;
     [[nodiscard]] std::size_t AcceptedWindows() const;
-    [[nodiscard]] int CalibrationStage() const { return this->calibration_stage_; }
+    [[nodiscard]] bool SharedCalibrationComplete() const { return this->shared_calibration_complete_; }
 private:
     [[nodiscard]] SparseMap Initialize(const std::vector<DepthFrame>& frames) const;
-    void Optimize(SparseMap& model, bool local, int calibration_stage = 0) const;
+    void Optimize(SparseMap& model, bool local, bool shared_calibration = false) const;
     [[nodiscard]] SparseMap Combine(const SparseMap& local) const;
     [[nodiscard]] Boundary Withhold(SparseMap& combined, const SparseMap& local,
                                     const std::function<void(const std::string&)>& progress) const;
     void Validate(const SparseMap& model, const Boundary& boundary) const;
     BundleAdjuster solver_;
     int iterations_;
-    int calibration_stage_ = 0;
+    bool shared_calibration_complete_ = false;
     bool check_jacobians_;
     std::vector<Observations> tracks_;
     std::map<FrameId, std::vector<TrackId>> frame_tracks_;

@@ -1,0 +1,11 @@
+[package]
+name = "stereoforge-rerun"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rerun = { version = "=0.38.1", default-features = false, features = ["sdk"] }

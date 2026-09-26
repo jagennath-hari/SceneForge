@@ -268,12 +268,39 @@ depth ratios as a scale prior during low translation. Joint cuNLS BA then refine
 combined map using measured 2D observations. Similarity alignment initializes BA;
 it does not by itself correct internal distortion.
 
-The final `docker/Dockerfile.rerun` layer installs Rust stable (Cargo, rustfmt,
-Clippy) and the official Rerun 0.38.1 viewer binary, checked against its release
-SHA-256 digest. No Rerun source is modified. Rebuild after stopping the existing
-container, using `bash scripts/build_and_start.sh`. Inside the new container,
-`rerun` opens the viewer using the existing display mounts. This installs the
-environment only: reconstruction logging is not connected yet. Our future Rust
-visualization package will declare the matching `rerun` crate in `Cargo.toml`;
-no Python or C++ Rerun SDK is installed by this layer. Cargo's registry cache and
-Rust toolchain currently live in the container and are not persisted on the host.
+The final `docker/Dockerfile.rerun` layer installs Rust tooling and the official
+Rerun 0.38.1 viewer (release SHA-256 checked), then builds StereoForge's Rust
+visualization adapter using the matching official Rust SDK. Rerun itself is
+unmodified; no Rerun C++ or Python SDK is used. Stop the old container and rebuild
+with `bash scripts/build_and_start.sh` before using it.
+
+Record reconstruction stages with:
+
+```bash
+python -m stereoforge.reconstruction --video data/input/barn.mp4 \
+  --window-size 32 --overlap 16 --lm-iterations 500 --rerun
+```
+
+The command prints the recording path: `map_<attempt>/pipeline.rrd` within the run.
+Open that file with `rerun /path/to/pipeline.rrd` in a second container terminal
+(or the same-version viewer on the host). The SDK flushes at stage boundaries;
+the viewer can read the recording as it grows, or replay it after completion.
+Use `reconstruction_step` to inspect processing order, not video time.
+
+`world/map` contains the accepted colored sparse map, camera centers/frustums,
+and trajectory. `world/incoming` is a provisional, locally refined window after
+Sim(3). `local_window` has independent coordinates: use a separate 3D view for it,
+not an overlay with `world`. The active image panel shows a representative
+processed keyframe from the current window. Camera labels are keyframe indices,
+not original video frame numbers. Frustums use camera-to-world poses and calibrated
+intrinsics with OpenCV axes (+X right, +Y down, +Z forward); world orientation and
+scale remain arbitrary. Trajectory segments do not bridge missing keyframes.
+
+Each snapshot replaces its entity subtree to remove discarded points/cameras;
+point previews are capped at 50,000 per snapshot. Full reconstruction exports are
+unchanged. Logging is optional and copies CPU data into the Rust SDK; it is not
+zero-copy GPU visualization. A runtime recording error warns and disables logging
+without rejecting the map. This first integration records VGGT initialization,
+aligned windows, accepted maps and final global BA, not individual optimizer
+iterations, feature-matching progress or dense-fusion steps. Final dense output
+remains available in the existing HTML report and PLY export.

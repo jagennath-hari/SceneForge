@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
+#include "stereoforge/optimization/rerun_recorder.hpp"
 #include <set>
 #include <string>
 #include <stdexcept>
@@ -60,6 +62,7 @@ void Transform(SparseMap& model, const Similarity& transform);
 class MapBuilder final {
 public:
     MapBuilder(int device, int iterations, bool check_jacobians);
+    void EnableRerun(const std::string& path);
     void SetTracks(std::vector<Observations> tracks);
     void AddWindow(const std::vector<DepthFrame>& frames, const std::vector<DepthFrame>& reference_frames,
                    const std::function<void(const std::string&)>& progress);
@@ -76,6 +79,9 @@ private:
                                     const std::function<void(const std::string&)>& progress) const;
     void Validate(const SparseMap& model, const Boundary& boundary,
                   const std::function<void(const std::string&)>* global_progress = nullptr) const;
+    void Record(const SparseMap& model, std::uint32_t stage,
+                const std::function<void(const std::string&)>& progress, const DepthFrame* image = nullptr);
+    std::unique_ptr<RerunRecorder> recorder_;
     BundleAdjuster solver_;
     int iterations_;
     bool shared_calibration_complete_ = false;

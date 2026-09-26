@@ -30,7 +30,7 @@ so::DepthFrame ReadFrame(so::FrameId id, const Eigen::Matrix4d& pose, const Eige
 }
 }
 PYBIND11_MODULE(_stereoforge_map, module) {
-    module.attr("api_version") = 9;
+    module.attr("api_version") = 10;
     py::class_<so::DenseFusion>(module,"DenseFusion")
         .def(py::init<double>())
         .def("add",[](so::DenseFusion& fusion,
@@ -68,6 +68,7 @@ PYBIND11_MODULE(_stereoforge_map, module) {
     py::class_<so::DepthFrame>(module,"DepthFrame").def(py::init(&ReadFrame));
     py::class_<so::MapBuilder>(module,"MapBuilder")
         .def(py::init<int,int,bool>())
+        .def("enable_rerun",&so::MapBuilder::EnableRerun,py::call_guard<py::gil_scoped_release>())
         .def("set_tracks",&so::MapBuilder::SetTracks,py::call_guard<py::gil_scoped_release>())
         .def("add_window",&so::MapBuilder::AddWindow,py::call_guard<py::gil_scoped_release>())
         .def("rank_windows",&so::MapBuilder::RankWindows,py::call_guard<py::gil_scoped_release>())

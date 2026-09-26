@@ -30,3 +30,6 @@ third_party/cuNLS/python/build/
 third_party/cuNLS/dist/
 
 third_party/lightglue-onnx/weights/
+
+# Rust build artifacts stay out of the build context.
+stereoforge/**/target/

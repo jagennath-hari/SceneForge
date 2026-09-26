@@ -115,6 +115,21 @@ MapBuilder::MapBuilder(int device, int iterations, bool check_jacobians)
     : solver_(device), iterations_(iterations), check_jacobians_(check_jacobians) {
     if (iterations < 1 || iterations > 500) { throw std::invalid_argument("BA iterations must be 1..500"); }
 }
+void MapBuilder::EnableRerun(const std::string& path) {
+    this->recorder_ = std::make_unique<RerunRecorder>(path);
+}
+void MapBuilder::Record(const SparseMap& model, std::uint32_t stage,
+                        const std::function<void(const std::string&)>& progress, const DepthFrame* image) {
+    if (!this->recorder_) { return; }
+    try {
+        this->recorder_->Snapshot(model,stage);
+        if (image != nullptr) { this->recorder_->Image(*image); }
+    }
+    catch (const std::exception& error) {
+        this->recorder_.reset();
+        progress(std::string("WARNING: Rerun recording disabled; reconstruction continues: ") + error.what());
+    }
+}
 void MapBuilder::SetTracks(std::vector<Observations> tracks) {
     if (this->accepted_windows_ != 0) { throw std::runtime_error("Cannot replace tracks in an active map"); }
     this->tracks_ = std::move(tracks);
@@ -430,6 +445,7 @@ void MapBuilder::AddWindow(const std::vector<DepthFrame>& frames, const std::vec
                            const std::function<void(const std::string&)>& progress) {
     progress("initializing landmarks");
     const SparseMap initialized = this->Initialize(frames);
+    this->Record(initialized,0,progress,frames.empty() ? nullptr : &frames.front());
     std::vector<SparseMap> initial_groups = ConnectedGroups(initialized);
     if (this->accepted_windows_ == 0 && initial_groups.size() != 1) {
         throw std::runtime_error("Seed window is disconnected; no established map exists to anchor its groups");
@@ -447,6 +463,7 @@ void MapBuilder::AddWindow(const std::vector<DepthFrame>& frames, const std::vec
         CheckSupport(refined, "seed after local BA");
         this->map_ = std::move(refined);
         ++this->accepted_windows_;
+        this->Record(this->map_,2,progress);
         return;
     }
     std::vector<SparseMap> groups = ConnectedGroups(refined);
@@ -475,6 +492,7 @@ void MapBuilder::AddWindow(const std::vector<DepthFrame>& frames, const std::vec
         local.cameras.merge(group.cameras);
         local.landmarks.merge(group.landmarks);
     }
+    this->Record(local,1,progress);
     progress("combining tracks");
     SparseMap candidate = this->Combine(local);
     progress("withholding overlap observations");
@@ -488,6 +506,7 @@ void MapBuilder::AddWindow(const std::vector<DepthFrame>& frames, const std::vec
     this->map_ = std::move(candidate);
     this->boundaries_.push_back(boundary);
     ++this->accepted_windows_;
+    this->Record(this->map_,2,progress);
 }
 std::vector<std::size_t> MapBuilder::RankWindows(const std::vector<std::vector<FrameId>>& windows) const {
     // Rank cheap graph evidence before loading VGGT tensors or running local BA.
@@ -553,6 +572,7 @@ void MapBuilder::Finalize(const std::function<void(const std::string&)>& progres
     // calibration; a rejected solve leaves the accepted sparse map intact.
     this->map_ = std::move(candidate);
     this->shared_calibration_complete_ = true;
+    this->Record(this->map_,3,progress);
 
 }
 } // namespace stereoforge::optimization

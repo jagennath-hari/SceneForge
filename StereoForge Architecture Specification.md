@@ -1039,3 +1039,19 @@ CUDA/reference residual values are also compared. Finite differences refine from
 estimates. Original derivative tolerances remain unchanged. Production BA retains
 its CUDA FP32 factors; FP64 is only for the optional diagnostic. Failure records
 all estimates and still stops the solve.
+
+### Optional Rerun recording
+
+`--rerun` records map-building stages via the official Rerun Rust SDK 0.38.1.
+StereoForge owns `stereoforge/visualization`, a Rust cdylib with a narrow C ABI;
+the C++ map builder loads it only when recording is requested. Python only enables
+recording. No upstream Rerun code is modified and no Rerun C++/Python SDK is used.
+The library writes `pipeline.rrd` per map attempt: VGGT-initialized sparse window,
+Sim(3)-aligned provisional window, accepted common maps and final shared BA.
+The timeline is reconstruction step (graph order), with a representative processed
+RGB keyframe, calibrated camera frustums and at most 50,000 displayed colored
+points per snapshot. Independent local coordinates have a separate entity root.
+Snapshots clear replaced entities; rejected candidates never overwrite the accepted
+map. Recordings can be opened while growing or replayed afterward in the standard
+viewer. Feature extraction and dense fusion are not yet logged. Visualization
+errors disable recording with a warning; reconstruction validation is unchanged.

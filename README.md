@@ -21,6 +21,24 @@ python -m stereoforge.reconstruction --video data/input/barn.mp4
 
 Defaults are `--window-size 32 --overlap 16 --lm-iterations 500`, with Rerun enabled.
 Window size and overlap count **selected keyframes**, not original video frames.
+The selection can now grow before VGGT: measured tracks identify temporal cuts
+with fewer than 60 crossing tracks. A bounded repair pass inserts real decoded
+midpoint frames in that gap and its neighboring gaps, then matches new pairs
+with the existing native RaCo–ALIKED/LightGlue+ and RANSAC frontend. Original
+frames and pair measurements are retained. At most two insertion rounds add up
+to 25% of the original selection (rounded up), capped at 512 extra frames.
+This supplies additional three-view evidence; it does not relax BA or alignment
+checks or guarantee recovery across a cut, blur, or occlusion. Remaining weak
+cuts are reported before VGGT. Window numbering and timestamps use the final,
+chronologically ordered selection.
+
+`connection_repair/round_*/support.json` records crossing-track counts and
+inserted candidate indices; `connection_repair/complete.json` records the final
+input mapping. `selection.json` maps the repaired selection to source video
+frames. Existing pair records and processed images are reused after explicit
+frame-ID remapping. Repair images are linked/copied into the run, and each round
+has separate caches so renumbering cannot reuse stale matches or VGGT windows.
+
 
 `configs/keyframes_raco.json` is the active configuration file for RaCo–ALIKED +
 LightGlue keyframe selection and engine preparation. Reconstruction window/BA

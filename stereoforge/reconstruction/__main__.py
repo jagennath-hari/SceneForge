@@ -127,10 +127,11 @@ def main() -> int:
         if reconstructor.visualization is not None:
             reconstructor.visualization.keyframes(sampled.paths)
         validate_image_paths(sampled.paths)
-        write_json(output / 'selection.json', {'frames': len(sampled.paths),
-                   'decoded_candidates': sampled.candidate_frame_count,
-                   'source_frame_indices': sampled.source_frame_indices,
-                   'timestamps_seconds': sampled.timestamps_seconds})
+        if not (output / 'selection.json').exists():
+            write_json(output / 'selection.json', {'frames': len(sampled.paths),
+                       'decoded_candidates': sampled.candidate_frame_count,
+                       'source_frame_indices': sampled.source_frame_indices,
+                       'timestamps_seconds': sampled.timestamps_seconds})
         result = reconstructor.run(list(sampled.paths), checkpoint, sampled.timestamps_seconds)
         logging.info('%s: %d/%d keyframes. Artifacts: %s', result['status'], result['registered_frames'],
                      result['input_frames'], output)

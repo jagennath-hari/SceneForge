@@ -1,7 +1,6 @@
 """Overlapping VGGT windows accumulated into one cuNLS-refined sparse map."""
 
 from dataclasses import dataclass
-import json
 import logging
 import shutil
 from pathlib import Path
@@ -16,9 +15,10 @@ from .native_map import NativeMap, WindowRejected
 from .dense import DenseRefiner, DenseOptions
 from .frontend import ReconstructionFrontend
 from .inference import infer_clusters
-from .view_graph import Cluster, VerifiedGraph
+from .view_graph import Cluster
+from .connection_repair import ConnectionRepair
 
-POLICY = 'native_graph_dense_cunls_v9'
+POLICY = 'native_graph_dense_cunls_v10'
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,26 +100,10 @@ class WindowReconstructor(ReconstructionFrontend):
         self.summary = {'input_frames': len(paths), 'windows': len(windows),
                         'accepted_windows': 0, 'stage': 'features'}
         try:
-            self.images = self._prepare_images(paths)
+            paths, self.timestamps = ConnectionRepair(self).prepare(paths, timestamps)
+            windows = self.options.windows(len(paths))
+            self.summary.update(input_frames=len(paths), windows=len(windows))
             tracks = self.output / 'global_tracks.jsonl'
-            if not tracks.exists():
-                graph = VerifiedGraph(len(paths))
-                files = self._match(len(paths))
-                if self.visualization is not None:
-                    self.visualization.event('Building measured feature tracks from verified image matches')
-                graph.read(files, on_progress=self.visualization.event if self.visualization is not None else None,
-                           on_tracks=self.visualization.tracks if self.visualization is not None else None,
-                           on_orbit=self.visualization.orbit if self.visualization is not None else None)
-                if self.visualization is not None:
-                    self.visualization.event(f"Built {len(graph.tracks)} measured tracks; keyframe positions remain display-only until VGGT")
-                write_json(self.output / 'graph.json', graph.summary)
-                temporary = tracks.with_suffix('.partial')
-                with temporary.open('w') as stream:
-                    for track in graph.tracks:
-                        stream.write(json.dumps({str(f): uv.tolist() for f, uv in track.items()})+'\n')
-                temporary.replace(tracks)
-            elif self.visualization is not None:
-                self.visualization.event('Reusing saved measured feature tracks; matching and track building skipped')
             write_json(self.output / 'windows.json', {'windows': [window.document() for window in windows]})
             self.summary['stage'] = 'vggt'
             on_window = None

@@ -108,6 +108,7 @@ class VideoFrameSampler:
                 progress.advance(len(cached.paths) - progress.completed)
                 document = (self._select(cache, progress, on_progress) if self.keyframes else
                             json.loads((cache / "manifest.json").read_text(encoding="utf-8")))
+                document["decoded_cache"] = str(cache.resolve())
                 progress.status(f"publishing {len(document['frames'])} geometry frames")
                 for index, record in enumerate(document["frames"]):
                     source = cache / record["file"]

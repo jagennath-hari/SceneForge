@@ -39,7 +39,7 @@ class ReconstructionFrontend:
         if capabilities.returncode or not json.loads(capabilities.stdout).get("stable_feature_ids"):
             raise RuntimeError("Pair matcher needs rebuilding: missing stable feature ID support")
 
-    def _prepare_images(self, paths: list[Path]) -> dict[int, Path]:
+    def _prepare_images(self, paths: list[Path], reused: dict[Path, Path] | None = None) -> dict[int, Path]:
         from vggt_omega.utils.load_fn import load_and_preprocess_images
 
         folder = self.output / "processed"
@@ -53,12 +53,19 @@ class ReconstructionFrontend:
                 destination = folder / f"{index:06d}.png"
                 if self.visualization is not None:
                     self.visualization.activity(f"Preparing feature image: {index+1}/{len(paths)}", [index])
+                if not destination.exists() and reused is not None and path in reused:
+                    VideoFrameSampler._link_or_copy(reused[path], destination)
                 if not destination.exists():
                     tensor = load_and_preprocess_images([str(path)], mode="balanced", image_resolution=512)[0]
                     pixels = (tensor.numpy().transpose(1, 2, 0) * 255).round().astype(np.uint8)
                     temporary = destination.with_suffix(".partial")
                     Image.fromarray(pixels).save(temporary, format="PNG", compress_level=1)
-                    temporary.rename(destination)
+                    combined = {pair: reused[pair] for pair in pairs if pair in reused}
+                combined.update({(record["source"], record["target"]): record for record in records})
+                with temporary.open("w") as stream:
+                    for pair in pairs:
+                        stream.write(json.dumps(combined[pair]) + "\n")
+                temporary.rename(destination)
                 with Image.open(destination) as image:
                     sizes.add(image.size)
                 result[index] = destination
@@ -70,20 +77,20 @@ class ReconstructionFrontend:
         self.size_wh = next(iter(sizes))
         return result
 
-    def _match(self, count: int) -> list[Path]:
+    def _match(self, count: int, reused: dict[tuple[int, int], dict] | None = None) -> list[Path]:
         executable = shutil.which("stereoforge-match-pairs")
         if executable is None:
             raise RuntimeError("Rebuild Docker to install the pair matcher with global feature IDs")
         folder = self.output / "matching"
         folder.mkdir(exist_ok=True)
         models = None
+        reused = reused or {}
+        prior_targets: dict[int, list[int]] = {}
+        for a, b in reused:
+            prior_targets.setdefault(a, []).append(b)
         result = []
         width, height = self.size_wh
         batches = range(0, max(count - 1, 0), 64)
-        if any(not (folder / f"{start:06d}.jsonl").is_file() for start in batches):
-            if self.visualization is not None:
-                self.visualization.event('Preparing RaCo–ALIKED + LightGlue+: loading models or building missing engines')
-            models = VideoFrameSampler.model_arguments(self.keyframe_config)[1]
         with Progress("Verifying temporal image pairs", total=len(batches), unit="batch") as progress:
             for start in batches:
                 destination = folder / f"{start:06d}.jsonl"
@@ -96,29 +103,42 @@ class ReconstructionFrontend:
                     continue
                 pairs = [(a, b) for a in range(start, min(start+64, count))
                          for b in range(a+1, min(a+self.options.neighbors+1, count))]
+                pairs = sorted(set(pairs) | {(a, b) for a in range(start, min(start+64, count))
+                                                           for b in prior_targets.get(a, ())})
+                missing = [pair for pair in pairs if pair not in reused]
                 if not pairs:
                     continue
                 request = folder / f"{start:06d}.request.json"
                 write_json(request, {"pairs": [{"source": a, "target": b, "width": width, "height": height,
-                             "source_path": str(self.images[a]), "target_path": str(self.images[b])} for a, b in pairs]})
+                             "source_path": str(self.images[a]), "target_path": str(self.images[b])} for a, b in missing]})
                 temporary = destination.with_suffix(".partial_" + uuid4().hex[:8])
-                command = [executable, str(request), str(self.keyframe_config), models, str(temporary)]
+                if missing and models is None:
+                    if self.visualization is not None:
+                        self.visualization.event("Preparing RaCo–ALIKED + LightGlue+ for new image pairs")
+                    models = VideoFrameSampler.model_arguments(self.keyframe_config)[1]
+                command = [executable, str(request), str(self.keyframe_config), models or "", str(temporary)]
                 if self.device:
                     command.append(str(self.device))
-                progress.status(f"source frames {start}–{min(start+64, count-1)-1}")
+                progress.status(f"{len(missing)} new pairs · {len(pairs)-len(missing)} reused")
                 if self.visualization is not None:
                     sample = pairs[:16]
                     self.visualization.activity(
                         f"Matching batch {start//64+1}/{len(batches)} — requested pairs, awaiting verification",
                         sorted({f for pair in sample for f in pair}), sample)
-                with destination.with_suffix(".log").open("w") as log:
-                    subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
+                if missing:
+                    with destination.with_suffix(".log").open("w") as log:
+                        subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
                 # Verify identity and schema before marking this batch reusable.
-                records = [json.loads(line) for line in temporary.read_text().splitlines()]
-                if [(r["source"], r["target"]) for r in records] != pairs:
+                records = [json.loads(line) for line in temporary.read_text().splitlines()] if missing else []
+                if [(r["source"], r["target"]) for r in records] != missing:
                     raise ValueError("Pair matcher returned incomplete or unexpected frame IDs")
                 if any("source_feature" not in m for r in records for m in r["matches"]):
                     raise ValueError("Rebuild Docker: pair matcher lacks stable global feature IDs")
+                combined = {pair: reused[pair] for pair in pairs if pair in reused}
+                combined.update({(record["source"], record["target"]): record for record in records})
+                with temporary.open("w") as stream:
+                    for pair in pairs:
+                        stream.write(json.dumps(combined[pair]) + "\n")
                 temporary.rename(destination)
                 result.append(destination)
                 if self.visualization is not None:

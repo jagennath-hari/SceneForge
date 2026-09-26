@@ -2,28 +2,35 @@
 
 ## Product intent and current scope
 
-StereoForge will convert a monocular video into stereoscopic side-by-side video.
-Its central idea is to use scene geometry to choose a virtual stereo baseline
-that adapts over time, then synthesize the second eye with StereoSpace.
-
-The current deliverable is **inspectable geometry, sparse BA and supported dense refinement for one
-continuous, uncut recording**. Drone footage and walkthroughs are the intended
-inputs. Edited movies, shot detection, live visualization, baseline control,
-StereoSpace inference, and video encoding are outside the implemented scope.
-Their intended behavior is described in the roadmap, not represented by empty
-Python modules or placeholder tests.
+StereoForge reconstructs a common 3D map from a continuous monocular video.
+The deliverable is an optimized camera trajectory, colored sparse point cloud,
+supported dense refinement, and live Rerun visualization. Drone footage and
+walkthroughs are the intended inputs. Stereo generation is no longer a project
+objective; earlier stereo roadmap material below is historical.
 
 The supported command is `python -m stereoforge.reconstruction --video
 PATH` (defaults: window size 32, overlap 16, 500 LM iterations). The current pipeline is:
 
 ```text
 Continuous video → ordered keyframes → measured global feature tracks
+    → bounded intermediate-frame insertion at weak track boundaries → rematching
     → overlapping VGGT-Ω windows → local cuNLS BA
     → initialize each window in the first window's gauge with Sim(3)
     → merge shared cameras/tracks → joint robust cuNLS BA
     → shared-calibration global BA → dense refinement + fusion
     → one camera trajectory, colored cloud and viewer
 ```
+
+Before VGGT, count consistent tracks with at least three observations crossing
+each temporal cut. Fewer than 60 tracks triggers extra measurements, not a relaxed
+acceptance threshold. Insert decoded midpoint frames in that gap and adjacent
+gaps; preserve the original selection and verified pair measurements, and infer
+only missing pairs with the native matcher. Repeat at most twice, adding at most
+25% of the initial selection (rounded up), capped at 512 frames. Use the final
+timestamp order to assign frame IDs and construct windows. Repaired inputs,
+provenance and per-round support counts are saved under `connection_repair/`;
+separate round caches and explicit ID remapping prevent stale image/match reuse.
+Unresolved weak cuts remain visible and all geometry checks still apply.
 
 The map grows in graph-ranked window order. Each global keyframe has one camera, each fused
 track one sparse landmark. Local GNC-TLS filters initialization outliers; joint

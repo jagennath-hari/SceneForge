@@ -35,7 +35,18 @@ pub extern "C" fn sf_rerun_open(path: *const c_char, output: *mut *mut std::ffi:
         if path.is_null() || output.is_null() { return Err("Null recording path/handle".into()); }
         // SAFETY: C++ supplies a terminated UTF-8 path and writable handle.
         let path = unsafe { CStr::from_ptr(path) }.to_str()?;
-        let recording = rerun::RecordingStreamBuilder::new("StereoForge").save(path)?;
+        // Launch the official viewer (or reuse its existing server). Use the
+        // actual port returned by the SDK, not an assumed localhost port.
+        let viewer = rerun::spawn(&rerun::SpawnOptions::default())?;
+        let uri = format!("rerun+http://127.0.0.1:{}/proxy", viewer.port).parse()?;
+        let recording = rerun::RecordingStreamBuilder::new("StereoForge").set_sinks((
+            rerun::sink::FileSink::new(path)?,
+            rerun::sink::GrpcSink::new(uri),
+        ))?;
+        recording.log("pipeline/stage", &TextLog::new(
+            "Preparing reconstruction. Map updates begin after VGGT window inference."
+        ))?;
+        recording.flush_async()?;
         let session = Box::new(Session { recording, step: 0 });
         unsafe { *output = Box::into_raw(session).cast(); }
         Ok(())
@@ -112,7 +123,7 @@ pub extern "C" fn sf_rerun_snapshot(handle: *mut std::ffi::c_void, stage: u32,
             .with_labels(ids.iter().map(ToString::to_string)).with_colors([Color::from_rgb(255, 180, 40)]))?;
         rec.log(format!("{root}/frustums"), &LineStrips3D::new(frustums).with_colors([Color::from_rgb(255, 180, 40)]))?;
         rec.log(format!("{root}/trajectory"), &LineStrips3D::new(trajectory).with_colors([Color::from_rgb(50, 200, 255)]))?;
-        rec.flush_blocking()?;
+        rec.flush_async()?;
         Ok(())
     })
 }
@@ -121,7 +132,14 @@ pub extern "C" fn sf_rerun_snapshot(handle: *mut std::ffi::c_void, stage: u32,
 pub extern "C" fn sf_rerun_close(handle: *mut std::ffi::c_void) {
     if !handle.is_null() {
         // SAFETY: only the owning C++ object calls close, exactly once.
-        let _ = catch_unwind(AssertUnwindSafe(|| { drop(unsafe { Box::from_raw(handle.cast::<Session>()) }); }));
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let session = unsafe { Box::from_raw(handle.cast::<Session>()) };
+            // Bound shutdown waiting if the live viewer has been closed.
+            if let Err(error) = session.recording.flush_with_timeout(std::time::Duration::from_secs(5)) {
+                eprintln!("Rerun shutdown flush: {error}");
+            }
+            drop(session);
+        }));
     }
 }
 
@@ -140,7 +158,7 @@ pub extern "C" fn sf_rerun_image(handle: *mut std::ffi::c_void, rgb: *const u8,
         session.recording.set_time("reconstruction_step", TimeCell::from_sequence(session.step));
         session.recording.log("active_keyframe/image", &rerun::Image::from_rgb24(bytes, [width, height]))?;
         session.recording.log("active_keyframe/info", &TextLog::new(format!("Window representative keyframe {frame}; processed RGB")))?;
-        session.recording.flush_blocking()?;
+        session.recording.flush_async()?;
         Ok(())
     })
 }

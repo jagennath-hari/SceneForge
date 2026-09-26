@@ -52,7 +52,7 @@ def main() -> int:
     parser.add_argument('--dense-voxel-fraction', type=float, help='Voxel width / median scene depth (default 0.01; larger uses less memory)')
     parser.add_argument('--keyframe-config', type=Path)
     parser.add_argument('--diagnostics', action='store_true', help='Check native CUDA Jacobians (slower; no intermediate map dumps)')
-    parser.add_argument('--rerun', action='store_true', help='Record map-building stages through the Rust SDK to attempt/pipeline.rrd')
+    parser.add_argument('--rerun', action='store_true', help='Launch the Rerun viewer, stream map stages live, and save attempt/pipeline.rrd')
     parser.add_argument('--debug', action='store_true', help='Show exception traceback')
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -108,7 +108,7 @@ def main() -> int:
         if args.rerun:
             recording = attempt / 'pipeline.rrd'
             reconstructor.native.builder.enable_rerun(str(recording))
-            logging.info('Rerun recording: %s (open with rerun)', recording)
+            logging.info('Rerun live viewer connected; recording also saved to %s', recording)
         logging.info('Video → keyframes → VGGT windows → graph-ordered map → shared-calibration BA → dense refinement')
         sampler = VideoFrameSampler(keyframe_config=config)
         folder = output / 'input_frames'

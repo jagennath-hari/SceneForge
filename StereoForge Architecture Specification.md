@@ -1052,6 +1052,7 @@ The timeline is reconstruction step (graph order), with a representative process
 RGB keyframe, calibrated camera frustums and at most 50,000 displayed colored
 points per snapshot. Independent local coordinates have a separate entity root.
 Snapshots clear replaced entities; rejected candidates never overwrite the accepted
-map. Recordings can be opened while growing or replayed afterward in the standard
-viewer. Feature extraction and dense fusion are not yet logged. Visualization
+map. The Rust SDK launches the standard viewer and sends one recording to both a
+gRPC sink and a file sink. Live updates use gRPC; saved files are for replay,
+not file tailing. Stage flushes are asynchronous and shutdown flushing is bounded. Feature extraction and dense fusion are not yet logged. Visualization
 errors disable recording with a warning; reconstruction validation is unchanged.

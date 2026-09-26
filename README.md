@@ -274,18 +274,25 @@ visualization adapter using the matching official Rust SDK. Rerun itself is
 unmodified; no Rerun C++ or Python SDK is used. Stop the old container and rebuild
 with `bash scripts/build_and_start.sh` before using it.
 
-Record reconstruction stages with:
+Launch the live viewer and record reconstruction stages with:
 
 ```bash
 python -m stereoforge.reconstruction --video data/input/barn.mp4 \
   --window-size 32 --overlap 16 --lm-iterations 500 --rerun
 ```
 
-The command prints the recording path: `map_<attempt>/pipeline.rrd` within the run.
-Open that file with `rerun /path/to/pipeline.rrd` in a second container terminal
-(or the same-version viewer on the host). The SDK flushes at stage boundaries;
-the viewer can read the recording as it grows, or replay it after completion.
-Use `reconstruction_step` to inspect processing order, not video time.
+`--rerun` launches the official viewer automatically (or connects to one already
+running), streams through gRPC and simultaneously saves the same recording to
+`map_<attempt>/pipeline.rrd`. The GUI uses the existing Docker display mounts.
+It initially shows a preparation message; map updates start during common-map
+building, after VGGT inference. No separate viewer command is needed for live use.
+Select `reconstruction_step` and the end-of-timeline control to follow new updates;
+scrubbing backward lets you inspect earlier stages. Stage flushes are asynchronous.
+
+For replay after completion, use `rerun /path/to/pipeline.rrd`. Rerun 0.38 does not
+follow growing recording files; live visualization uses the gRPC connection, not
+file tailing. An already-running reconstruction using the old file-only adapter
+must finish or be restarted with the rebuilt image to use live streaming.
 
 `world/map` contains the accepted colored sparse map, camera centers/frustums,
 and trajectory. `world/incoming` is a provisional, locally refined window after

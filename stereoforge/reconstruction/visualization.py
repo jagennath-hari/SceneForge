@@ -33,10 +33,10 @@ class ReconstructionVisualization:
                 self._disable(error)
 
     def activity(self, label: str, frames=(), pairs=(), *, ready: bool = False, follow_frame: int | None = None,
-                 overview: bool = False, follow_start: bool = False) -> None:
+                 overview: bool = False, follow_start: bool = False, final_scene: bool = False) -> None:
         self.event(json.dumps({"label": label, "frames": list(frames)[:64],
                                "pairs": list(pairs)[:16], "ready": ready,
-                               "follow_frame": follow_frame, "overview": overview, "follow_start": follow_start}))
+                               "follow_frame": follow_frame, "overview": overview, "follow_start": follow_start, "final_scene": final_scene}))
 
     def orbit(self, fraction: float) -> None:
         now = monotonic()

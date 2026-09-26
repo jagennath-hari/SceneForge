@@ -214,7 +214,7 @@ class DenseRefiner:
         np.savez(self.folder / 'preview.npz', xyz=preview['xyz'], rgb=preview['rgb'], frames=preview['frames'])
         if visualization is not None:
             visualization.dense(preview['xyz'], preview['rgb'], final=True)
-            visualization.activity(f"Dense reconstruction complete: {int(preview['count']):,} fused points; bounded viewer preview", overview=True)
+            visualization.activity(f"Dense reconstruction complete: {int(preview['count']):,} fused points; bounded viewer preview", final_scene=True)
         self._cache.clear()
         return {'method': 'map-scaled VGGT + inverse-depth multi-view consensus', 'anchored_frames': len(anchored),
                 'unanchored_frames': rejected, 'coverage': coverage, 'supported_pixels': accepted_pixels,

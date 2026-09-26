@@ -379,7 +379,7 @@ behind the active optimized camera at a fixed camera-local offset, using that
 camera's full orientation and a fixed lens. There is no lagging position filter
 or fixed-up reconstruction of the camera basis. Refinement starts at its first
 camera immediately, rather than drifting back from calibration's final camera. Dense previews do not trigger
-bounding-box zoom changes. Completion returns to the whole-scene overview.
+bounding-box zoom changes. Completion moves to a close-up fitted to the dense surfaces.
 These remain discrete processing updates, not interpolated animation frames.
 
 Feature-image preparation sets a fixed overview once. Updating processed thumbnails
@@ -412,3 +412,7 @@ and its azimuth changes modestly as camera coverage increases. Geometry snapshot
 drive these changes; no animation is simulated while inference is still running.
 Local-initialization snapshots during map building do not pull the eye away from
 the accepted map. Dense-stage behind-camera following remains unchanged.
+
+The final dense view targets the cloud center and fits its 95th-percentile radius
+with a tighter margin. The staging sphere and camera trajectory do not determine
+this final framing; a few peripheral points may lie outside the close-up.

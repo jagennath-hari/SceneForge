@@ -11,6 +11,7 @@ struct Session {
     recording: RecordingStream,
     step: i64,
     rotations: std::collections::BTreeMap<i64,[f32;9]>,
+    dense_focus: Option<([f32;3], f32)>,
     map_fit: Option<([f32;3], f32)>,
     centers: std::collections::BTreeMap<i64,[f32;3]>,
     camera_root: Option<String>,
@@ -81,7 +82,7 @@ pub extern "C" fn sf_rerun_open(path: *const c_char, output: *mut *mut std::ffi:
             "Preparing reconstruction. Selected images appear on a schematic sphere; their camera entities move through VGGT groups into the accepted map."
         ))?;
         recording.flush_async()?;
-        let session = Box::new(Session { recording, step: 0, rotations: Default::default(), map_fit: None, centers: Default::default(), camera_root: None, staging: staging::Staging::default(), logged_images: BTreeSet::new() });
+        let session = Box::new(Session { recording, step: 0, dense_focus: None, rotations: Default::default(), map_fit: None, centers: Default::default(), camera_root: None, staging: staging::Staging::default(), logged_images: BTreeSet::new() });
         unsafe { *output = Box::into_raw(session).cast(); }
         Ok(())
     })
@@ -124,6 +125,14 @@ pub extern "C" fn sf_rerun_snapshot(handle: *mut std::ffi::c_void, stage: u32,
                 if p.iter().all(|v| v.is_finite()) && p.iter().map(|v| v*v).sum::<f32>() <= 100.0 {
                     positions.push(p); colors.push(Color::from_rgb(color[0],color[1],color[2]));
                 }
+            }
+            if !positions.is_empty() {
+                let target: [f32;3] = std::array::from_fn(|a|
+                    positions.iter().map(|p| p[a]).sum::<f32>()/positions.len() as f32);
+                let mut distances: Vec<f32> = positions.iter().map(|p|
+                    (0..3).map(|a| (p[a]-target[a]).powi(2)).sum::<f32>().sqrt()).collect();
+                distances.sort_by(f32::total_cmp);
+                session.dense_focus = Some((target,distances[(distances.len()-1)*95/100].max(0.5)));
             }
             // Retain the chase pose during dense updates; do not refit zoom to
             // a changing point sample every eight frames.
@@ -263,6 +272,13 @@ pub extern "C" fn sf_rerun_status(handle: *mut std::ffi::c_void, message: *const
                         let up = [-rotation[1],-rotation[4],-rotation[7]];
                         layout::install(&session.recording,eye,target,up)?;
                     }
+                }
+            }
+            if payload["final_scene"].as_bool() == Some(true) {
+                if let Some((target,radius)) = session.dense_focus {
+                    // A tighter final composition around actual dense surfaces,
+                    // excluding the old sphere and the camera trajectory bounds.
+                    layout::focus(&session.recording,target,radius*0.85,1.0)?;
                 }
             }
             if payload["overview"].as_bool() == Some(true) {

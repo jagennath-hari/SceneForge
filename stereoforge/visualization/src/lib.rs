@@ -10,6 +10,8 @@ use rerun::{Color, Points3D, RecordingStream, TextLog, TimeCell, ViewCoordinates
 struct Session {
     recording: RecordingStream,
     step: i64,
+    chase: layout::ChaseEye,
+    rotations: std::collections::BTreeMap<i64,[f32;9]>,
     map_fit: Option<([f32;3], f32)>,
     centers: std::collections::BTreeMap<i64,[f32;3]>,
     camera_root: Option<String>,
@@ -59,24 +61,24 @@ pub extern "C" fn sf_rerun_open(path: *const c_char, output: *mut *mut std::ffi:
         // Static presentation reference survives every stage and timeline seek.
         // It is the normalized display origin, not a surveyed world coordinate.
         recording.log_static("world/origin/axes", &rerun::LineStrips3D::new([
-            vec![[0.0_f32,0.0,0.0],[1.0,0.0,0.0]],
-            vec![[0.0_f32,0.0,0.0],[0.0,1.0,0.0]],
-            vec![[0.0_f32,0.0,0.0],[0.0,0.0,1.0]],
+            vec![[0.0_f32,0.0,0.0],[0.25,0.0,0.0]],
+            vec![[0.0_f32,0.0,0.0],[0.0,0.25,0.0]],
+            vec![[0.0_f32,0.0,0.0],[0.0,0.0,0.25]],
         ]).with_colors([Color::from_rgb(235,75,75), Color::from_rgb(80,210,100), Color::from_rgb(80,140,255)])
-          .with_radii([rerun::components::Radius::new_ui_points(1.5)]))?;
-        recording.log_static("world/origin/labels", &Points3D::new([
-            [0.0_f32,0.0,0.0],[1.1,0.0,0.0],[0.0,1.1,0.0],[0.0,0.0,1.1],
-        ]).with_labels(["Display origin", "+X", "+Y", "+Z"])
+          .with_radii([rerun::components::Radius::new_ui_points(0.75)]))?;
+        recording.log_static("world/origin/markers", &Points3D::new([
+            [0.0_f32,0.0,0.0],[0.25,0.0,0.0],[0.0,0.25,0.0],[0.0,0.0,0.25],
+        ])
           .with_colors([Color::from_rgb(220,220,220), Color::from_rgb(235,75,75),
                         Color::from_rgb(80,210,100), Color::from_rgb(80,140,255)])
-          .with_radii([rerun::components::Radius::new_ui_points(2.0)]))?;
+          .with_radii([rerun::components::Radius::new_ui_points(1.0)]))?;
         recording.log_static("pipeline/layout_legend", &TextLog::new(
             "GRAY cameras = schematic sphere, arbitrary FOV. ORANGE groups = independently normalized VGGT windows. BLUE map = accepted geometry in normalized display coordinates."))?;
         recording.log("pipeline/stage", &TextLog::new(
             "Preparing reconstruction. Selected images appear on a schematic sphere; their camera entities move through VGGT groups into the accepted map."
         ))?;
         recording.flush_async()?;
-        let session = Box::new(Session { recording, step: 0, map_fit: None, centers: Default::default(), camera_root: None, staging: staging::Staging::default(), logged_images: BTreeSet::new() });
+        let session = Box::new(Session { recording, step: 0, chase: Default::default(), rotations: Default::default(), map_fit: None, centers: Default::default(), camera_root: None, staging: staging::Staging::default(), logged_images: BTreeSet::new() });
         unsafe { *output = Box::into_raw(session).cast(); }
         Ok(())
     })
@@ -120,10 +122,8 @@ pub extern "C" fn sf_rerun_snapshot(handle: *mut std::ffi::c_void, stage: u32,
                     positions.push(p); colors.push(Color::from_rgb(color[0],color[1],color[2]));
                 }
             }
-            let radius = positions.iter().chain(session.centers.values())
-                .map(|p| p.iter().map(|v| v*v).sum::<f32>().sqrt())
-                .fold(3.0_f32, f32::max).min(10.0);
-            layout::frame(rec, radius)?;
+            // Retain the chase pose during dense updates; do not refit zoom to
+            // a changing point sample every eight frames.
             rec.log("world/map/dense", &Points3D::new(positions).with_colors(colors)
                 .with_radii([rerun::components::Radius::new_ui_points(1.0)]))?;
             rec.flush_async()?;
@@ -140,6 +140,7 @@ pub extern "C" fn sf_rerun_snapshot(handle: *mut std::ffi::c_void, stage: u32,
         for (id,camera) in ids.iter().zip(display_cameras.chunks_exact(18)) {
             if stage >= 2 || !session.staging.accepted.contains(id) {
                 session.centers.insert(*id,[camera[9],camera[10],camera[11]]);
+                session.rotations.insert(*id,std::array::from_fn(|a| camera[a]));
             }
         }
         let xyz = display_xyz.as_slice();
@@ -226,6 +227,17 @@ pub extern "C" fn sf_rerun_status(handle: *mut std::ffi::c_void, message: *const
         session.step += 1;
         session.camera_root = None;
         session.recording.set_time("reconstruction_step", TimeCell::from_sequence(session.step));
+        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(message) {
+            if let Some(frame) = payload["follow_frame"].as_i64() {
+                if let (Some(center),Some(rotation)) = (session.centers.get(&frame),session.rotations.get(&frame)) {
+                    session.chase.follow(&session.recording,*center,*rotation)?;
+                }
+            }
+            if payload["overview"].as_bool() == Some(true) {
+                layout::frame(&session.recording,10.0)?;
+                session.chase = Default::default();
+            }
+        }
         activity::log(&session.recording, message, &session.centers, &session.staging.images)?;
         session.recording.log("pipeline/stage", &TextLog::new(message))?;
         session.recording.flush_async()?;

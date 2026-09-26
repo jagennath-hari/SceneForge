@@ -321,7 +321,7 @@ later provisional windows. Completed window point previews are retired.
 Gray cameras have arbitrary display FOV until VGGT supplies calibration.
 
 The viewer uses one full-width 3D scene, without a pipeline-status pane.
-A labeled display origin and red X, green Y, blue Z axes appear immediately and
+An unlabeled origin marker and red X, green Y, blue Z axes appear immediately and
 remain visible throughout processing. This is a normalized display reference,
 not a surveyed origin or metric scale. Inspection
 panels and the timeline start collapsed. Logs remain recorded under `pipeline`.
@@ -370,3 +370,9 @@ reconstruction cameras. Updates follow geometry snapshots rather than a timed
 orbit; manual navigation can detach from tracking. Track `world/presentation_eye`
 again to resume following. The presentation camera is excluded from scene content
 so it does not inflate bounds or appear as another reconstructed camera.
+
+During dense calibration and refinement, the presentation eye follows behind and
+slightly above the active optimized camera. Position and direction are smoothed,
+with a fixed lens/offset and stable up reference. Dense previews do not trigger
+bounding-box zoom changes. Completion returns to the whole-scene overview.
+These remain discrete processing updates, not interpolated animation frames.

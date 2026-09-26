@@ -102,7 +102,7 @@ class DenseRefiner:
         with Progress('Calibrating dense depth', total=len(frames), unit='frame') as progress:
             for frame_index, frame in enumerate(frames):
                 if visualization is not None:
-                    visualization.activity(f"Calibrating dense depth: {frame_index+1}/{len(frames)}", [frame])
+                    visualization.activity(f"Calibrating dense depth: {frame_index+1}/{len(frames)}", [frame], follow_frame=frame)
                 path = owners[frame]
                 if path != source_path:
                     sequence = load_sequence(path)
@@ -158,7 +158,7 @@ class DenseRefiner:
         with Progress('Refining and fusing dense depth', total=len(anchored), unit='frame') as progress:
             for frame_index, frame in enumerate(anchored):
                 if visualization is not None:
-                    visualization.activity(f"Refining dense depth: {frame_index+1}/{len(anchored)}", [frame])
+                    visualization.activity(f"Refining dense depth: {frame_index+1}/{len(anchored)}", [frame], follow_frame=frame)
                 camera = model.cameras[frame]
                 prior, valid, rgb = self._load(frame)
                 h, w = prior.shape
@@ -214,7 +214,7 @@ class DenseRefiner:
         np.savez(self.folder / 'preview.npz', xyz=preview['xyz'], rgb=preview['rgb'], frames=preview['frames'])
         if visualization is not None:
             visualization.dense(preview['xyz'], preview['rgb'], final=True)
-            visualization.event(f"Dense reconstruction complete: {int(preview['count']):,} fused points; bounded viewer preview")
+            visualization.activity(f"Dense reconstruction complete: {int(preview['count']):,} fused points; bounded viewer preview", overview=True)
         self._cache.clear()
         return {'method': 'map-scaled VGGT + inverse-depth multi-view consensus', 'anchored_frames': len(anchored),
                 'unanchored_frames': rejected, 'coverage': coverage, 'supported_pixels': accepted_pixels,

@@ -31,9 +31,11 @@ class ReconstructionVisualization:
             except Exception as error:
                 self._disable(error)
 
-    def activity(self, label: str, frames=(), pairs=(), *, ready: bool = False) -> None:
+    def activity(self, label: str, frames=(), pairs=(), *, ready: bool = False, follow_frame: int | None = None,
+                 overview: bool = False) -> None:
         self.event(json.dumps({"label": label, "frames": list(frames)[:64],
-                               "pairs": list(pairs)[:16], "ready": ready}))
+                               "pairs": list(pairs)[:16], "ready": ready,
+                               "follow_frame": follow_frame, "overview": overview}))
 
     def tracks(self, label: str, samples: list) -> None:
         if not self.enabled:

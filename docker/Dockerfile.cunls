@@ -43,28 +43,42 @@ RUN cmake -S /opt/stereoforge/optimization -B /tmp/stereoforge-optimization -G N
     cmake --install /tmp/stereoforge-optimization && \
     rm -rf /tmp/stereoforge-optimization
 
+ARG USERNAME=appuser
 ARG USER_UID=1000
-ARG USER_GID=1000
+ARG USER_GID=${USER_UID}
 
-# Ubuntu images can already have a user at UID 1000. Reuse that UID safely.
-RUN if ! getent group "${USER_GID}" >/dev/null; then \
-        groupadd --gid "${USER_GID}" stereoforge; \
-    fi && \
+RUN apt-get update && apt-get install -y --no-install-recommends sudo && rm -rf /var/lib/apt/lists/*
+
+# Reuse Ubuntu's existing numeric identity, but give it the host's login name.
+RUN set -eu; \
+    if getent group "${USER_GID}" >/dev/null; then \
+        existing_group="$(getent group "${USER_GID}" | cut -d: -f1)"; \
+        if [ "${existing_group}" != "${USERNAME}" ]; then \
+            groupmod --new-name "${USERNAME}" "${existing_group}"; \
+        fi; \
+    else \
+        groupadd --gid "${USER_GID}" "${USERNAME}"; \
+    fi; \
     if getent passwd "${USER_UID}" >/dev/null; then \
         existing_user="$(getent passwd "${USER_UID}" | cut -d: -f1)"; \
-        usermod --gid "${USER_GID}" --home /home/stereoforge \
-            --shell /bin/bash "${existing_user}"; \
+        if [ "${existing_user}" != "${USERNAME}" ]; then \
+            usermod --login "${USERNAME}" "${existing_user}"; \
+        fi; \
+        usermod --gid "${USER_GID}" --home "/home/${USERNAME}" \
+            --move-home --shell /bin/bash "${USERNAME}"; \
     else \
-        useradd --uid "${USER_UID}" --gid "${USER_GID}" \
-            --home-dir /home/stereoforge --shell /bin/bash stereoforge; \
-    fi && \
-    mkdir -p /home/stereoforge/.cache /workspace/StereoForge/data && \
-    chown -R "${USER_UID}:${USER_GID}" /home/stereoforge /workspace/StereoForge
+        useradd --uid "${USER_UID}" --gid "${USER_GID}" --create-home \
+            --home-dir "/home/${USERNAME}" --shell /bin/bash "${USERNAME}"; \
+    fi; \
+    printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${USERNAME}" > /etc/sudoers.d/stereoforge; \
+    chmod 0440 /etc/sudoers.d/stereoforge; \
+    mkdir -p "/home/${USERNAME}/.cache" /workspace/StereoForge/data; \
+    chown -R "${USER_UID}:${USER_GID}" "/home/${USERNAME}" /workspace/StereoForge
 
 # Include source defaults so the image also contains the project without mounts.
 COPY --chown=${USER_UID}:${USER_GID} stereoforge/ /workspace/StereoForge/stereoforge/
 COPY --chown=${USER_UID}:${USER_GID} configs/ /workspace/StereoForge/configs/
-ENV HOME=/home/stereoforge \
-    XDG_CACHE_HOME=/home/stereoforge/.cache \
-    HF_HOME=/home/stereoforge/.cache/huggingface \
-    TORCH_HOME=/home/stereoforge/.cache/torch
+ENV HOME=/home/${USERNAME} \
+    XDG_CACHE_HOME=/home/${USERNAME}/.cache \
+    HF_HOME=/home/${USERNAME}/.cache/huggingface \
+    TORCH_HOME=/home/${USERNAME}/.cache/torch

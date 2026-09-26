@@ -14,6 +14,7 @@ RERUN_IMAGE="${ORG}/rerun:${TAG}"
 RUN_CONTAINER="stereoforge"
 RUN_IMAGE="${RERUN_IMAGE}"
 
+USERNAME="$(id -un)"
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -66,6 +67,7 @@ for image in "${BUILD_SEQUENCE[@]}"; do
     echo "Building '${image}' using parent '${PARENTS[$image]}'..."
     DOCKER_BUILDKIT=1 docker build \
         --build-arg BASE_FROM="${PARENTS[$image]}" \
+        --build-arg USERNAME="${USERNAME}" \
         --build-arg USER_UID="${HOST_UID}" \
         --build-arg USER_GID="${HOST_GID}" \
         --tag "${image}" \
@@ -88,16 +90,16 @@ exec docker run -it --rm \
     --ipc=host \
     -e NVIDIA_DRIVER_CAPABILITIES=all \
     -e DISPLAY="${DISPLAY:-}" \
-    -e XAUTHORITY=/home/stereoforge/.Xauthority \
+    -e XAUTHORITY="/home/${USERNAME}/.Xauthority" \
     -v /tmp/.X11-unix:/tmp/.X11-unix \
     -e XDG_RUNTIME_DIR=/tmp/runtime-root \
     -v /tmp/runtime-root:/tmp/runtime-root \
     -v "${HOME}/.Xauthority:/root/.Xauthority" \
-    -v "${HOME}/.Xauthority:/home/stereoforge/.Xauthority:ro" \
+    -v "${HOME}/.Xauthority:/home/${USERNAME}/.Xauthority:ro" \
     --user "${HOST_UID}:${HOST_GID}" \
     --workdir /workspace/StereoForge \
     --mount "type=bind,source=${REPO_ROOT}/stereoforge,target=/workspace/StereoForge/stereoforge" \
     --mount "type=bind,source=${REPO_ROOT}/configs,target=/workspace/StereoForge/configs,readonly" \
     --mount "type=bind,source=${REPO_ROOT}/data,target=/workspace/StereoForge/data" \
-    --mount "type=bind,source=${REPO_ROOT}/.cache,target=/home/stereoforge/.cache" \
+    --mount "type=bind,source=${REPO_ROOT}/.cache,target=/home/${USERNAME}/.cache" \
     "${RUN_IMAGE}" /bin/bash

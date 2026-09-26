@@ -49,6 +49,10 @@ class DenseRefiner:
         return self._cache[frame]
 
     def _tensor(self, value: np.ndarray) -> torch.Tensor:
+        # Camera arrays can be immutable views. PyTorch first wraps NumPy
+        # storage even when transferring to CUDA; do not expose read-only memory.
+        if not value.flags.writeable:
+            value = value.copy()
         return torch.as_tensor(value, dtype=torch.float32, device=self.device)
 
     def _measure(self, world: torch.Tensor, pixels: torch.Tensor, rgb: torch.Tensor,

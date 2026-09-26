@@ -134,7 +134,8 @@ class VideoFrameSampler:
         def notify(event: dict) -> None:
             if on_progress is None:
                 return
-            index = min(max(event['saved']-1, 0), len(candidates)-1)
+            index = (event['candidate_index'] if event.get('event') == 'accepted_keyframe' else
+                     min(max(event['saved']-1, 0), len(candidates)-1))
             record = candidates[index]
             on_progress({**event, 'timestamp_seconds': record['timestamp_seconds']}, cache / record['file'])
         if not output.is_file():
@@ -213,6 +214,10 @@ class VideoFrameSampler:
             assert process.stdout is not None
             for line in process.stdout:
                 event = json.loads(line)
+                if event.get('event') == 'accepted_keyframe':
+                    if on_progress is not None:
+                        on_progress(event)
+                    continue
                 progress.bar.total = event["total"]
                 # A hardware failure can restart from frame zero on the CPU.
                 if event["saved"] < progress.completed:

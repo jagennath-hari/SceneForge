@@ -1,14 +1,17 @@
 //! StereoForge's Rust SDK adapter. Borrowed C buffers are copied before return.
 //! ABI calls are serialized by one C++ owner; no upstream Rerun modifications.
-use std::{ffi::{CStr, c_char}, panic::{AssertUnwindSafe, catch_unwind}, slice};
+use std::{collections::BTreeSet, ffi::{CStr, c_char}, panic::{AssertUnwindSafe, catch_unwind}, slice};
 mod cameras;
 mod layout;
-use rerun::{Clear, Color, Points3D, RecordingStream, TextLog, TimeCell, ViewCoordinates};
+mod staging;
+use rerun::{Color, Points3D, RecordingStream, TextLog, TimeCell, ViewCoordinates};
 
 struct Session {
     recording: RecordingStream,
     step: i64,
     camera_root: Option<String>,
+    staging: staging::Staging,
+    logged_images: BTreeSet<String>,
 }
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -47,13 +50,14 @@ pub extern "C" fn sf_rerun_open(path: *const c_char, output: *mut *mut std::ffi:
             rerun::sink::GrpcSink::new(uri),
         ))?;
         // Display convention only: no gravity alignment or coordinate change.
-        recording.log_static("world", &ViewCoordinates::RDF)?;
-        recording.log_static("local_window", &ViewCoordinates::RDF)?;
+        recording.log_static("world", &ViewCoordinates::RDF())?;
+        recording.log_static("pipeline/layout_legend", &TextLog::new(
+            "GRAY cameras = schematic sphere, arbitrary FOV. ORANGE groups = independently normalized VGGT windows. BLUE map = accepted geometry in normalized display coordinates."))?;
         recording.log("pipeline/stage", &TextLog::new(
-            "Preparing reconstruction. Images/features appear first; each completed VGGT window has independent coordinates."
+            "Preparing reconstruction. Selected images appear on a schematic sphere; their camera entities move through VGGT groups into the accepted map."
         ))?;
         recording.flush_async()?;
-        let session = Box::new(Session { recording, step: 0, camera_root: None });
+        let session = Box::new(Session { recording, step: 0, camera_root: None, staging: staging::Staging::default(), logged_images: BTreeSet::new() });
         unsafe { *output = Box::into_raw(session).cast(); }
         Ok(())
     })
@@ -80,24 +84,34 @@ pub extern "C" fn sf_rerun_snapshot(handle: *mut std::ffi::c_void, stage: u32,
         let rgb = if points == 0 { &[] } else { unsafe { slice::from_raw_parts(rgb, point_len) } };
         let cameras = if camera_count == 0 { &[] } else { unsafe { slice::from_raw_parts(cameras, camera_len) } };
         let ids = if camera_count == 0 { &[] } else { unsafe { slice::from_raw_parts(ids, camera_count) } };
+        // Provisional aligned windows are not yet accepted. Keep their current
+        // display positions until commit, rather than jumping to a different fit.
+        if stage == 1 { return Ok(()); }
         session.step += 1;
         let rec = &session.recording;
         rec.set_time("reconstruction_step", TimeCell::from_sequence(session.step));
         let (root, label) = match stage {
-            0 => ("local_window", "VGGT initialization (independent coordinates)"),
-            1 => ("world/incoming", "Locally refined window after Sim(3); provisional"),
-            2 => ("world/map", "Accepted common map"),
-            _ => ("world/map", "Accepted shared-calibration global BA"),
+            0 => (session.staging.window(ids), "VGGT group — schematic placement, independent gauge"),
+            2 => ("world/map".to_owned(), "Accepted common map"),
+            _ => ("world/map".to_owned(), "Accepted shared-calibration global BA"),
         };
-        rec.log("local_window", &Clear::recursive())?;
-        rec.log("world/incoming", &Clear::recursive())?;
-        rec.log(root, &Clear::recursive())?;
+        if stage >= 2 { session.staging.retire(rec, ids)?; }
+        let (display_xyz, display_cameras) = staging::fit(xyz, cameras, ids, stage == 0);
+        let xyz = display_xyz.as_slice();
+        let cameras = display_cameras.as_slice();
         rec.log("pipeline/stage", &TextLog::new(format!("{label}: {camera_count} cameras, {points} displayed points")))?;
-        let positions: Vec<[f32; 3]> = xyz.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect();
-        let colors: Vec<Color> = rgb.chunks_exact(3).map(|c| Color::from_rgb(c[0], c[1], c[2])).collect();
-        rec.log(format!("{root}/points"), &Points3D::new(positions).with_colors(colors))?;
+        // Exclude extreme display outliers without altering saved geometry.
+        // Filter positions and colors together to preserve their association.
+        let visible: Vec<(&[f32], &[u8])> = xyz.chunks_exact(3).zip(rgb.chunks_exact(3))
+            .filter(|(p, _)| p.iter().all(|v| v.is_finite()) && p.iter().map(|v| v*v).sum::<f32>() <= 100.0)
+            .collect();
+        let positions: Vec<[f32; 3]> = visible.iter().map(|(p,_)| [p[0],p[1],p[2]]).collect();
+        let colors: Vec<Color> = visible.iter().map(|(_,c)| Color::from_rgb(c[0],c[1],c[2])).collect();
+        rec.log(format!("{root}/points"), &Points3D::new(positions).with_colors(colors)
+            .with_radii([rerun::components::Radius::new_ui_points(1.5)]))?;
 
-        cameras::log(rec, root, cameras, ids)?;
+        let protected = if stage < 2 { session.staging.accepted.clone() } else { BTreeSet::new() };
+        cameras::log(rec, &root, cameras, ids, &session.staging.images, &mut session.logged_images, &protected)?;
         session.camera_root = Some(root.to_owned());
         rec.flush_async()?;
         Ok(())
@@ -132,59 +146,37 @@ pub extern "C" fn sf_rerun_image(handle: *mut std::ffi::c_void, rgb: *const u8,
         let session = unsafe { &mut *handle.cast::<Session>() };
         let bytes = unsafe { slice::from_raw_parts(rgb, count) }.to_vec();
         session.recording.set_time("reconstruction_step", TimeCell::from_sequence(session.step));
-        session.recording.log("frontend", &Clear::recursive())?;
-        session.recording.log("frontend/image", &rerun::Image::from_rgb24(bytes.clone(), [width, height]))?;
-        if let Some(root) = &session.camera_root {
-            session.recording.log(format!("{root}/cameras/{frame}/image"),
-                &rerun::Image::from_rgb24(bytes, [width, height]))?;
+        if session.camera_root.is_some() {
+            // Calibrated camera images were logged with their correctly scaled K
+            // by cameras::log. Avoid overwriting thumbnail-sized image planes.
+            if !session.staging.images.contains_key(&frame) {
+                session.recording.log(format!("world/cameras/{frame}/image"),
+                    &rerun::Image::from_rgb24(bytes, [width, height]))?;
+            }
+        } else {
+            session.step += 1;
+            session.recording.set_time("reconstruction_step", TimeCell::from_sequence(session.step));
+            session.staging.keyframe(&session.recording, frame, staging::Thumbnail { rgb: bytes, width, height })?;
         }
-        session.recording.log("pipeline/image_info", &TextLog::new(format!("Window representative keyframe {frame}; processed RGB")))?;
         session.recording.flush_async()?;
         Ok(())
     })
 }
 
-// Typed frontend event; no JSON or Python Rerun SDK. Optional packed RGB,
-// pixel coordinates (Nx2), and verified match segments (Nx4) share one canvas.
+// Stage text only: frontend matches are not rendered in this presentation.
 #[unsafe(no_mangle)]
-pub extern "C" fn sf_rerun_event(handle: *mut std::ffi::c_void, message: *const c_char,
-    rgb: *const u8, width: u32, height: u32, xy: *const f32, point_count: usize,
-    segments: *const f32, segment_count: usize, error: *mut c_char, capacity: usize) -> i32 {
+pub extern "C" fn sf_rerun_status(handle: *mut std::ffi::c_void, message: *const c_char,
+    error: *mut c_char, capacity: usize) -> i32 {
     guarded(error, capacity, || {
         if handle.is_null() || message.is_null() { return Err("Invalid frontend event".into()); }
-        let count = (width as usize).checked_mul(height as usize).and_then(|n| n.checked_mul(3)).ok_or("Image overflow")?;
-        let point_len = point_count.checked_mul(2).ok_or("Point overflow")?;
-        let line_len = segment_count.checked_mul(4).ok_or("Match overflow")?;
-        if (count > 0 && rgb.is_null()) || (point_len > 0 && xy.is_null()) || (line_len > 0 && segments.is_null()) {
-            return Err("Null frontend buffer".into());
-        }
-        // SAFETY: StereoForge's binding validates shapes and retains all buffers
-        // through this call. SDK archetypes own copies before the call returns.
+        // SAFETY: C++ retains the terminated UTF-8 message and exclusive session.
         let session = unsafe { &mut *handle.cast::<Session>() };
         let message = unsafe { CStr::from_ptr(message) }.to_str()?;
         session.step += 1;
         session.camera_root = None;
-        let rec = &session.recording;
-        rec.set_time("reconstruction_step", TimeCell::from_sequence(session.step));
-        rec.log("pipeline/stage", &TextLog::new(message))?;
-        if count > 0 {
-            rec.log("frontend", &Clear::recursive())?;
-            let bytes = unsafe { slice::from_raw_parts(rgb, count) }.to_vec();
-            rec.log("frontend/image", &rerun::Image::from_rgb24(bytes, [width, height]))?;
-        }
-        if point_len > 0 {
-            let points: Vec<[f32; 2]> = unsafe { slice::from_raw_parts(xy, point_len) }
-                .chunks_exact(2).map(|p| [p[0], p[1]]).collect();
-            rec.log("frontend/features", &rerun::Points2D::new(points)
-                .with_colors([Color::from_rgb(80, 255, 80)]).with_radii([2.0]))?;
-        }
-        if line_len > 0 {
-            let lines: Vec<[[f32; 2]; 2]> = unsafe { slice::from_raw_parts(segments, line_len) }
-                .chunks_exact(4).map(|p| [[p[0], p[1]], [p[2], p[3]]]).collect();
-            rec.log("frontend/matches", &rerun::LineStrips2D::new(lines)
-                .with_colors([Color::from_rgb(80, 255, 80)]))?;
-        }
-        rec.flush_async()?;
+        session.recording.set_time("reconstruction_step", TimeCell::from_sequence(session.step));
+        session.recording.log("pipeline/stage", &TextLog::new(message))?;
+        session.recording.flush_async()?;
         Ok(())
     })
 }

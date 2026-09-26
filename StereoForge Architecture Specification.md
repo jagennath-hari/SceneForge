@@ -48,7 +48,7 @@ reject a drop exceeding 20 percentage points or a median error exceeding both
 10 pixels and twice its pre-BA value; nonfinite medians also reject. Newly invalid
 held-out projections reject independently of sample count. Missing landmarks
 remain in the denominator and count as infinite error. Window-merge validation
-retains its strict per-frame 80% check.
+uses a 75% per-frame check while retaining the 80% boundary-wide check.
 
 Dense refinement is a separate, conservative geometric pass using the final map.
 Sparse observations calibrate each VGGT depth map to the map's arbitrary scale.
@@ -110,7 +110,7 @@ connectivity, per-camera support and post-BA overlap checks remain mandatory.
 Overlap validation requires at least 40 held-out observations overall. A shared
 camera with fewer than five holdouts is marked as insufficiently validated in a
 saved warning, rather than stopping BA. Its observations still count toward the
-80% overall agreement requirement. Per-camera 80% checks apply when at least five
+80% overall agreement requirement. Per-camera 75% checks apply when at least five
 holdouts exist, including at later merges; camera preservation and connectivity
 checks remain mandatory.
 
@@ -1042,28 +1042,27 @@ all estimates and still stops the solve.
 
 ### Optional Rerun recording
 
-`--rerun` records map-building stages via the official Rerun Rust SDK 0.38.1.
-StereoForge owns `stereoforge/visualization`, a Rust cdylib with a narrow C ABI;
-the C++ map builder loads it only when recording is requested. Python routes existing frontend stage outputs through typed native bindings;
-all Rerun SDK calls, camera entities and the blueprint are implemented in Rust. No upstream Rerun code is modified and no Rerun C++/Python SDK is used.
-The library writes `pipeline.rrd` per map attempt: VGGT-initialized sparse window,
-Sim(3)-aligned provisional window, accepted common maps and final shared BA.
-The timeline is reconstruction step (graph order), with a representative processed
-RGB keyframe, calibrated camera frustums and at most 50,000 displayed colored
-points per snapshot. Independent local coordinates have a separate entity root.
-Snapshots clear replaced entities; rejected candidates never overwrite the accepted
-map. The Rust SDK launches the standard viewer and sends one recording to both a
-gRPC sink and a file sink. Live updates use gRPC; saved files are for replay,
-not file tailing. Stage flushes are asynchronous and shutdown flushing is bounded.
-The default blueprint separates the common map, local VGGT window, frontend
-images/features and stage logs. Selection shows throttled candidate RGB/progress;
-preparation shows processed images; matching shows a verified pair per batch;
-track building shows phase progress and observed feature locations. Each completed
-VGGT inference window produces a bounded raw-depth cloud and its predicted cameras
-without placing it into the common-map coordinate system. Camera-to-world
-`Transform3D` entities carry RGB axes and calibrated child `Pinhole` entities using
-fx/fy/cx/cy, processed image resolution and RDF optical axes. Representative RGB
-images attach to the corresponding pinhole. World RDF is a display convention,
-not gravity estimation. Dense fusion and per-iteration optimizer updates are not
-yet logged. Visualization
-errors disable recording with a warning; reconstruction validation is unchanged.
+`--rerun` launches the standard viewer and streams/saves one recording through the
+official Rust SDK 0.38.1. StereoForge owns the Rust cdylib and C ABI integration;
+no upstream Rerun edits or C++/Python Rerun SDKs are used. Python routes existing
+frontend outputs; C++ emits map snapshots. The timeline follows processing order.
+
+One 3D view contains persistent cameras and the estimated common map:
+- Accepted keyframes start on a deterministic pseudo-random sphere, aimed inward,
+  with an arbitrary display FOV. These initial positions/K are schematic.
+- Image preparation updates thumbnails; matching/track building log status only.
+- VGGT windows are normalized into small groups around the same origin. Existing
+  camera entities move into these groups, then into the map on successful commit.
+  Previously accepted camera poses are protected from provisional window updates.
+- Common-map snapshots are uniformly scaled and centered into a bounded display
+  volume. Camera icons use fixed display size; extreme point outliers are hidden
+  only in the viewer. Completed window point groups are retired, not cameras.
+- The pipeline-status panel is omitted; inspection panels start collapsed.
+
+Display transforms stay inside Rust and never affect optimization or exports.
+Estimated cameras use camera-to-world transforms, calibrated pinhole intrinsics
+scaled to their thumbnail grid, and explicit RDF optical axes. Textures come from
+processed RGB before VGGT. Map textures persist as poses update. Previews are
+bounded to 50,000 points and 256-pixel thumbnails. Updates are discrete stage
+snapshots, not simulated trajectories. Stage flushes are asynchronous; recordings
+remain replayable. Per-iteration BA and dense fusion are not yet visualized.

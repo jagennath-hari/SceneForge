@@ -62,8 +62,8 @@ void Transform(SparseMap& model, const Similarity& transform);
 class MapBuilder final {
 public:
     MapBuilder(int device, int iterations, bool check_jacobians);
-    void RerunEvent(const std::string& message, const std::uint8_t* rgb, std::uint32_t width, std::uint32_t height,
-                    const float* points, std::size_t point_count, const float* segments, std::size_t segment_count);
+    void RerunEvent(const std::string& message);
+    void RerunKeyframe(const DepthFrame& frame);
     void PreviewWindow(const std::vector<DepthFrame>& frames);
     void EnableRerun(const std::string& path);
     void SetTracks(std::vector<Observations> tracks);

@@ -124,7 +124,7 @@ def main() -> int:
             sampled = sampler.sample(video, folder, on_progress=reconstructor.visualization.selection
                                      if reconstructor.visualization is not None else None)
         if reconstructor.visualization is not None:
-            reconstructor.visualization.event(f"Selected {len(sampled.paths)} keyframes from {sampled.candidate_frame_count} candidates", sampled.paths[0])
+            reconstructor.visualization.keyframes(sampled.paths)
         validate_image_paths(sampled.paths)
         write_json(output / 'selection.json', {'frames': len(sampled.paths),
                    'decoded_candidates': sampled.candidate_frame_count,

@@ -19,7 +19,7 @@ from .frontend import ReconstructionFrontend
 from .inference import infer_clusters
 from .view_graph import Cluster, VerifiedGraph
 
-POLICY = 'native_graph_dense_cunls_v7'
+POLICY = 'native_graph_dense_cunls_v8'
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,7 +137,7 @@ class WindowReconstructor(ReconstructionFrontend):
                     self.visualization.event('Building measured feature tracks from verified image matches')
                 graph.read(files, on_progress=self.visualization.event if self.visualization is not None else None)
                 if self.visualization is not None:
-                    self.visualization.tracks(graph.tracks, self.images)
+                    self.visualization.event(f"Built {len(graph.tracks)} measured tracks; keyframe positions remain display-only until VGGT")
                 write_json(self.output / 'graph.json', graph.summary)
                 temporary = tracks.with_suffix('.partial')
                 with temporary.open('w') as stream:

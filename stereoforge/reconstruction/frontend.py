@@ -61,8 +61,10 @@ class ReconstructionFrontend:
                 with Image.open(destination) as image:
                     sizes.add(image.size)
                 result[index] = destination
-                if self.visualization is not None and (index % 20 == 0 or index == len(paths)-1):
-                    self.visualization.event(f"Preparing feature images: {index+1}/{len(paths)}; processed keyframe {index}", destination)
+                if self.visualization is not None:
+                    if index % 20 == 0 or index == len(paths)-1:
+                        self.visualization.event(f"Preparing feature images: {index+1}/{len(paths)}; schematic keyframe layout")
+                    self.visualization.keyframe(index, destination)
         if len(sizes) != 1:
             raise ValueError("Video input must use a uniform processed image size")
         self.size_wh = next(iter(sizes))
@@ -86,7 +88,7 @@ class ReconstructionFrontend:
                 if destination.is_file():
                     result.append(destination)
                     if self.visualization is not None:
-                        self.visualization.match_batch(destination, self.images)
+                        self.visualization.event(f"Verified matching batch {start//64+1}/{len(batches)}; keyframes remain unposed")
                     progress.status(f"reused batch · source frames {start}–{min(start+64, count-1)-1}")
                     progress.advance()
                     continue
@@ -113,7 +115,7 @@ class ReconstructionFrontend:
                 temporary.rename(destination)
                 result.append(destination)
                 if self.visualization is not None:
-                    self.visualization.match_batch(destination, self.images)
+                    self.visualization.event(f"Verified matching batch {start//64+1}/{len(batches)}; keyframes remain unposed")
                 progress.advance()
         return result
 

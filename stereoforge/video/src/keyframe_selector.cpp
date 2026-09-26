@@ -104,7 +104,7 @@ KeyframeSelector::KeyframeSelector(KeyframeOptions options, ExtractorFactory fac
 KeyframeSelector::~KeyframeSelector() = default;
 
 bool KeyframeSelector::run(const std::filesystem::path& directory, const std::filesystem::path& output,
-                           const ProgressCallback& progress, const DebugCallback& debug) {
+                           const ProgressCallback& progress, const DebugCallback& debug, const AcceptanceCallback& accepted) {
     std::ifstream input(directory / "manifest.json");
     input.exceptions(std::ios::failbit | std::ios::badbit);
     nlohmann::json manifest;
@@ -136,6 +136,7 @@ bool KeyframeSelector::run(const std::filesystem::path& directory, const std::fi
         record["source_frame_index"] = record.value("source_frame_index", frame.index);
         record["selection_reason"] = reason;
         selected.push_back(std::move(record));
+        if (accepted) { accepted(frame.index,selected.size()-1); }
         anchor = frame;
         best_inliers = 0;
     };

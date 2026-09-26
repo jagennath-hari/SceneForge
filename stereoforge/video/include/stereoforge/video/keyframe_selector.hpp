@@ -57,6 +57,7 @@ using ExtractorFactory = std::function<std::unique_ptr<RaCoALIKEDExtractor>()>;
 
 class KeyframeSelector final {
 public:
+    using AcceptanceCallback = std::function<void(std::size_t candidate, std::size_t keyframe)>;
     using ProgressCallback = std::function<void(std::size_t, std::size_t, std::size_t)>;
     // Called in timestamp order on the main thread; false requests a clean stop.
     using DebugCallback = std::function<bool(const FrameFeatures* reference,
@@ -67,7 +68,8 @@ public:
     ~KeyframeSelector();
     // Writes a result even for tracking breaks, so diagnostics survive failure.
     [[nodiscard]] bool run(const std::filesystem::path& directory, const std::filesystem::path& output,
-                           const ProgressCallback& progress = {}, const DebugCallback& debug = {});
+                           const ProgressCallback& progress = {}, const DebugCallback& debug = {},
+                           const AcceptanceCallback& accepted = {});
 private:
     KeyframeOptions options_;
     ExtractorFactory factory_;

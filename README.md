@@ -284,10 +284,21 @@ python -m stereoforge.reconstruction --video data/input/barn.mp4 \
 `--rerun` launches the official viewer automatically (or connects to one already
 running), streams through gRPC and simultaneously saves the same recording to
 `map_<attempt>/pipeline.rrd`. The GUI uses the existing Docker display mounts.
-It shows candidate images during keyframe selection (up to twice per second),
-processed images, a verified pair per matching batch, and measured track
-observations. Each completed VGGT window then appears in its own local coordinates
-before common-map building. Cached stages are identified as reused. No separate viewer command is needed for live use.
+One 3D view shows the whole process, alongside a stage log. Accepted keyframes
+appear incrementally as image planes on a deterministic gray grid; rejected
+candidate frames are not rendered. This grid uses arbitrary display positions and
+a fixed display FOV, not estimated poses/intrinsics. Cache hits populate the grid
+from the selected keyframes. Image preparation updates the thumbnails to the
+processed image grid. Matching and track building leave these 3D image planes in
+place and update stage text; there are no 2D match panels or feature overlays.
+
+Completed VGGT windows appear as separate normalized groups in the same 3D view.
+Their offsets and uniform display scale only arrange the presentation; relative
+positions between groups are not reconstructed yet. Sim(3)-aligned windows then
+appear provisionally at their estimated location in the common map. Successful
+merges remove the corresponding staged group and update the accepted map. Final
+BA leaves only the accepted map. These are discrete stage updates, not fabricated
+intermediate camera motion. No separate viewer command is needed for live use.
 Select `reconstruction_step` and the end-of-timeline control to follow new updates;
 scrubbing backward lets you inspect earlier stages. Stage flushes are asynchronous.
 
@@ -296,27 +307,31 @@ follow growing recording files; live visualization uses the gRPC connection, not
 file tailing. An already-running reconstruction using the old file-only adapter
 must finish or be restarted with the rebuilt image to use live streaming.
 
-`world/map` contains the accepted colored sparse map, camera centers, calibrated
-pinhole cameras with RGB axes, and trajectory. `world/incoming` is a provisional, locally refined window after
-Sim(3). `local_window` has independent coordinates: use a separate 3D view for it,
-not an overlay with `world`. The image panel shows frontend previews and then a representative processed
-keyframe from the current window. During map building this RGB image is also
-attached to the matching camera image plane. Camera labels are keyframe indices,
-not original video frame numbers. Each camera has a camera-to-world `Transform3D` and a child `Pinhole` with its
-actual fx/fy/cx/cy, processed resolution, and explicit RDF optical axes (+X right,
-+Y down, +Z forward). Rust converts row-major rotations to Rerun matrix columns.
-The world display convention is RDF; this does not infer gravity or change the
-map coordinates. World orientation and scale remain arbitrary. Trajectory segments do not bridge missing keyframes.
+`world/map` contains accepted colored points and trajectory. Persistent camera
+entities at `world/cameras/<keyframe>` start on an inward-facing schematic sphere,
+move into normalized VGGT groups, then move into the accepted common map.
+Overlapping windows reuse those entities; accepted poses are not overwritten by
+later provisional windows. Completed window point previews are retired.
+Gray cameras have arbitrary display FOV until VGGT supplies calibration.
 
-Each snapshot replaces its entity subtree to remove discarded points/cameras;
-point previews are capped at 50,000 per snapshot. Full reconstruction exports are
-unchanged. Logging is optional and copies CPU data into the Rust SDK; it is not
-zero-copy GPU visualization. A runtime recording error warns and disables logging
-without rejecting the map. The default Rust blueprint separates common-map 3D, local-window 3D, image/features
-and pipeline logs, and follows the reconstruction-step timeline. The adapter also
-records aligned windows, accepted maps and final global BA. It does not record
-individual optimizer iterations or dense-fusion steps. Matching previews contain
-up to 300 actual RANSAC-inlier segments; track previews contain up to 2,000 actual
-observations. VGGT depth previews sample up to 2,000 positive finite pixels per
-frame and remain provisional. No reconstruction computation or thresholds change. Final dense output
-remains available in the existing HTML report and PLY export.
+The viewer uses one full-width 3D scene, without a pipeline-status pane. Inspection
+panels and the timeline start collapsed. Logs remain recorded under `pipeline`.
+Camera icons stay the same display size. Each map update is centered and uniformly
+scaled into a bounded display volume; this changes display coordinates only, not
+saved camera poses, depth, Sim(3), BA or PLY geometry. Extreme point outliers are
+excluded from the preview only. Independent VGGT groups sit around the same origin.
+Camera positions update at pipeline snapshots, without interpolated animation.
+
+Camera-to-world rotations and RDF optical axes (+X right, +Y down, +Z forward)
+are preserved. Intrinsics are scaled to image thumbnails, including the calibrated
+principal point. World RDF does not imply gravity alignment. Previews cap points
+at 50,000 per snapshot and images at 256 pixels per side.
+
+Window merging requires 75% per-camera held-out agreement and 80% across the
+boundary; the 5-pixel residual cutoff, positive-depth checks and final global BA
+regression checks remain in place.
+
+Logging is optional, uses the official Rust SDK through a C ABI, and does not
+change reconstruction decisions. No Rerun source is modified. Visualization errors
+warn and disable logging. Per-iteration optimization and dense fusion are not yet
+rendered; final dense output remains in the existing HTML report and PLY export.

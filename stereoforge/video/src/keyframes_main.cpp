@@ -105,7 +105,10 @@ int main(int argc, char** argv) {
         const bool success = selector.run(input, output, [&frontend_label](std::size_t processed, std::size_t total, std::size_t selected) {
             std::cout << nlohmann::json{{"saved", processed}, {"total", total}, {"timestamp_seconds", nullptr},
                 {"stage", frontend_label + " | " + std::to_string(selected) + " keyframes"}}.dump() << std::endl;
-        }, debug);
+        }, debug, [](std::size_t candidate, std::size_t keyframe) {
+            std::cout << nlohmann::json{{"event", "accepted_keyframe"}, {"candidate_index", candidate},
+                {"keyframe_index", keyframe}}.dump() << std::endl;
+        });
         if (debug_view) {
             std::cerr << "Debug session saved. Inspect keyframe_selection.status in " << output << '\n';
             return 0;  // Partial/interrupted diagnostics are valid debug results, never a production cache.

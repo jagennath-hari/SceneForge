@@ -57,7 +57,7 @@ pub extern "C" fn sf_rerun_open(path: *const c_char, output: *mut *mut std::ffi:
         // it; otherwise initial scene bounds can trigger fallback eye fitting.
         layout::frame(&recording, 10.0)?;
         recording.flush_with_timeout(std::time::Duration::from_secs(2))?;
-        layout::install(&recording)?;
+        layout::install(&recording,layout::OVERVIEW_POSITION,[0.0;3],[0.0,-1.0,0.0])?;
         // Display convention only: no gravity alignment or coordinate change.
         recording.log_static("world", &ViewCoordinates::RDF())?;
         // Static presentation reference survives every stage and timeline seek.
@@ -243,7 +243,11 @@ pub extern "C" fn sf_rerun_status(handle: *mut std::ffi::c_void, message: *const
                         // Navigation may have detached tracking during earlier
                         // stages. Re-enter automatic follow at each dense pass.
                         session.recording.flush_with_timeout(std::time::Duration::from_secs(2))?;
-                        layout::install(&session.recording)?;
+                        let forward = [rotation[2],rotation[5],rotation[8]];
+                        let eye = std::array::from_fn(|a| center[a]-1.2*forward[a]);
+                        let target = std::array::from_fn(|a| center[a]+forward[a]);
+                        let up = [-rotation[1],-rotation[4],-rotation[7]];
+                        layout::install(&session.recording,eye,target,up)?;
                     }
                 }
             }

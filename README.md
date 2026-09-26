@@ -367,7 +367,7 @@ The Rerun viewport initially follows a separate presentation camera via
 `EyeControls3D`. It frames the schematic sphere from an oblique angle, then fits
 accepted global-BA and dense snapshots to their visible bounds. It never changes
 reconstruction cameras. Updates follow geometry snapshots rather than a timed
-orbit; manual navigation can detach from tracking. Track `world/presentation_eye`
+orbit; manual navigation can detach from tracking. Track `world/presentation_eye/image`
 again to resume following. The presentation camera remains in the view query so Rerun can resolve it as a
 tracked pinhole. Its frustum uses a near-zero display size. It is not included in
 saved reconstruction geometry or the application's map-fitting bounds. Dense
@@ -393,3 +393,9 @@ progress. Distance and elevation stay fixed, with at most ten eye updates per
 second. Orbit updates preserve the displayed feature links and finish at the
 starting overview; they do not add delays or move reconstruction cameras. Cached
 tracks skip this stage and therefore skip the orbit.
+
+Startup explicitly seeds the viewport eye at the full-sphere overview position,
+so it does not rely on scene bounds containing only the origin while tracking
+initializes. The presentation camera follows the same parent-transform / child-
+pinhole hierarchy as reconstruction cameras. Dense follow activation also seeds
+its explicit behind-camera position and look target.

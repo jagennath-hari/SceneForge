@@ -9,8 +9,10 @@ use rerun::blueprint::components::{ContainerKind, Eye3DKind, IncludedContent, Pa
 use crate::Result;
 
 pub const EYE: &str = "world/presentation_eye";
+pub const EYE_PINHOLE: &str = "world/presentation_eye/image";
+pub const OVERVIEW_POSITION: [f32;3] = [18.475208,-18.475208,-18.475208];
 
-pub fn install(recording: &RecordingStream) -> Result<()> {
+pub fn install(recording: &RecordingStream, position: [f32;3], target: [f32;3], up: [f32;3]) -> Result<()> {
     // Build the official blueprint archetypes directly: the pinned Rust SDK's
     // high-level Spatial3DView builder does not expose EyeControls3D setters.
     let (blueprint, storage) = RecordingStreamBuilder::new("StereoForge").blueprint().memory()?;
@@ -25,8 +27,8 @@ pub fn install(recording: &RecordingStream) -> Result<()> {
         "+ world/**",
     ]))?;
     blueprint.log(format!("{view}/EyeControls3D"), &EyeControls3D::new()
-        .with_kind(Eye3DKind::FirstPerson).with_tracking_entity(EYE).with_look_target([0.0_f32,0.0,0.0])
-        .with_eye_up([0.0_f32,-1.0,0.0]))?;
+        .with_kind(Eye3DKind::FirstPerson).with_tracking_entity(EYE_PINHOLE)
+        .with_position(position).with_look_target(target).with_eye_up(up))?;
     blueprint.log(format!("container/{container_id}"), &ContainerBlueprint::new(ContainerKind::Tabs)
         .with_contents([IncludedContent(view.into())]))?;
     blueprint.log("viewport", &ViewportBlueprint::new()
@@ -55,7 +57,7 @@ pub fn frame(recording: &RecordingStream, radius: f32) -> Result<()> {
                 forward[2]*right[0]-forward[0]*right[2],
                 forward[0]*right[1]-forward[1]*right[0]];
     recording.log(EYE, &rerun::Transform3D::from_translation_mat3x3(center,[right,down,forward]))?;
-    recording.log(EYE, &rerun::Pinhole::from_focal_length_and_resolution(
+    recording.log(EYE_PINHOLE, &rerun::Pinhole::from_focal_length_and_resolution(
         [900.0_f32,900.0],[1600.0_f32,1000.0])
         .with_camera_xyz(rerun::components::ViewCoordinates::RDF)
         .with_image_plane_distance(0.0001))?;

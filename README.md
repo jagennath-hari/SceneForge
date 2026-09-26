@@ -421,3 +421,12 @@ this final framing; a few peripheral points may lie outside the close-up.
 Accepted-map cameras use 25% image opacity and approximately 45% frustum opacity,
 so they obscure less of the cloud. Camera poses show the path without trajectory lines. Schematic and
 VGGT-window image planes remain opaque; opacity updates reuse cached RGB textures.
+
+If local GNC bundle adjustment splits a previously connected window, the native
+map builder retries once from its original VGGT initialization with Huber loss.
+The retry keeps the existing 3-pixel/positive-depth filtering, camera support,
+connectivity and subsequent overlap validation. It does not join disconnected
+components by assuming they share a coordinate system.
+Unanchored-component deferrals record their exact camera IDs in `status.json`.
+They become eligible again only when one of those cameras joins the accepted map,
+so unrelated accepted windows no longer trigger the same impossible retry.

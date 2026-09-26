@@ -19,13 +19,17 @@ def native_backend():
         module = importlib.import_module('_stereoforge_map')
     except ImportError as error:
         raise RuntimeError('Rebuild Docker to install the native common-map builder (_stereoforge_map)') from error
-    if getattr(module, "api_version", None) != 13:
+    if getattr(module, "api_version", None) != 14:
         raise RuntimeError('Native common-map module is outdated. Stop the old container, rebuild Docker, and start a new container.')
     return module
 
 
 class WindowRejected(RuntimeError):
     """Native candidate rejection; the accepted map is unchanged."""
+
+    def __init__(self, message: str, unanchored_frames=()) -> None:
+        super().__init__(message)
+        self.unanchored_frames = frozenset(unanchored_frames)
 
 
 class NativeMap:
@@ -73,7 +77,7 @@ class NativeMap:
         try:
             self._invoke(lambda update: self.builder.add_window(list(frames.values()), reference_frames, update), progress)
         except RuntimeError as error:
-            raise WindowRejected(str(error)) from error
+            raise WindowRejected(str(error), self.builder.unanchored_frames) from error
 
     def rank_windows(self, windows: list[list[int]]) -> list[int]:
         return self.builder.rank_windows(windows)

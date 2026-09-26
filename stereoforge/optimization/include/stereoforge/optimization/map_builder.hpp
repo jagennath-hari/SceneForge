@@ -74,6 +74,7 @@ public:
     void Finalize(const std::function<void(const std::string&)>& progress);
     [[nodiscard]] const SparseMap& Map() const;
     [[nodiscard]] std::size_t AcceptedWindows() const;
+    [[nodiscard]] const std::vector<FrameId>& UnanchoredFrames() const { return this->unanchored_frames_; }
     [[nodiscard]] bool SharedCalibrationComplete() const { return this->shared_calibration_complete_; }
 private:
     [[nodiscard]] SparseMap Initialize(const std::vector<DepthFrame>& frames) const;
@@ -90,6 +91,7 @@ private:
     int iterations_;
     bool shared_calibration_complete_ = false;
     bool check_jacobians_;
+    std::vector<FrameId> unanchored_frames_;
     std::vector<Observations> tracks_;
     std::map<FrameId, std::vector<TrackId>> frame_tracks_;
     SparseMap map_;

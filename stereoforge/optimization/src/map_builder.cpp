@@ -491,6 +491,7 @@ void MapBuilder::Validate(const SparseMap& model, const Boundary& boundary,
 }
 void MapBuilder::AddWindow(const std::vector<DepthFrame>& frames, const std::vector<DepthFrame>& reference_frames,
                            const std::function<void(const std::string&)>& progress) {
+    this->unanchored_frames_.clear();
     progress("initializing landmarks");
     const SparseMap initialized = this->Initialize(frames);
     this->Record(initialized,0,progress,frames.empty() ? nullptr : &frames.front());
@@ -503,7 +504,24 @@ void MapBuilder::AddWindow(const std::vector<DepthFrame>& frames, const std::vec
     // may split it further, so discover components again after local BA.
     for (std::size_t i = 0; i < initial_groups.size(); ++i) {
         progress("local cuNLS BA: group " + std::to_string(i+1) + "/" + std::to_string(initial_groups.size()));
+        const SparseMap original = initial_groups[i];
         this->Optimize(initial_groups[i], true);
+        if (ConnectedGroups(initial_groups[i]).size() > 1) {
+            // A connected measured graph can be fragmented by GNC's aggressive
+            // outlier schedule. Retry once from the original VGGT initialization
+            // with Huber loss, never stitch independently optimized gauges.
+            progress("local cuNLS BA: connected Huber retry");
+            SparseMap retry = original;
+            try {
+                this->Optimize(retry, false);
+                // Optimize checks positive-depth/reprojection-filtered support
+                // and connectivity. Normal overlap validation still follows.
+                initial_groups[i] = std::move(retry);
+                progress("WARNING: Local GNC BA split a connected window; Huber retry retained connected support");
+            } catch (const std::runtime_error& error) {
+                progress(std::string("WARNING: Local Huber retry could not retain connected support: ") + error.what());
+            }
+        }
         refined.cameras.merge(initial_groups[i].cameras);
         refined.landmarks.merge(initial_groups[i].landmarks);
     }
@@ -526,6 +544,9 @@ void MapBuilder::AddWindow(const std::vector<DepthFrame>& frames, const std::vec
             " (frames " + std::to_string(group.cameras.begin()->first) + ".." +
             std::to_string(group.cameras.rbegin()->first) + ", " + std::to_string(shared) + " shared cameras)";
         if (shared == 0) {
+            for (const std::pair<const FrameId, Camera>& camera : group.cameras) {
+                this->unanchored_frames_.push_back(camera.first);
+            }
             throw std::runtime_error(label + ": cannot anchor to the established map");
         }
         progress("shared-camera Sim(3): " + label);

@@ -1082,3 +1082,11 @@ sample previews every eight frames, and publish the final fused preview in the s
 coordinate system as the sparse map and cameras. Camera icons use 0.07 display
 units. Global BA logs solve status and updates all frustums with accepted shared
 intrinsics together; per-iteration solver states are not streamed.
+
+### Local-BA connectivity stability
+
+A connected input component that GNC fragments receives one bounded Huber retry
+from its original initialization, with unchanged geometric filtering and merge
+validation. Failure preserves the GNC result for normal component handling; no
+unvalidated bridge is inserted. Scheduling records exact unanchored camera IDs
+and waits for relevant map support before retrying that window.

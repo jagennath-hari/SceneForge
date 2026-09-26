@@ -18,7 +18,7 @@ from .frontend import ReconstructionFrontend
 from .inference import infer_clusters
 from .view_graph import Cluster, VerifiedGraph
 
-POLICY = 'native_graph_dense_cunls_v8'
+POLICY = 'native_graph_dense_cunls_v9'
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +136,7 @@ class WindowReconstructor(ReconstructionFrontend):
             owners: dict[int, Path] = {}
             attempted_at: dict[int, int] = {}
             reasons: dict[int, str] = {}
+            waiting_for: dict[int, frozenset[int]] = {}
             self.summary['merge_order'] = []
             self.summary['unresolved_windows'] = []
             self.summary['global_ba_complete'] = False
@@ -143,7 +144,8 @@ class WindowReconstructor(ReconstructionFrontend):
                 while pending:
                     revision = self.native.accepted_windows
                     eligible = [window for key, window in sorted(pending.items())
-                                if attempted_at.get(key) != revision]
+                                if attempted_at.get(key) != revision
+                                and (key not in waiting_for or not waiting_for[key].isdisjoint(owners))]
                     ranked = self.native.rank_windows([window.frames for window in eligible])
                     if not ranked:
                         break
@@ -159,19 +161,25 @@ class WindowReconstructor(ReconstructionFrontend):
                     except WindowRejected as error:
                         attempted_at[index] = revision
                         reasons[index] = str(error)
+                        if error.unanchored_frames:
+                            waiting_for[index] = error.unanchored_frames
+                        else:
+                            waiting_for.pop(index, None)
                         logging.warning('Deferred window %d at map revision %d: %s', index, revision, error)
                         continue
                     for frame in window.frames:
                         owners.setdefault(frame, source)
                     del pending[index]
                     reasons.pop(index, None)
+                    waiting_for.pop(index, None)
                     self.summary['merge_order'].append(index)
                     self.summary['accepted_windows'] = self.native.accepted_windows
                     progress.advance()
                 self.summary['unresolved_windows'] = [
                     {'window': key, 'frames': window.frames,
                      'reason': reasons.get(key, 'No shared camera with the accepted map'),
-                     'last_attempt_revision': attempted_at.get(key)}
+                     'last_attempt_revision': attempted_at.get(key),
+                     'waiting_for_shared_cameras': sorted(waiting_for.get(key, ()))}
                     for key, window in sorted(pending.items())]
             if not self.native.accepted_windows:
                 raise RuntimeError('No window could initialize a connected map; inspect unresolved_windows in status.json')

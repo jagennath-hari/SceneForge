@@ -14,7 +14,7 @@ Their intended behavior is described in the roadmap, not represented by empty
 Python modules or placeholder tests.
 
 The supported command is `python -m stereoforge.reconstruction --video
-PATH --window-size 32 --overlap 8`. The current pipeline is:
+PATH` (defaults: window size 32, overlap 16, 500 LM iterations). The current pipeline is:
 
 ```text
 Continuous video → ordered keyframes → measured global feature tracks
@@ -876,7 +876,7 @@ pyCuSFM end-to-end entry points.
 - `refinement/cunls.py`: typed options, normalization, native process lifecycle,
   output identity checks, filtering and diagnostics; no pyCuSFM dependency.
 - `reconstruction/cunls_demo.py`: verified saved RGB/track coordinate grids,
-  depth-initialized sparse cluster, before/after HTML reports.
+  depth-initialized sparse cluster, before/after PLY and JSON diagnostics.
 
 The native pixel factor has three residuals: weighted horizontal/vertical pixel
 error and an unweighted cheirality barrier. It uses cuNLS right-multiplicative
@@ -1040,11 +1040,16 @@ estimates. Original derivative tolerances remain unchanged. Production BA retain
 its CUDA FP32 factors; FP64 is only for the optional diagnostic. Failure records
 all estimates and still stops the solve.
 
-### Optional Rerun recording
+### Primary visualization: Rerun
 
-`--rerun` launches the standard viewer and streams/saves one recording through the
+`--rerun` is enabled by default; `--no-rerun` supports headless operation.
+The standard viewer launches and streams/saves one recording through the
 official Rust SDK 0.38.1. StereoForge owns the Rust cdylib and C ABI integration;
-no upstream Rerun edits or C++/Python Rerun SDKs are used. Python routes existing
+no upstream Rerun edits or C++/Python Rerun SDKs are used. HTML generation,
+HTML diagnostic pages and the WebGL template have been removed. Older artifact
+lists and viewer descriptions below/above describe historical implementations;
+new runs preserve trajectories, PLY, depth arrays and JSON diagnostics, with
+`pipeline.rrd` as the visualization artifact. Python routes existing
 frontend outputs; C++ emits map snapshots. The timeline follows processing order.
 
 One 3D view contains persistent cameras and the estimated common map:
@@ -1053,7 +1058,10 @@ One 3D view contains persistent cameras and the estimated common map:
 - Image preparation updates thumbnails with amber active/green ready camera highlights.
 - Model preparation displays an in-scene status label. Matching shows at most 16
   requested pair connections per batch, then sampled geometrically verified links.
-  Track building highlights sampled observation connections (not 3D landmarks).
+  Track building highlights up to four measured tracks with eight image-plane pixel
+  observations each. Stable per-track colors connect measured feature pixels using
+  the same schematic pose, thumbnail scaling and FOV as the displayed cameras.
+  These observation connections are not triangulated 3D landmarks.
   Activity overlays replace previous activity and clear at geometry snapshots.
 - VGGT windows are normalized into small groups around the same origin. Existing
   camera entities move into these groups, then into the map on successful commit.

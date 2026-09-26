@@ -19,6 +19,25 @@ pub fn sphere(id: i64, radius: f32) -> [f32; 3] {
     [radius*(r*angle.cos()) as f32, radius*z as f32, radius*(r*angle.sin()) as f32]
 }
 
+// Shared with activity rendering so feature markers land on the actual image plane.
+pub fn schematic_pose(frame: i64) -> ([f32;3], [[f32;3];3]) {
+        let center = sphere(frame, 9.0);
+        let forward = center.map(|v| -v/9.0);
+        let up = if forward[1].abs() > 0.99 { [1.0,0.0,0.0] } else { [0.0,-1.0,0.0] };
+        let mut right = [forward[1]*up[2]-forward[2]*up[1], forward[2]*up[0]-forward[0]*up[2], forward[0]*up[1]-forward[1]*up[0]];
+        let norm = right.iter().map(|v| v*v).sum::<f32>().sqrt();
+        right = right.map(|v| v/norm);
+        let down = [forward[1]*right[2]-forward[2]*right[1], forward[2]*right[0]-forward[0]*right[2], forward[0]*right[1]-forward[1]*right[0]];
+    (center, [right,down,forward])
+}
+
+pub fn image_pixel(frame: i64, uv: [f32;2], image: &Thumbnail) -> [f32;3] {
+    let (center, basis) = schematic_pose(frame);
+    let local = [(uv[0]-0.5)*0.07,
+                 (uv[1]-0.5)*0.07*image.height as f32/image.width as f32, 0.07];
+    std::array::from_fn(|axis| center[axis]+(0..3).map(|i| basis[i][axis]*local[i]).sum::<f32>())
+}
+
 #[derive(Default)]
 pub struct Staging {
     pub images: BTreeMap<i64, Thumbnail>,
@@ -29,13 +48,7 @@ pub struct Staging {
 impl Staging {
     pub fn keyframe(&mut self, rec: &RecordingStream, frame: i64, image: Thumbnail) -> Result<()> {
         let path = format!("world/cameras/{frame}");
-        let center = sphere(frame, 9.0);
-        let forward = center.map(|v| -v/9.0);
-        let up = if forward[1].abs() > 0.99 { [1.0,0.0,0.0] } else { [0.0,-1.0,0.0] };
-        let mut right = [forward[1]*up[2]-forward[2]*up[1], forward[2]*up[0]-forward[0]*up[2], forward[0]*up[1]-forward[1]*up[0]];
-        let norm = right.iter().map(|v| v*v).sum::<f32>().sqrt();
-        right = right.map(|v| v/norm);
-        let down = [forward[1]*right[2]-forward[2]*right[1], forward[2]*right[0]-forward[0]*right[2], forward[0]*right[1]-forward[1]*right[0]];
+        let (center, [right, down, forward]) = schematic_pose(frame);
         rec.log(path.as_str(), &Transform3D::from_translation_mat3x3(center, [right,down,forward]))?;
         // Arbitrary presentation FOV until VGGT supplies measured intrinsics.
         rec.log(format!("{path}/image"), &Pinhole::from_focal_length_and_resolution(

@@ -17,6 +17,7 @@ class ReconstructionVisualization:
         self.enabled = True
         self.last_selection = 0.0
         self.selected_previews: set[int] = set()
+        self.image_sizes: dict[int, tuple[int, int]] = {}
         self.dense_samples: list[tuple[np.ndarray, np.ndarray]] = []
 
     def _disable(self, error: Exception) -> None:
@@ -33,6 +34,24 @@ class ReconstructionVisualization:
     def activity(self, label: str, frames=(), pairs=(), *, ready: bool = False) -> None:
         self.event(json.dumps({"label": label, "frames": list(frames)[:64],
                                "pairs": list(pairs)[:16], "ready": ready}))
+
+    def tracks(self, label: str, samples: list) -> None:
+        if not self.enabled:
+            return
+        tracks = []
+        for identity, observations in samples[-4:]:
+            pixels = []
+            for frame, uv in sorted(observations.items())[:8]:
+                size = self.image_sizes.get(frame)
+                if size is None:
+                    continue
+                x, y = float(uv[0])/size[0], float(uv[1])/size[1]
+                if np.isfinite([x, y]).all() and 0 <= x <= 1 and 0 <= y <= 1:
+                    pixels.append([frame, x, y])
+            if len(pixels) >= 2:
+                tracks.append({"id": identity, "observations": pixels})
+        self.event(json.dumps({"label": label, "tracks": tracks, "ready": True,
+                               "frames": sorted({p[0] for t in tracks for p in t['observations']})}))
 
     def dense(self, xyz: np.ndarray, rgb: np.ndarray, *, final: bool = False) -> None:
         if not self.enabled:
@@ -74,6 +93,7 @@ class ReconstructionVisualization:
             return
         try:
             with Image.open(path) as source:
+                self.image_sizes[frame] = source.size
                 image = source.convert('RGB')
                 image.thumbnail((256, 256), Image.Resampling.LANCZOS)
                 pixels = np.array(image, dtype=np.uint8)

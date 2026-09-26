@@ -200,7 +200,7 @@ pub extern "C" fn sf_rerun_status(handle: *mut std::ffi::c_void, message: *const
         session.step += 1;
         session.camera_root = None;
         session.recording.set_time("reconstruction_step", TimeCell::from_sequence(session.step));
-        activity::log(&session.recording, message, &session.centers)?;
+        activity::log(&session.recording, message, &session.centers, &session.staging.images)?;
         session.recording.log("pipeline/stage", &TextLog::new(message))?;
         session.recording.flush_async()?;
         Ok(())

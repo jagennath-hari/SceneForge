@@ -4,7 +4,6 @@ from dataclasses import dataclass
 import json
 import logging
 import shutil
-from PIL import Image
 from pathlib import Path
 
 import numpy as np
@@ -12,7 +11,7 @@ import numpy as np
 from stereoforge.refinement.sparse_model import SparseModel
 from stereoforge.utils.artifacts import write_json
 from stereoforge.utils.progress import Progress, progress_group
-from stereoforge.utils.visualization import GeometryReportWriter
+from stereoforge.utils.point_cloud import write_ply
 from .native_map import NativeMap, WindowRejected
 from .dense import DenseRefiner, DenseOptions
 from .frontend import ReconstructionFrontend
@@ -25,10 +24,10 @@ POLICY = 'native_graph_dense_cunls_v8'
 @dataclass(frozen=True, slots=True)
 class WindowOptions:
     window_size: int = 32
-    overlap: int = 8
+    overlap: int = 16
     neighbors: int = 4
     device: str = 'cuda'
-    lm_iterations: int = 300
+    lm_iterations: int = 500
     dense_voxel_fraction: float = 0.01
 
     def __post_init__(self) -> None:
@@ -79,9 +78,6 @@ class WindowReconstructor(ReconstructionFrontend):
         self.summary['missing_frames'] = sorted(set(range(self.summary['input_frames'])) - (set(model.cameras) if model else set()))
         write_json(self.output / 'status.json', self.summary)
         if model is not None:
-            # One viewer/trajectory for the current common map. A partial map
-            # is explicitly labelled, never substituted for a completed scene.
-            self._viewer(model, self.summary, self.timestamps)
             write_json(self.output / 'trajectory.json', {
                 'status': status, 'convention': 'camera_to_world; x right, y down, z forward',
                 'units': 'reconstruction_units', 'meters_per_unit': None,
@@ -90,36 +86,12 @@ class WindowReconstructor(ReconstructionFrontend):
                             'camera_to_world': c.pose.tolist(), 'intrinsics': c.intrinsics.tolist(),
                             'image_size_hw': c.size_hw} for f, c in sorted(model.cameras.items())]})
             # The viewer may subsample large clouds; export every optimized point.
-            GeometryReportWriter._write_ply(self.output / 'point_cloud.ply',
+            write_ply(self.output / 'point_cloud.ply',
                 np.asarray([p.xyz for p in model.points]), np.asarray([p.rgb for p in model.points], dtype=np.uint8))
             if self.summary.get('dense_refinement'):
-                # Preserve sparse output; the main viewer and download show the
-                # validated dense cloud. Raw VGGT windows are never overwritten.
+                # Preserve sparse output alongside the validated dense cloud. Raw VGGT windows are never overwritten.
                 (self.output / 'point_cloud.ply').replace(self.output / 'sparse_point_cloud.ply')
                 shutil.copyfile(self.output / 'dense_point_cloud.ply', self.output / 'point_cloud.ply')
-                metadata = json.loads((self.output / 'metadata.json').read_text())
-                metadata.update(sparse_only=False, dense_depth_refined=True,
-                                reconstruction_name='StereoForge · refined dense cloud',
-                                dense_refinement=self.summary['dense_refinement'])
-                coverage = {item['frame']: item for item in self.summary['dense_refinement']['coverage']}
-                for frame in metadata['frames']:
-                    index = frame['frame_index']
-                    if index in coverage:
-                        item = coverage[index]
-                        frame['valid_fraction'] = item['supported_pixels']/item['total_pixels']
-                        frame['depth_p50'] = item['depth_median']
-                        frame['previews']['depth'] = f'dense/{index:06d}_depth.png'
-                        frame['previews']['confidence'] = f'dense/{index:06d}_support.png'
-                    else:
-                        blank = self.output / 'dense' / 'unsupported.png'
-                        if not blank.exists():
-                            Image.new('L',tuple(reversed(frame['processed_size_hw']))).save(blank)
-                        frame['previews'].update(depth='dense/unsupported.png', confidence='dense/unsupported.png')
-                write_json(self.output / 'metadata.json',metadata)
-                with np.load(self.output / 'dense' / 'preview.npz') as preview:
-                    order = {frame: index for index, frame in enumerate(sorted(model.cameras))}
-                    appeared = np.array([order[int(frame)] for frame in preview['frames']],dtype=np.int64)
-                    GeometryReportWriter._write_viewer(self.output,metadata,preview['xyz'],preview['rgb'],appeared)
         return self.summary
 
     def run(self, paths: list[Path], checkpoint: Path, timestamps: tuple | None) -> dict:
@@ -136,7 +108,7 @@ class WindowReconstructor(ReconstructionFrontend):
                 if self.visualization is not None:
                     self.visualization.event('Building measured feature tracks from verified image matches')
                 graph.read(files, on_progress=self.visualization.event if self.visualization is not None else None,
-                           on_activity=self.visualization.activity if self.visualization is not None else None)
+                           on_tracks=self.visualization.tracks if self.visualization is not None else None)
                 if self.visualization is not None:
                     self.visualization.event(f"Built {len(graph.tracks)} measured tracks; keyframe positions remain display-only until VGGT")
                 write_json(self.output / 'graph.json', graph.summary)

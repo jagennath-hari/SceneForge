@@ -1,7 +1,6 @@
 """Align a refined VGGT window with the common map and jointly refine it."""
 
 from dataclasses import dataclass, replace
-import html
 import json
 from pathlib import Path
 import shutil
@@ -44,26 +43,6 @@ class WindowMerger:
 
     def publish(self) -> None:
         write_json(self.output / 'report.json', self.report)
-        if not self.diagnostics:
-            return
-        links = [('reference/before/index.html', 'Reference before local BA'),
-                 ('reference/after/index.html', 'Reference after local BA'),
-                 ('local/before/index.html', 'Local before local BA'),
-                 ('local/after/index.html', 'Local after local BA'),
-                 ('aligned/index.html', 'Aligned local cluster'),
-                 ('before_joint/index.html', 'Combined before joint BA'),
-                 ('after_joint/index.html', 'Combined after joint BA'),
-                 ('validation_support.json', 'Validation support through each stage'),
-                 ('ancestor_validation.json', 'Earlier boundary checks'),
-                 ('alignment.json', 'Alignment checks'), ('validation.json', 'Joint BA validation'),
-                 ('reference/ba/solver.log', 'Reference solver log'),
-                 ('local/ba/solver.log', 'Local solver log'), ('joint_ba/solver.log', 'Joint solver log')]
-        items = ''.join(f'<li><a href="{path}">{label}</a></li>' for path, label in links
-                        if (self.output / path).is_file())
-        page = ('<!doctype html><meta charset="utf-8"><title>Window merge details</title>'
-                '<h1>Window merge details</h1><p>' + html.escape(self.report['scope'])
-                + '</p><ul>' + items + '</ul><pre>' + html.escape(json.dumps(self.report, indent=2)) + '</pre>')
-        (self.output / 'index.html').write_text(page, encoding='utf-8')
 
     def refine(self, name: str, section: Path) -> RefinedCluster:
         self.report['stage'] = f'{name}_local_ba'
@@ -125,7 +104,7 @@ class WindowMerger:
                     if not target.exists():
                         shutil.copyfile(path, target)
         viewer = reference.artifacts
-        viewer.viewer(aligned, self.output / 'aligned', 'Local cluster aligned into reference gauge',
+        viewer.export_diagnostics(aligned, self.output / 'aligned', 'Local cluster aligned into reference gauge',
                       {'input_frames': len(aligned.cameras)})
         self.report['stage'] = 'reconciliation'
         reconciliation: dict = {}
@@ -175,7 +154,7 @@ class WindowMerger:
                            for check in previous_validations]})
         audit_support('after_ancestor_holdout_exclusion', combined)
         combined.write(self.output / 'combined_sparse', sorted(combined.cameras))
-        viewer.viewer(combined, self.output / 'before_joint', 'Combined sparse initialization',
+        viewer.export_diagnostics(combined, self.output / 'before_joint', 'Combined sparse initialization',
                       {'input_frames': len(combined.cameras)})
         validation = MergeValidation.prepare(combined, reference.model, aligned)
         audit_support('joint_training', validation.training)
@@ -193,7 +172,7 @@ class WindowMerger:
         write_json(self.output / 'validation.json', checks)
         self.report['validation'] = {key: value for key, value in checks.items() if key != 'observations'}
         if refined.points:
-            viewer.viewer(refined, self.output / 'after_joint', 'cuNLS joint BA candidate — inspect validation', joint_report)
+            viewer.export_diagnostics(refined, self.output / 'after_joint', 'cuNLS joint BA candidate — inspect validation', joint_report)
         passed = (checks['status'] == 'accepted' and joint_report['status'] == 'diagnostic_complete'
                   and set(refined.cameras) == (frame_sets[0] | frame_sets[1]))
         ancestor_checks = [check.evaluate(refined) for check in previous_validations]

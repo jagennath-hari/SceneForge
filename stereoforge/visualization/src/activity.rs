@@ -8,7 +8,7 @@ pub fn clear(rec: &RecordingStream) -> Result<()> {
     Ok(())
 }
 
-pub fn log(rec: &RecordingStream, message: &str, centers: &std::collections::BTreeMap<i64,[f32;3]>) -> Result<()> {
+pub fn log(rec: &RecordingStream, message: &str, centers: &std::collections::BTreeMap<i64,[f32;3]>, images: &std::collections::BTreeMap<i64,crate::staging::Thumbnail>) -> Result<()> {
     clear(rec)?;
     let position = |id: i64| centers.get(&id).copied().unwrap_or_else(|| sphere(id,9.0));
     let payload = serde_json::from_str::<serde_json::Value>(message).ok();
@@ -25,6 +25,34 @@ pub fn log(rec: &RecordingStream, message: &str, centers: &std::collections::BTr
                 .take(64).map(position).collect();
             rec.log("world/activity/cameras", &Points3D::new(centers).with_colors([color])
                 .with_radii([Radius::new_ui_points(5.0)]))?;
+        }
+        if let Some(tracks) = payload["tracks"].as_array() {
+            for (index, track) in tracks.iter().take(4).enumerate() {
+                let Some(observations) = track["observations"].as_array() else { continue; };
+                let mut pixels = Vec::new();
+                for observation in observations.iter().take(8) {
+                    let (Some(frame), Some(x), Some(y)) = (
+                        observation.get(0).and_then(|v| v.as_i64()),
+                        observation.get(1).and_then(|v| v.as_f64()),
+                        observation.get(2).and_then(|v| v.as_f64())) else { continue; };
+                    if !x.is_finite() || !y.is_finite() || !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) { continue; }
+                    if let Some(image) = images.get(&frame) {
+                        pixels.push(crate::staging::image_pixel(frame,[x as f32,y as f32],image));
+                    }
+                }
+                if pixels.len() < 2 { continue; }
+                // Stable color from measured feature identity; no randomized hash seed.
+                let hash = track["id"].as_str().unwrap_or("").bytes()
+                    .fold(2166136261_u32, |h,b| (h ^ b as u32).wrapping_mul(16777619));
+                let color = Color::from_rgb(80+(hash%176) as u8,
+                    80+((hash>>8)%176) as u8,80+((hash>>16)%176) as u8);
+                rec.log(format!("world/activity/tracks/{index}/pixels"),
+                    &Points3D::new(pixels.clone()).with_colors([color])
+                        .with_radii([Radius::new_ui_points(3.0)]))?;
+                rec.log(format!("world/activity/tracks/{index}/links"),
+                    &LineStrips3D::new([pixels]).with_colors([color])
+                        .with_radii([Radius::new_ui_points(0.75)]))?;
+            }
         }
         if let Some(pairs) = payload["pairs"].as_array() {
             let lines: Vec<Vec<[f32;3]>> = pairs.iter().take(16).filter_map(|pair| {

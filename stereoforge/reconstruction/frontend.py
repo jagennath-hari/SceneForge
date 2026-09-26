@@ -1,9 +1,8 @@
-"""Shared video reconstruction frontend and sparse viewer export."""
+"""Shared video reconstruction frontend."""
 
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -14,10 +13,8 @@ import numpy as np
 from PIL import Image
 import torch
 
-from stereoforge.refinement.sparse_model import SparseModel
 from stereoforge.utils.artifacts import write_json
 from stereoforge.utils.progress import Progress, tracked
-from stereoforge.utils.visualization import GeometryReportWriter
 from stereoforge.video.sampling import VideoFrameSampler
 
 if TYPE_CHECKING:
@@ -128,25 +125,3 @@ class ReconstructionFrontend:
                     self.visualization.matched_batch(destination)
                 progress.advance()
         return result
-
-    def _viewer(self, model: SparseModel, summary: dict, timestamps: tuple | None,
-                directory: Path | None = None) -> None:
-        destination = directory if directory is not None else self.output
-        frames, order = [], {f: i for i, f in enumerate(sorted(model.cameras))}
-        for frame, camera in sorted(model.cameras.items()):
-            frames.append({"frame_index": frame, "source": f"Keyframe {frame}",
-                           "processed_size_hw": camera.size_hw, "camera_to_world": camera.pose.tolist(),
-                           "intrinsics": camera.intrinsics.tolist(), "valid_fraction": 0, "depth_p50": None,
-                           "previews": {"rgb": os.path.relpath(self.images[frame], destination)}})
-        metadata = {"format_version": 1, "units": "reconstruction_units", "meters_per_unit": None,
-                    "reconstruction_name": summary.get("reconstruction_name", "StereoForge reconstruction"), "sparse_only": True,
-                    "frames": frames, "input_frames": summary["input_frames"], "sparse_statistics": summary,
-                    "dense_depth_refined": False, "provenance": {"video_timestamps_seconds":
-                        [timestamps[f] for f in sorted(model.cameras)] if timestamps else None}}
-        write_json(destination / "metadata.json", metadata)
-        selected = np.linspace(0, len(model.points)-1, min(240000, len(model.points)), dtype=int)
-        points = [model.points[i] for i in selected]
-        xyz, rgb = np.array([p.xyz for p in points]), np.array([p.rgb for p in points], dtype=np.uint8)
-        appeared = np.array([min(order[f] for f in p.observations) for p in points], dtype=np.int64)
-        GeometryReportWriter._write_ply(destination / "point_cloud.ply", xyz, rgb)
-        GeometryReportWriter._write_viewer(destination, metadata, xyz, rgb, appeared)

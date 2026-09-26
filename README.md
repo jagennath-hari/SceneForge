@@ -16,11 +16,10 @@ Video → keyframes → measured feature tracks
 Inside Docker:
 
 ```bash
-python -m stereoforge.reconstruction \
-  --video data/input/barn.mp4 \
-  --window-size 32 --overlap 8
+python -m stereoforge.reconstruction --video data/input/barn.mp4
 ```
 
+Defaults are `--window-size 32 --overlap 16 --lm-iterations 500`, with Rerun enabled.
 Window size and overlap count **selected keyframes**, not original video frames.
 The final window may be shorter and retains every remaining keyframe. Overlap
 must be at least six and smaller than the window size. Each window is refined
@@ -123,11 +122,13 @@ on rejection. Depth/RGB caching is bounded; raw VGGT tensors remain on disk.
 
 `--device cuda` uses visible GPUs for VGGT windows and the first visible GPU for
 BA. `--device cuda:0` selects one GPU. Single-GPU systems use the same pipeline.
-VGGT workers exit before BA begins. `--lm-iterations 300` is the default joint
+VGGT workers exit before BA begins. `--lm-iterations 500` is the default joint
 solve budget; `--neighbors 4` controls temporal feature matching.
 
-Open `data/intermediate/reconstruction_TIMESTAMP/index.html`. The same directory
-contains:
+Rerun opens automatically and records to
+`data/intermediate/reconstruction_TIMESTAMP/map_TIMESTAMP/pipeline.rrd`.
+Use `rerun /path/to/pipeline.rrd` for replay, or `--no-rerun` for headless processing.
+New runs do not generate HTML. The output directory contains:
 
 - `trajectory.json`: camera-to-world poses, intrinsics and video timestamps.
 - `point_cloud.ply`: the fused dense cloud after successful dense refinement.
@@ -281,7 +282,7 @@ python -m stereoforge.reconstruction --video data/input/barn.mp4 \
   --window-size 32 --overlap 16 --lm-iterations 500 --rerun
 ```
 
-`--rerun` launches the official viewer automatically (or connects to one already
+`--rerun` is enabled by default and launches the official viewer (or connects to one already
 running), streams through gRPC and simultaneously saves the same recording to
 `map_<attempt>/pipeline.rrd`. The GUI uses the existing Docker display mounts.
 One 3D view shows the whole process, alongside a stage log. Accepted keyframes
@@ -319,8 +320,13 @@ panels and the timeline start collapsed. Logs remain recorded under `pipeline`.
 During image preparation, the active camera is highlighted amber and becomes
 green when its processed thumbnail is ready. Matching displays up to 16 requested
 pair links in amber, then a sample of geometrically verified links in green after
-that batch completes (including reused batches). Track assembly shows sampled
-observation connections, not triangulated 3D landmarks. One in-scene label names
+that batch completes (including reused batches). Track assembly shows up to four measured tracks with eight observations each.
+Colored markers lie at their measured pixel locations on the processed image
+planes, with same-colored links joining each track. Pixel coordinates are scaled
+with the thumbnail dimensions and projected using the same schematic camera pose
+and display FOV as the image plane. These links are not triangulated 3D landmarks.
+The status label reports processed edges or collected tracks/components, without
+inventing camera-completion counts. One in-scene label names
 the current operation, including model preparation; it does not invent progress
 when the underlying operation exposes none. Activity replaces earlier highlights
 and is cleared when a VGGT/map snapshot arrives.
@@ -340,7 +346,7 @@ Window merging requires 75% per-camera held-out agreement and 80% across the
 boundary; the 5-pixel residual cutoff, positive-depth checks and final global BA
 regression checks remain in place.
 
-Logging is optional, uses the official Rust SDK through a C ABI, and does not
+Logging can be disabled with `--no-rerun`, uses the official Rust SDK through a C ABI, and does not
 change reconstruction decisions. No Rerun source is modified. Visualization errors
 warn and disable logging. Dense calibration/refinement highlight the active optimized camera. Every eight
 frames, a bounded preview of validated dense samples updates in the same scene;

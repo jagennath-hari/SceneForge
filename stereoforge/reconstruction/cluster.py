@@ -1,6 +1,5 @@
 """Refine one saved VGGT cluster with StereoForge's C++/CUDA cuNLS backend."""
 
-import html
 import json
 from pathlib import Path
 
@@ -11,7 +10,7 @@ from stereoforge.geometry.storage import load_sequence
 from stereoforge.refinement.cunls import CuNLSBundleAdjuster, CuNLSOptions
 from stereoforge.refinement.sparse_model import SparseCamera, SparseModel, SparsePoint, reprojection_error
 from stereoforge.utils.artifacts import write_json
-from stereoforge.utils.visualization import GeometryReportWriter
+from stereoforge.utils.point_cloud import write_ply
 
 
 class ClusterInitializer:
@@ -93,12 +92,11 @@ class ClusterInitializer:
             raise ValueError('Cluster initialization lacks all cameras or 60 landmarks; inspect initialization.json')
         return SparseModel(cameras, tuple(points))
 
-    def viewer(self, model: SparseModel, destination: Path, title: str, report: dict) -> None:
+    def export_diagnostics(self, model: SparseModel, destination: Path, title: str, report: dict) -> None:
         if not self.diagnostics:
             return
         destination.mkdir()
         ids = sorted(model.cameras)
-        order = {f: i for i, f in enumerate(ids)}
         frames = [{'frame_index': f, 'source': f'Keyframe {f}', 'processed_size_hw': c.size_hw,
                    'camera_to_world': c.pose.tolist(), 'intrinsics': c.intrinsics.tolist(),
                    'valid_fraction': 0, 'depth_p50': None,
@@ -111,26 +109,16 @@ class ClusterInitializer:
         points = [model.points[i] for i in indices]
         xyz = np.asarray([p.xyz for p in points], dtype=float).reshape(-1, 3)
         rgb = np.asarray([p.rgb for p in points], dtype=np.uint8).reshape(-1, 3)
-        appeared = np.asarray([min(order[f] for f in p.observations) for p in points], dtype=np.int64)
         write_json(destination / 'metadata.json', metadata)
-        GeometryReportWriter._write_ply(destination / 'point_cloud.ply', xyz, rgb)
-        GeometryReportWriter._write_viewer(destination, metadata, xyz, rgb, appeared)
+        write_ply(destination / 'point_cloud.ply', xyz, rgb)
 
     def solve(self) -> tuple[SparseModel, dict]:
         self.optimizer.preflight()
         model = self.initialize()
         model.write(self.output / 'initialized_sparse', sorted(model.cameras))
-        self.viewer(model, self.output / 'before', 'VGGT cluster initialization', {'input_frames': len(model.cameras)})
+        self.export_diagnostics(model, self.output / 'before', 'VGGT cluster initialization', {'input_frames': len(model.cameras)})
         refined, report = self.optimizer.optimize(model, self.output / 'ba')
         if refined.points:
-            self.viewer(refined, self.output / 'after', 'cuNLS local BA', report)
+            self.export_diagnostics(refined, self.output / 'after', 'cuNLS local BA', report)
         write_json(self.output / 'report.json', report)
-        page = ('<!doctype html><meta charset="utf-8"><title>cuNLS cluster diagnostic</title>'
-                '<h1>cuNLS cluster diagnostic</h1><p>This is a local sparse cluster, not a full reconstruction.</p>'
-                '<p><a href="before/index.html">Before BA</a> · '
-                + ('<a href="after/index.html">After BA</a> · ' if refined.points else '')
-                + '<a href="ba/solver.log">Solver log</a> · <a href="report.json">Full diagnostics</a></p>'
-                + '<pre>' + html.escape(json.dumps(report, indent=2)) + '</pre>')
-        if self.diagnostics:
-            (self.output / 'index.html').write_text(page)
         return refined, report

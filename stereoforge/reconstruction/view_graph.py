@@ -34,11 +34,11 @@ class VerifiedGraph:
         self.tracks: list[dict[int, np.ndarray]] = []
         self.summary: dict = {}
 
-    def read(self, files: list[Path], on_progress=None, on_activity=None) -> None:
+    def read(self, files: list[Path], on_progress=None, on_tracks=None) -> None:
         with Progress("Building measured feature tracks", sum(path.stat().st_size for path in files), "B") as progress:
-            self._read(files, progress, on_progress, on_activity)
+            self._read(files, progress, on_progress, on_tracks)
 
-    def _read(self, files: list[Path], progress: Progress, on_progress=None, on_activity=None) -> None:
+    def _read(self, files: list[Path], progress: Progress, on_progress=None, on_tracks=None) -> None:
         progress.status("reading verified matches")
         edges = []
         verified_pairs = 0
@@ -93,6 +93,18 @@ class VerifiedGraph:
         edges.sort(reverse=True)
         progress.reset(len(edges), "edge", "joining consistent tracks")
         rejected = 0
+        track_samples = []
+        joined = 0
+
+        def show_track(group, label):
+            if on_tracks is None:
+                return
+            nodes = sorted(group.values())[:8]
+            identity = f"{nodes[0].frame}:{nodes[0].keypoint}"
+            track_samples.append((identity, {node.frame: self.pixels[node] for node in nodes}))
+            del track_samples[:-4]
+            on_tracks(label, track_samples)
+
         for edge_index, (_, a, b) in enumerate(edges):
             x, y = root(a), root(b)
             if x == y:
@@ -106,10 +118,9 @@ class VerifiedGraph:
                 x, y = y, x
             parent[y] = x
             members[x].update(members.pop(y))
-            if on_activity is not None and edge_index % 20000 == 0:
-                frames = sorted(members[x])[:8]
-                on_activity(f"Building measured tracks: {edge_index+1}/{len(edges)} edges — sampled observation links",
-                            frames, list(zip(frames, frames[1:])), ready=True)
+            joined += 1
+            if joined == 1 or joined % 20000 == 0:
+                show_track(members[x], f"Joining measured tracks: {edge_index+1:,}/{len(edges):,} edges — schematic pixel links")
             progress.advance()
         if on_progress is not None:
             on_progress(f"Building tracks: {len(members):,} components; collecting tracks with at least three views")
@@ -118,10 +129,8 @@ class VerifiedGraph:
         for group_index, group in enumerate(members.values()):
             if len(group) >= 3:
                 self.tracks.append({f: self.pixels[node] for f, node in sorted(group.items())})
-                if on_activity is not None and (len(self.tracks) == 1 or len(self.tracks) % 20000 == 0):
-                    frames = sorted(group)[:8]
-                    on_activity(f"Collecting measured tracks: {group_index+1}/{len(members)} components",
-                                frames, list(zip(frames, frames[1:])), ready=True)
+                if len(self.tracks) == 1 or len(self.tracks) % 20000 == 0:
+                    show_track(group, f"{len(self.tracks):,} tracks built · {group_index+1:,}/{len(members):,} components processed")
             progress.advance()
         progress.reset(self.count, "frame", "checking image connectivity")
         components, pending = [], set(self.neighbors)

@@ -45,15 +45,16 @@ def main() -> int:
     source.add_argument('--resume', type=Path, help='Reuse inputs/VGGT windows from this pipeline; recompute map in a fresh attempt')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--checkpoint', type=Path)
-    parser.add_argument('--window-size', type=int)
-    parser.add_argument('--overlap', type=int)
+    parser.add_argument('--window-size', type=int, help='Keyframes per VGGT window (default 32)')
+    parser.add_argument('--overlap', type=int, help='Shared keyframes between windows (default 16)')
     parser.add_argument('--neighbors', type=int, help='Temporal feature matching neighbors (default 4)')
     parser.add_argument('--device', help='cuda: visible GPUs for VGGT, first GPU for BA; cuda:N: one GPU')
-    parser.add_argument('--lm-iterations', type=int, help='Joint BA iteration budget (default 300)')
+    parser.add_argument('--lm-iterations', type=int, help='Joint BA iteration budget (default 500)')
     parser.add_argument('--dense-voxel-fraction', type=float, help='Voxel width / median scene depth (default 0.01; larger uses less memory)')
     parser.add_argument('--keyframe-config', type=Path)
     parser.add_argument('--diagnostics', action='store_true', help='Check native CUDA Jacobians (slower; no intermediate map dumps)')
-    parser.add_argument('--rerun', action='store_true', help='Launch the Rerun viewer, stream map stages live, and save attempt/pipeline.rrd')
+    parser.add_argument('--rerun', action=argparse.BooleanOptionalAction, default=True,
+                        help='Stream to Rerun and save pipeline.rrd (default); --no-rerun runs headless')
     parser.add_argument('--debug', action='store_true', help='Show exception traceback')
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -88,10 +89,10 @@ def main() -> int:
                 raise FileNotFoundError(f'Video not found: {video}')
             config = (args.keyframe_config or ROOT / 'configs/keyframes_raco.json').expanduser().resolve()
             options = WindowOptions(window_size=args.window_size if args.window_size is not None else 32,
-                                    overlap=args.overlap if args.overlap is not None else 8,
+                                    overlap=args.overlap if args.overlap is not None else 16,
                                     neighbors=args.neighbors if args.neighbors is not None else 4,
                                     device=args.device or 'cuda',
-                                    lm_iterations=args.lm_iterations if args.lm_iterations is not None else 300,
+                                    lm_iterations=args.lm_iterations if args.lm_iterations is not None else 500,
                                     dense_voxel_fraction=args.dense_voxel_fraction if args.dense_voxel_fraction is not None else 0.01)
             output = (args.output or ROOT / 'data/intermediate' / datetime.now(timezone.utc).strftime(
                 'reconstruction_%Y%m%d_%H%M%S_%f')).expanduser().resolve()
@@ -131,8 +132,10 @@ def main() -> int:
                    'source_frame_indices': sampled.source_frame_indices,
                    'timestamps_seconds': sampled.timestamps_seconds})
         result = reconstructor.run(list(sampled.paths), checkpoint, sampled.timestamps_seconds)
-        logging.info('%s: %d/%d keyframes. Open %s', result['status'], result['registered_frames'],
-                     result['input_frames'], output / 'index.html')
+        logging.info('%s: %d/%d keyframes. Artifacts: %s', result['status'], result['registered_frames'],
+                     result['input_frames'], output)
+        if args.rerun:
+            logging.info('Rerun recording: %s', recording)
         return 0 if result['status'] == 'complete' else 1
     except (Exception, KeyboardInterrupt) as error:
         logging.error('%s%s', str(error) or 'Interrupted', f'\nArtifacts retained in {output}' if output else '')

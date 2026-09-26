@@ -10,7 +10,7 @@ use crate::Result;
 
 pub const EYE: &str = "world/presentation_eye";
 pub const EYE_PINHOLE: &str = "world/presentation_eye/image";
-const OVERVIEW_DISTANCE: f32 = 25.0;
+const OVERVIEW_DISTANCE: f32 = 22.0;
 pub const OVERVIEW_POSITION: [f32;3] = [
     0.57735026*OVERVIEW_DISTANCE,
     -0.57735026*OVERVIEW_DISTANCE,

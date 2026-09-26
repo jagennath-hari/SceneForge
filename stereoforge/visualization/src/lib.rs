@@ -182,7 +182,7 @@ pub extern "C" fn sf_rerun_snapshot(handle: *mut std::ffi::c_void, stage: u32,
                 .filter(|r| r.is_finite()).fold(point_radius,f32::max).clamp(1.0,10.0);
             let completion = ids.len() as f32/session.staging.images.len().max(ids.len()).max(1) as f32;
             // Tighten the margin and shift perspective as the map completes.
-            layout::focus(rec,[0.0;3],radius*(0.90-0.10*completion),completion)?;
+            layout::focus(rec,[0.0;3],radius*(0.76-0.08*completion),completion)?;
         }
         let colors: Vec<Color> = visible.iter().map(|(_,c)| Color::from_rgb(c[0],c[1],c[2])).collect();
         rec.log(format!("{root}/points"), &Points3D::new(positions).with_colors(colors)

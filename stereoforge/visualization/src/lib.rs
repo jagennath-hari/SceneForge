@@ -165,10 +165,11 @@ pub extern "C" fn sf_rerun_snapshot(handle: *mut std::ffi::c_void, stage: u32,
             .collect();
         let positions: Vec<[f32; 3]> = visible.iter().map(|(p,_)| [p[0],p[1],p[2]]).collect();
         if stage == 0 && session.staging.accepted.is_empty() {
-            // Inference callbacks supply completed windows. Inspect that local
-            // group rather than fitting all unrelated staging groups together.
-            let target = staging::sphere(ids.first().copied().unwrap_or(0),5.0);
-            layout::focus(rec,target,2.5,0.0)?;
+            // Keep the complete sphere in view. Coverage is monotonic even
+            // when multiple GPUs finish windows out of temporal order.
+            let completion = session.centers.len() as f32 /
+                session.staging.images.len().max(session.centers.len()).max(1) as f32;
+            layout::orbit(rec,completion)?;
         } else if stage >= 2 {
             // Fit accepted geometry only. Unposed cameras elsewhere on the
             // staging sphere must not force the overview to remain zoomed out.
@@ -181,7 +182,7 @@ pub extern "C" fn sf_rerun_snapshot(handle: *mut std::ffi::c_void, stage: u32,
                 .filter(|r| r.is_finite()).fold(point_radius,f32::max).clamp(1.0,10.0);
             let completion = ids.len() as f32/session.staging.images.len().max(ids.len()).max(1) as f32;
             // Tighten the margin and shift perspective as the map completes.
-            layout::focus(rec,[0.0;3],radius*(1.15-0.15*completion),completion)?;
+            layout::focus(rec,[0.0;3],radius*(0.90-0.10*completion),completion)?;
         }
         let colors: Vec<Color> = visible.iter().map(|(_,c)| Color::from_rgb(c[0],c[1],c[2])).collect();
         rec.log(format!("{root}/points"), &Points3D::new(positions).with_colors(colors)

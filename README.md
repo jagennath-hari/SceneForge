@@ -405,10 +405,11 @@ before blueprint activation, so they are available on the same timeline used
 throughout decoding, keyframe selection and feature preparation. The pose is
 not static: later orbit and follow updates can still replace it.
 
-During VGGT inference, each completed window gets a closer view centered on its
-normalized group. During common-map construction, framing uses accepted points
-and cameras only, ignoring the unposed staging sphere. The view margin tightens
-and its azimuth changes modestly as camera coverage increases. Geometry snapshots
+During VGGT inference, the closer whole-sphere overview is retained. The eye
+orbits as completed windows cover more keyframes, including when GPUs finish
+out of order. It does not zoom into individual VGGT groups. During common-map construction, framing uses accepted points
+and cameras only, ignoring the unposed staging sphere. The view moves closer than the sphere overview and its azimuth changes modestly
+as accepted camera coverage increases. Geometry snapshots
 drive these changes; no animation is simulated while inference is still running.
 Local-initialization snapshots during map building do not pull the eye away from
 the accepted map. Dense-stage behind-camera following remains unchanged.

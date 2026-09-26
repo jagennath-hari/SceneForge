@@ -10,7 +10,12 @@ use crate::Result;
 
 pub const EYE: &str = "world/presentation_eye";
 pub const EYE_PINHOLE: &str = "world/presentation_eye/image";
-pub const OVERVIEW_POSITION: [f32;3] = [18.475208,-18.475208,-18.475208];
+const OVERVIEW_DISTANCE: f32 = 25.0;
+pub const OVERVIEW_POSITION: [f32;3] = [
+    0.57735026*OVERVIEW_DISTANCE,
+    -0.57735026*OVERVIEW_DISTANCE,
+    -0.57735026*OVERVIEW_DISTANCE,
+];
 
 pub fn install(recording: &RecordingStream, position: [f32;3], target: [f32;3], up: [f32;3]) -> Result<()> {
     // Build the official blueprint archetypes directly: the pinned Rust SDK's
@@ -50,7 +55,7 @@ pub fn install(recording: &RecordingStream, position: [f32;3], target: [f32;3], 
 /// Framing changes only with geometry stages, never with individual text events.
 pub fn frame(recording: &RecordingStream, radius: f32) -> Result<()> {
     let direction = [0.57735026_f32,-0.57735026,-0.57735026];
-    let center = direction.map(|v| v*radius*3.2);
+    let center = direction.map(|v| v*radius*(OVERVIEW_DISTANCE/10.0));
     let forward = direction.map(|v| -v);
     let right = [0.70710677_f32,0.0,0.70710677];
     let down = [forward[1]*right[2]-forward[2]*right[1],
@@ -87,7 +92,7 @@ pub fn orbit(rec: &RecordingStream, fraction: f32) -> Result<()> {
     let angle = -std::f32::consts::FRAC_PI_4 + fraction.clamp(0.0,1.0)*std::f32::consts::TAU;
     let horizontal = (2.0_f32/3.0).sqrt();
     let direction = [horizontal*angle.cos(), -1.0/3.0_f32.sqrt(), horizontal*angle.sin()];
-    let center = direction.map(|v| v*32.0);
+    let center = direction.map(|v| v*OVERVIEW_DISTANCE);
     let forward = direction.map(|v| -v);
     let right = [-angle.sin(),0.0,angle.cos()];
     let down = [forward[1]*right[2]-forward[2]*right[1],

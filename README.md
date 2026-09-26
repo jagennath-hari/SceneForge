@@ -368,8 +368,11 @@ The Rerun viewport initially follows a separate presentation camera via
 accepted global-BA and dense snapshots to their visible bounds. It never changes
 reconstruction cameras. Updates follow geometry snapshots rather than a timed
 orbit; manual navigation can detach from tracking. Track `world/presentation_eye`
-again to resume following. The presentation camera is excluded from scene content
-so it does not inflate bounds or appear as another reconstructed camera.
+again to resume following. The presentation camera remains in the view query so Rerun can resolve it as a
+tracked pinhole. Its frustum uses a near-zero display size. It is not included in
+saved reconstruction geometry or the application's map-fitting bounds. Dense
+calibration and fusion explicitly reactivate first-person tracking at entry;
+manual navigation can detach again during either stage.
 
 During dense calibration and refinement, the presentation eye stays directly
 behind the active optimized camera at a fixed camera-local offset, using that
@@ -378,3 +381,15 @@ or fixed-up reconstruction of the camera basis. Refinement starts at its first
 camera immediately, rather than drifting back from calibration's final camera. Dense previews do not trigger
 bounding-box zoom changes. Completion returns to the whole-scene overview.
 These remain discrete processing updates, not interpolated animation frames.
+
+Feature-image preparation sets a fixed overview once. Updating processed thumbnails
+preserves existing camera transforms; only image data, image-plane calibration and
+activity highlights update. The presentation eye is logged before the tracking
+blueprint is activated, avoiding startup tracking of a not-yet-logged entity.
+
+Measured feature-track building makes one presentation-camera orbit around the
+schematic sphere, driven by match-file reading, edge joining and track collection
+progress. Distance and elevation stay fixed, with at most ten eye updates per
+second. Orbit updates preserve the displayed feature links and finish at the
+starting overview; they do not add delays or move reconstruction cameras. Cached
+tracks skip this stage and therefore skip the orbit.

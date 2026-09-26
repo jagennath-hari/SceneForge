@@ -16,6 +16,7 @@ class ReconstructionVisualization:
         self.native = native
         self.enabled = True
         self.last_selection = 0.0
+        self.last_orbit = 0.0
         self.selected_previews: set[int] = set()
         self.image_sizes: dict[int, tuple[int, int]] = {}
         self.dense_samples: list[tuple[np.ndarray, np.ndarray]] = []
@@ -32,10 +33,17 @@ class ReconstructionVisualization:
                 self._disable(error)
 
     def activity(self, label: str, frames=(), pairs=(), *, ready: bool = False, follow_frame: int | None = None,
-                 overview: bool = False) -> None:
+                 overview: bool = False, follow_start: bool = False) -> None:
         self.event(json.dumps({"label": label, "frames": list(frames)[:64],
                                "pairs": list(pairs)[:16], "ready": ready,
-                               "follow_frame": follow_frame, "overview": overview}))
+                               "follow_frame": follow_frame, "overview": overview, "follow_start": follow_start}))
+
+    def orbit(self, fraction: float) -> None:
+        now = monotonic()
+        if 0 < fraction < 1 and now-self.last_orbit < 0.1:
+            return
+        self.last_orbit = now
+        self.event(json.dumps({"orbit_progress": max(0.0, min(1.0, fraction))}))
 
     def tracks(self, label: str, samples: list) -> None:
         if not self.enabled:

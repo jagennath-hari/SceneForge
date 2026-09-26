@@ -53,8 +53,11 @@ pub extern "C" fn sf_rerun_open(path: *const c_char, output: *mut *mut std::ffi:
             rerun::sink::FileSink::new(path)?,
             rerun::sink::GrpcSink::new(uri),
         ))?;
-        layout::install(&recording)?;
+        // The tracked eye must exist before activating a blueprint that follows
+        // it; otherwise initial scene bounds can trigger fallback eye fitting.
         layout::frame(&recording, 10.0)?;
+        recording.flush_with_timeout(std::time::Duration::from_secs(2))?;
+        layout::install(&recording)?;
         // Display convention only: no gravity alignment or coordinate change.
         recording.log_static("world", &ViewCoordinates::RDF())?;
         // Static presentation reference survives every stage and timeline seek.
@@ -227,9 +230,21 @@ pub extern "C" fn sf_rerun_status(handle: *mut std::ffi::c_void, message: *const
         session.camera_root = None;
         session.recording.set_time("reconstruction_step", TimeCell::from_sequence(session.step));
         if let Ok(payload) = serde_json::from_str::<serde_json::Value>(message) {
+            if let Some(fraction) = payload["orbit_progress"].as_f64() {
+                layout::orbit(&session.recording,fraction as f32)?;
+                session.recording.flush_async()?;
+                // Eye-only event: preserve the currently displayed feature tracks.
+                return Ok(());
+            }
             if let Some(frame) = payload["follow_frame"].as_i64() {
                 if let (Some(center),Some(rotation)) = (session.centers.get(&frame),session.rotations.get(&frame)) {
                     layout::follow(&session.recording,*center,*rotation)?;
+                    if payload["follow_start"].as_bool() == Some(true) {
+                        // Navigation may have detached tracking during earlier
+                        // stages. Re-enter automatic follow at each dense pass.
+                        session.recording.flush_with_timeout(std::time::Duration::from_secs(2))?;
+                        layout::install(&session.recording)?;
+                    }
                 }
             }
             if payload["overview"].as_bool() == Some(true) {

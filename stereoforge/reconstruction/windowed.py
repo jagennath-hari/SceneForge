@@ -108,7 +108,8 @@ class WindowReconstructor(ReconstructionFrontend):
                 if self.visualization is not None:
                     self.visualization.event('Building measured feature tracks from verified image matches')
                 graph.read(files, on_progress=self.visualization.event if self.visualization is not None else None,
-                           on_tracks=self.visualization.tracks if self.visualization is not None else None)
+                           on_tracks=self.visualization.tracks if self.visualization is not None else None,
+                           on_orbit=self.visualization.orbit if self.visualization is not None else None)
                 if self.visualization is not None:
                     self.visualization.event(f"Built {len(graph.tracks)} measured tracks; keyframe positions remain display-only until VGGT")
                 write_json(self.output / 'graph.json', graph.summary)

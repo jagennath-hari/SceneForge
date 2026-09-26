@@ -102,7 +102,7 @@ class DenseRefiner:
         with Progress('Calibrating dense depth', total=len(frames), unit='frame') as progress:
             for frame_index, frame in enumerate(frames):
                 if visualization is not None:
-                    visualization.activity(f"Calibrating dense depth: {frame_index+1}/{len(frames)}", [frame], follow_frame=frame)
+                    visualization.activity(f"Calibrating dense depth: {frame_index+1}/{len(frames)}", [frame], follow_frame=frame, follow_start=frame_index == 0)
                 path = owners[frame]
                 if path != source_path:
                     sequence = load_sequence(path)
@@ -158,7 +158,7 @@ class DenseRefiner:
         with Progress('Refining and fusing dense depth', total=len(anchored), unit='frame') as progress:
             for frame_index, frame in enumerate(anchored):
                 if visualization is not None:
-                    visualization.activity(f"Refining dense depth: {frame_index+1}/{len(anchored)}", [frame], follow_frame=frame)
+                    visualization.activity(f"Refining dense depth: {frame_index+1}/{len(anchored)}", [frame], follow_frame=frame, follow_start=frame_index == 0)
                 camera = model.cameras[frame]
                 prior, valid, rgb = self._load(frame)
                 h, w = prior.shape

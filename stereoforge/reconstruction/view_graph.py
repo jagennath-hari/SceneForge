@@ -34,18 +34,25 @@ class VerifiedGraph:
         self.tracks: list[dict[int, np.ndarray]] = []
         self.summary: dict = {}
 
-    def read(self, files: list[Path], on_progress=None, on_tracks=None) -> None:
+    def read(self, files: list[Path], on_progress=None, on_tracks=None, on_orbit=None) -> None:
         with Progress("Building measured feature tracks", sum(path.stat().st_size for path in files), "B") as progress:
-            self._read(files, progress, on_progress, on_tracks)
+            self._read(files, progress, on_progress, on_tracks, on_orbit)
 
-    def _read(self, files: list[Path], progress: Progress, on_progress=None, on_tracks=None) -> None:
+    def _read(self, files: list[Path], progress: Progress, on_progress=None, on_tracks=None, on_orbit=None) -> None:
         progress.status("reading verified matches")
         edges = []
+        total_bytes = max(1, sum(path.stat().st_size for path in files))
+        bytes_read = 0
+        if on_orbit is not None:
+            on_orbit(0.0)
         verified_pairs = 0
         for path in files:
             with path.open('rb') as stream:
                 for line in stream:
                     progress.advance(len(line))
+                    bytes_read += len(line)
+                    if on_orbit is not None:
+                        on_orbit(0.3 * bytes_read / total_bytes)
                     pair = json.loads(line)
                     a, b = pair["source"], pair["target"]
                     if a not in self.neighbors or b not in self.neighbors or a == b:
@@ -106,6 +113,8 @@ class VerifiedGraph:
             on_tracks(label, track_samples)
 
         for edge_index, (_, a, b) in enumerate(edges):
+            if on_orbit is not None and edge_index % 10000 == 0:
+                on_orbit(0.3 + 0.5 * edge_index / max(1, len(edges)))
             x, y = root(a), root(b)
             if x == y:
                 progress.advance()
@@ -127,6 +136,8 @@ class VerifiedGraph:
         progress.reset(len(members), "track", "collecting tracks with at least three views")
         self.tracks = []
         for group_index, group in enumerate(members.values()):
+            if on_orbit is not None and group_index % 5000 == 0:
+                on_orbit(0.8 + 0.15 * group_index / max(1, len(members)))
             if len(group) >= 3:
                 self.tracks.append({f: self.pixels[node] for f, node in sorted(group.items())})
                 if len(self.tracks) == 1 or len(self.tracks) % 20000 == 0:
@@ -144,6 +155,8 @@ class VerifiedGraph:
                     frontier.extend(self.neighbors[frame] - component)
             components.append(sorted(component))
             pending -= component
+        if on_orbit is not None:
+            on_orbit(1.0)
         self.summary = {"verified_pairs": verified_pairs, "match_edges": len(edges),
                         "conflicting_edges_rejected": rejected, "tracks": len(self.tracks),
                         "components": components, "frontend": "RaCo-ALIKED/LightGlue+; native F/H RANSAC"}

@@ -5,7 +5,7 @@ use rerun::external::re_sdk_types::blueprint::archetypes::{
     ContainerBlueprint, EyeControls3D, PanelBlueprint, TimePanelBlueprint,
     ViewBlueprint, ViewContents, ViewportBlueprint,
 };
-use rerun::blueprint::components::{ContainerKind, IncludedContent, PanelState, PlayState, RootContainer};
+use rerun::blueprint::components::{ContainerKind, Eye3DKind, IncludedContent, PanelState, PlayState, RootContainer};
 use crate::Result;
 
 pub const EYE: &str = "world/presentation_eye";
@@ -22,10 +22,10 @@ pub fn install(recording: &RecordingStream) -> Result<()> {
         .with_display_name("StereoForge — schematic staging / reconstructed map")
         .with_space_origin("world"))?;
     blueprint.log(format!("{view}/ViewContents"), &ViewContents::new([
-        "+ world/**", "- world/presentation_eye/**",
+        "+ world/**",
     ]))?;
     blueprint.log(format!("{view}/EyeControls3D"), &EyeControls3D::new()
-        .with_tracking_entity(EYE).with_look_target([0.0_f32,0.0,0.0])
+        .with_kind(Eye3DKind::FirstPerson).with_tracking_entity(EYE).with_look_target([0.0_f32,0.0,0.0])
         .with_eye_up([0.0_f32,-1.0,0.0]))?;
     blueprint.log(format!("container/{container_id}"), &ContainerBlueprint::new(ContainerKind::Tabs)
         .with_contents([IncludedContent(view.into())]))?;
@@ -57,7 +57,8 @@ pub fn frame(recording: &RecordingStream, radius: f32) -> Result<()> {
     recording.log(EYE, &rerun::Transform3D::from_translation_mat3x3(center,[right,down,forward]))?;
     recording.log(EYE, &rerun::Pinhole::from_focal_length_and_resolution(
         [900.0_f32,900.0],[1600.0_f32,1000.0])
-        .with_camera_xyz(rerun::components::ViewCoordinates::RDF))?;
+        .with_camera_xyz(rerun::components::ViewCoordinates::RDF)
+        .with_image_plane_distance(0.0001))?;
     Ok(())
 }
 
@@ -75,5 +76,21 @@ pub fn follow(rec: &RecordingStream, center: [f32;3], rotation: [f32;9]) -> Resu
     let eye: [f32;3] = std::array::from_fn(|a| center[a]-1.2*forward[a]);
     rec.log(EYE, &rerun::Transform3D::from_translation_mat3x3(eye,[right,down,forward]))?;
     // Lens and distance stay fixed throughout calibration and fusion.
+    Ok(())
+}
+
+/// One progress-driven revolution at the overview's fixed distance and elevation.
+pub fn orbit(rec: &RecordingStream, fraction: f32) -> Result<()> {
+    if !fraction.is_finite() { return Ok(()); }
+    let angle = -std::f32::consts::FRAC_PI_4 + fraction.clamp(0.0,1.0)*std::f32::consts::TAU;
+    let horizontal = (2.0_f32/3.0).sqrt();
+    let direction = [horizontal*angle.cos(), -1.0/3.0_f32.sqrt(), horizontal*angle.sin()];
+    let center = direction.map(|v| v*32.0);
+    let forward = direction.map(|v| -v);
+    let right = [-angle.sin(),0.0,angle.cos()];
+    let down = [forward[1]*right[2]-forward[2]*right[1],
+                forward[2]*right[0]-forward[0]*right[2],
+                forward[0]*right[1]-forward[1]*right[0]];
+    rec.log(EYE, &rerun::Transform3D::from_translation_mat3x3(center,[right,down,forward]))?;
     Ok(())
 }

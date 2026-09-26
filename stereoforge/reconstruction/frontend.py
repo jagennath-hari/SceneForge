@@ -46,6 +46,8 @@ class ReconstructionFrontend:
         folder.mkdir(exist_ok=True)
         result = {}
         sizes = set()
+        if self.visualization is not None:
+            self.visualization.activity('Preparing feature images — fixed overview', overview=True)
         with tracked(enumerate(paths), "Preparing feature images", len(paths), "frame") as pending:
             for index, path in pending:
                 destination = folder / f"{index:06d}.png"
@@ -61,8 +63,6 @@ class ReconstructionFrontend:
                     sizes.add(image.size)
                 result[index] = destination
                 if self.visualization is not None:
-                    if index % 20 == 0 or index == len(paths)-1:
-                        self.visualization.event(f"Preparing feature images: {index+1}/{len(paths)}; schematic keyframe layout")
                     self.visualization.keyframe(index, destination)
                     self.visualization.activity(f"Feature image ready: {index+1}/{len(paths)}", [index], ready=True)
         if len(sizes) != 1:

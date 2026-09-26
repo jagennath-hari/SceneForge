@@ -49,7 +49,10 @@ impl Staging {
     pub fn keyframe(&mut self, rec: &RecordingStream, frame: i64, image: Thumbnail) -> Result<()> {
         let path = format!("world/cameras/{frame}");
         let (center, [right, down, forward]) = schematic_pose(frame);
-        rec.log(path.as_str(), &Transform3D::from_translation_mat3x3(center, [right,down,forward]))?;
+        // Updating a processed thumbnail must not re-emit a camera pose.
+        if !self.images.contains_key(&frame) {
+            rec.log(path.as_str(), &Transform3D::from_translation_mat3x3(center, [right,down,forward]))?;
+        }
         // Arbitrary presentation FOV until VGGT supplies measured intrinsics.
         rec.log(format!("{path}/image"), &Pinhole::from_focal_length_and_resolution(
             [image.width as f32, image.width as f32], [image.width as f32,image.height as f32])

@@ -316,6 +316,15 @@ Gray cameras have arbitrary display FOV until VGGT supplies calibration.
 
 The viewer uses one full-width 3D scene, without a pipeline-status pane. Inspection
 panels and the timeline start collapsed. Logs remain recorded under `pipeline`.
+During image preparation, the active camera is highlighted amber and becomes
+green when its processed thumbnail is ready. Matching displays up to 16 requested
+pair links in amber, then a sample of geometrically verified links in green after
+that batch completes (including reused batches). Track assembly shows sampled
+observation connections, not triangulated 3D landmarks. One in-scene label names
+the current operation, including model preparation; it does not invent progress
+when the underlying operation exposes none. Activity replaces earlier highlights
+and is cleared when a VGGT/map snapshot arrives.
+
 Camera icons stay the same display size. Each map update is centered and uniformly
 scaled into a bounded display volume; this changes display coordinates only, not
 saved camera poses, depth, Sim(3), BA or PLY geometry. Extreme point outliers are
@@ -333,5 +342,9 @@ regression checks remain in place.
 
 Logging is optional, uses the official Rust SDK through a C ABI, and does not
 change reconstruction decisions. No Rerun source is modified. Visualization errors
-warn and disable logging. Per-iteration optimization and dense fusion are not yet
-rendered; final dense output remains in the existing HTML report and PLY export.
+warn and disable logging. Dense calibration/refinement highlight the active optimized camera. Every eight
+frames, a bounded preview of validated dense samples updates in the same scene;
+after fusion it is replaced by the final voxel-fused preview (up to 240,000 points).
+Dense and sparse points share the final map display transform. Full-resolution
+clouds remain in PLY exports. Global BA displays a solve status, then updates all
+calibrated frustums on acceptance; solver-iteration states are not streamed.

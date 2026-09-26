@@ -15,6 +15,7 @@ public:
     RerunRecorder& operator=(const RerunRecorder&) = delete;
     void Event(const std::string& message);
     void Image(const DepthFrame& frame);
+    void Dense(const float* xyz, const std::uint8_t* rgb, std::size_t count);
     void Snapshot(const SparseMap& map, std::uint32_t stage);
 private:
     using Open = int (*)(const char*, void**, char*, std::size_t);

@@ -11,7 +11,7 @@ pub struct Thumbnail {
 }
 
 // Stable pseudo-random sphere placement, independent of arrival order/count.
-fn sphere(id: i64, radius: f32) -> [f32; 3] {
+pub fn sphere(id: i64, radius: f32) -> [f32; 3] {
     let seed = (id as u64).wrapping_add(1).wrapping_mul(0x9e3779b97f4a7c15);
     let z = 2.0 * ((seed >> 32) as u32 as f64 / u32::MAX as f64) - 1.0;
     let angle = (seed as u32 as f64 / u32::MAX as f64) * std::f64::consts::TAU;
@@ -40,7 +40,7 @@ impl Staging {
         // Arbitrary presentation FOV until VGGT supplies measured intrinsics.
         rec.log(format!("{path}/image"), &Pinhole::from_focal_length_and_resolution(
             [image.width as f32, image.width as f32], [image.width as f32,image.height as f32])
-            .with_camera_xyz(ViewCoordinates::RDF).with_image_plane_distance(0.18)
+            .with_camera_xyz(ViewCoordinates::RDF).with_image_plane_distance(0.07)
             .with_color(Color::from_rgb(160,160,160)))?;
         rec.log(format!("{path}/image"), &rerun::Image::from_rgb24(image.rgb.clone(), [image.width,image.height]))?;
         self.images.insert(frame,image);
@@ -68,7 +68,7 @@ impl Staging {
 
 /// Robust display fit: ignore extreme point outliers when choosing scene extent.
 /// Camera rotations and intrinsics stay intact; the caller filters display outliers.
-pub fn fit(xyz: &[f32], cameras: &[f32], ids: &[i64], window: bool) -> (Vec<f32>, Vec<f32>) {
+pub fn fit(xyz: &[f32], cameras: &[f32], ids: &[i64], window: bool) -> (Vec<f32>, Vec<f32>, ([f32;3], f32)) {
     let mut center = [0.0;3];
     for axis in 0..3 {
         let mut values: Vec<f32> = cameras.chunks_exact(18).map(|c| c[9+axis]).filter(|v| v.is_finite()).collect();
@@ -95,5 +95,5 @@ pub fn fit(xyz: &[f32], cameras: &[f32], ids: &[i64], window: bool) -> (Vec<f32>
         let position = transform(&c[9..12]);
         c[9..12].copy_from_slice(&position);
     }
-    (positions,display_cameras)
+    (positions,display_cameras, (std::array::from_fn(|a| offset[a]-center[a]*radius/extent), radius/extent))
 }

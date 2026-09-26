@@ -30,7 +30,7 @@ so::DepthFrame ReadFrame(so::FrameId id, const Eigen::Matrix4d& pose, const Eige
 }
 }
 PYBIND11_MODULE(_stereoforge_map, module) {
-    module.attr("api_version") = 12;
+    module.attr("api_version") = 13;
     py::class_<so::DenseFusion>(module,"DenseFusion")
         .def(py::init<double>())
         .def("add",[](so::DenseFusion& fusion,
@@ -68,6 +68,16 @@ PYBIND11_MODULE(_stereoforge_map, module) {
     py::class_<so::DepthFrame>(module,"DepthFrame").def(py::init(&ReadFrame));
     py::class_<so::MapBuilder>(module,"MapBuilder")
         .def(py::init<int,int,bool>())
+        .def("rerun_dense",[](so::MapBuilder& builder,
+            const py::array_t<float,py::array::c_style|py::array::forcecast>& xyz,
+            const py::array_t<std::uint8_t,py::array::c_style|py::array::forcecast>& rgb) {
+            if (xyz.ndim()!=2 || rgb.ndim()!=2 || xyz.shape(1)!=3 || rgb.shape(1)!=3 ||
+                xyz.shape(0)!=rgb.shape(0) || xyz.shape(0)>240000) {
+                throw std::invalid_argument("Expected matching Nx3 dense XYZ/RGB arrays, at most 240000 points");
+            }
+            py::gil_scoped_release release;
+            builder.RerunDense(xyz.data(),rgb.data(),static_cast<std::size_t>(xyz.shape(0)));
+        })
         .def("rerun_event",&so::MapBuilder::RerunEvent,py::call_guard<py::gil_scoped_release>())
         .def("rerun_keyframe",[](so::MapBuilder& builder, std::int64_t id,
             const py::array_t<std::uint8_t,py::array::c_style|py::array::forcecast>& rgb) {

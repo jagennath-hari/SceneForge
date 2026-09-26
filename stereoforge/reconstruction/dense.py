@@ -90,7 +90,7 @@ class DenseRefiner:
         return torch.nan_to_num(back_camera[..., 2], nan=0, posinf=0, neginf=0), weight
 
     @torch.inference_mode()
-    def run(self, model: SparseModel, owners: dict[int, Path]) -> dict:
+    def run(self, model: SparseModel, owners: dict[int, Path], visualization=None) -> dict:
         observations: dict[int, list] = {frame: [] for frame in model.cameras}
         for point in model.points:
             for frame, pixel in point.observations.items():
@@ -100,7 +100,9 @@ class DenseRefiner:
         anchored, rejected, scene_depths = [], [], []
         source_path, source_frames, source_rgb = None, {}, None
         with Progress('Calibrating dense depth', total=len(frames), unit='frame') as progress:
-            for frame in frames:
+            for frame_index, frame in enumerate(frames):
+                if visualization is not None:
+                    visualization.activity(f"Calibrating dense depth: {frame_index+1}/{len(frames)}", [frame])
                 path = owners[frame]
                 if path != source_path:
                     sequence = load_sequence(path)
@@ -154,7 +156,9 @@ class DenseRefiner:
         accepted_pixels = 0
         coverage = []
         with Progress('Refining and fusing dense depth', total=len(anchored), unit='frame') as progress:
-            for frame in anchored:
+            for frame_index, frame in enumerate(anchored):
+                if visualization is not None:
+                    visualization.activity(f"Refining dense depth: {frame_index+1}/{len(anchored)}", [frame])
                 camera = model.cameras[frame]
                 prior, valid, rgb = self._load(frame)
                 h, w = prior.shape
@@ -192,13 +196,25 @@ class DenseRefiner:
                 np.savez_compressed(self.folder / f'{frame:06d}.npz', depth=refined.cpu().numpy(),
                                     supported=accepted.cpu().numpy(), supporting_views=support.cpu().numpy(),
                                     intrinsics=camera.intrinsics, camera_to_world=camera.pose)
-                fusion.add(candidate_world[accepted].contiguous().cpu().numpy(),
-                           (rgb[accepted]*255).round().clamp(0, 255).to(torch.uint8).contiguous().cpu().numpy(), frame)
+                accepted_xyz = candidate_world[accepted].contiguous().cpu().numpy()
+                accepted_rgb = (rgb[accepted]*255).round().clamp(0, 255).to(torch.uint8).contiguous().cpu().numpy()
+                fusion.add(accepted_xyz, accepted_rgb, frame)
+                if visualization is not None:
+                    if frame_index % 8 == 0 or frame_index == len(anchored)-1:
+                        visualization.dense(accepted_xyz, accepted_rgb)
+                    visualization.activity(
+                        f"Dense refinement: {frame_index+1}/{len(anchored)}; {count} supported pixels — sampled preview",
+                        [frame], ready=True)
                 progress.advance()
         if not accepted_pixels:
             raise RuntimeError('No dense pixels passed multi-view validation; sparse map retained')
+        if visualization is not None:
+            visualization.event('Writing final voxel-fused dense cloud')
         preview = fusion.write(str(self.output / 'dense_point_cloud.ply'))
         np.savez(self.folder / 'preview.npz', xyz=preview['xyz'], rgb=preview['rgb'], frames=preview['frames'])
+        if visualization is not None:
+            visualization.dense(preview['xyz'], preview['rgb'], final=True)
+            visualization.event(f"Dense reconstruction complete: {int(preview['count']):,} fused points; bounded viewer preview")
         self._cache.clear()
         return {'method': 'map-scaled VGGT + inverse-depth multi-view consensus', 'anchored_frames': len(anchored),
                 'unanchored_frames': rejected, 'coverage': coverage, 'supported_pixels': accepted_pixels,

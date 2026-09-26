@@ -62,6 +62,7 @@ void Transform(SparseMap& model, const Similarity& transform);
 class MapBuilder final {
 public:
     MapBuilder(int device, int iterations, bool check_jacobians);
+    void RerunDense(const float* xyz, const std::uint8_t* rgb, std::size_t count);
     void RerunEvent(const std::string& message);
     void RerunKeyframe(const DepthFrame& frame);
     void PreviewWindow(const std::vector<DepthFrame>& frames);

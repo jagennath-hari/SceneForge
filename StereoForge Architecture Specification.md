@@ -1050,7 +1050,11 @@ frontend outputs; C++ emits map snapshots. The timeline follows processing order
 One 3D view contains persistent cameras and the estimated common map:
 - Accepted keyframes start on a deterministic pseudo-random sphere, aimed inward,
   with an arbitrary display FOV. These initial positions/K are schematic.
-- Image preparation updates thumbnails; matching/track building log status only.
+- Image preparation updates thumbnails with amber active/green ready camera highlights.
+- Model preparation displays an in-scene status label. Matching shows at most 16
+  requested pair connections per batch, then sampled geometrically verified links.
+  Track building highlights sampled observation connections (not 3D landmarks).
+  Activity overlays replace previous activity and clear at geometry snapshots.
 - VGGT windows are normalized into small groups around the same origin. Existing
   camera entities move into these groups, then into the map on successful commit.
   Previously accepted camera poses are protected from provisional window updates.
@@ -1065,4 +1069,8 @@ scaled to their thumbnail grid, and explicit RDF optical axes. Textures come fro
 processed RGB before VGGT. Map textures persist as poses update. Previews are
 bounded to 50,000 points and 256-pixel thumbnails. Updates are discrete stage
 snapshots, not simulated trajectories. Stage flushes are asynchronous; recordings
-remain replayable. Per-iteration BA and dense fusion are not yet visualized.
+remain replayable. Dense stages highlight the active optimized camera, stream bounded validated
+sample previews every eight frames, and publish the final fused preview in the same
+coordinate system as the sparse map and cameras. Camera icons use 0.07 display
+units. Global BA logs solve status and updates all frustums with accepted shared
+intrinsics together; per-iteration solver states are not streamed.

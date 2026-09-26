@@ -135,7 +135,8 @@ class WindowReconstructor(ReconstructionFrontend):
                 files = self._match(len(paths))
                 if self.visualization is not None:
                     self.visualization.event('Building measured feature tracks from verified image matches')
-                graph.read(files, on_progress=self.visualization.event if self.visualization is not None else None)
+                graph.read(files, on_progress=self.visualization.event if self.visualization is not None else None,
+                           on_activity=self.visualization.activity if self.visualization is not None else None)
                 if self.visualization is not None:
                     self.visualization.event(f"Built {len(graph.tracks)} measured tracks; keyframe positions remain display-only until VGGT")
                 write_json(self.output / 'graph.json', graph.summary)
@@ -210,7 +211,7 @@ class WindowReconstructor(ReconstructionFrontend):
                 self.summary['stage'] = 'unresolved_windows'
                 return self.publish('partial', 'No further connected windows could be accepted; inspect unresolved_windows')
             self.summary['stage'] = 'dense_refinement'
-            self.summary['dense_refinement'] = DenseRefiner(self.output,self.device, DenseOptions(voxel_depth_fraction=self.options.dense_voxel_fraction)).run(self.current,owners)
+            self.summary['dense_refinement'] = DenseRefiner(self.output,self.device, DenseOptions(voxel_depth_fraction=self.options.dense_voxel_fraction)).run(self.current,owners, visualization=self.visualization)
             self.summary['stage'] = 'finished'
             return self.publish('complete')
         except (Exception, KeyboardInterrupt) as error:

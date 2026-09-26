@@ -4,11 +4,14 @@ use std::{collections::BTreeSet, ffi::{CStr, c_char}, panic::{AssertUnwindSafe, 
 mod cameras;
 mod layout;
 mod staging;
+mod activity;
 use rerun::{Color, Points3D, RecordingStream, TextLog, TimeCell, ViewCoordinates};
 
 struct Session {
     recording: RecordingStream,
     step: i64,
+    map_fit: Option<([f32;3], f32)>,
+    centers: std::collections::BTreeMap<i64,[f32;3]>,
     camera_root: Option<String>,
     staging: staging::Staging,
     logged_images: BTreeSet<String>,
@@ -57,7 +60,7 @@ pub extern "C" fn sf_rerun_open(path: *const c_char, output: *mut *mut std::ffi:
             "Preparing reconstruction. Selected images appear on a schematic sphere; their camera entities move through VGGT groups into the accepted map."
         ))?;
         recording.flush_async()?;
-        let session = Box::new(Session { recording, step: 0, camera_root: None, staging: staging::Staging::default(), logged_images: BTreeSet::new() });
+        let session = Box::new(Session { recording, step: 0, map_fit: None, centers: Default::default(), camera_root: None, staging: staging::Staging::default(), logged_images: BTreeSet::new() });
         unsafe { *output = Box::into_raw(session).cast(); }
         Ok(())
     })
@@ -71,7 +74,7 @@ pub extern "C" fn sf_rerun_snapshot(handle: *mut std::ffi::c_void, stage: u32,
     cameras: *const f32, ids: *const i64, camera_count: usize,
     error: *mut c_char, capacity: usize) -> i32 {
     guarded(error, capacity, || {
-        if handle.is_null() || stage > 3 { return Err("Invalid recording handle/stage".into()); }
+        if handle.is_null() || stage > 4 { return Err("Invalid recording handle/stage".into()); }
         if (points > 0 && (xyz.is_null() || rgb.is_null())) ||
             (camera_count > 0 && (cameras.is_null() || ids.is_null())) {
             return Err("Null snapshot buffer".into());
@@ -90,13 +93,35 @@ pub extern "C" fn sf_rerun_snapshot(handle: *mut std::ffi::c_void, stage: u32,
         session.step += 1;
         let rec = &session.recording;
         rec.set_time("reconstruction_step", TimeCell::from_sequence(session.step));
+        activity::clear(rec)?;
+        if stage == 4 {
+            let (offset, scale) = session.map_fit.ok_or("Dense preview requires an accepted map display transform")?;
+            let mut positions = Vec::new();
+            let mut colors = Vec::new();
+            for (point,color) in xyz.chunks_exact(3).zip(rgb.chunks_exact(3)) {
+                let p: [f32;3] = std::array::from_fn(|a| point[a]*scale+offset[a]);
+                if p.iter().all(|v| v.is_finite()) && p.iter().map(|v| v*v).sum::<f32>() <= 100.0 {
+                    positions.push(p); colors.push(Color::from_rgb(color[0],color[1],color[2]));
+                }
+            }
+            rec.log("world/map/dense", &Points3D::new(positions).with_colors(colors)
+                .with_radii([rerun::components::Radius::new_ui_points(1.0)]))?;
+            rec.flush_async()?;
+            return Ok(());
+        }
         let (root, label) = match stage {
             0 => (session.staging.window(ids), "VGGT group — schematic placement, independent gauge"),
             2 => ("world/map".to_owned(), "Accepted common map"),
             _ => ("world/map".to_owned(), "Accepted shared-calibration global BA"),
         };
         if stage >= 2 { session.staging.retire(rec, ids)?; }
-        let (display_xyz, display_cameras) = staging::fit(xyz, cameras, ids, stage == 0);
+        let (display_xyz, display_cameras, fit) = staging::fit(xyz, cameras, ids, stage == 0);
+        if stage >= 2 { session.map_fit = Some(fit); }
+        for (id,camera) in ids.iter().zip(display_cameras.chunks_exact(18)) {
+            if stage >= 2 || !session.staging.accepted.contains(id) {
+                session.centers.insert(*id,[camera[9],camera[10],camera[11]]);
+            }
+        }
         let xyz = display_xyz.as_slice();
         let cameras = display_cameras.as_slice();
         rec.log("pipeline/stage", &TextLog::new(format!("{label}: {camera_count} cameras, {points} displayed points")))?;
@@ -175,6 +200,7 @@ pub extern "C" fn sf_rerun_status(handle: *mut std::ffi::c_void, message: *const
         session.step += 1;
         session.camera_root = None;
         session.recording.set_time("reconstruction_step", TimeCell::from_sequence(session.step));
+        activity::log(&session.recording, message, &session.centers)?;
         session.recording.log("pipeline/stage", &TextLog::new(message))?;
         session.recording.flush_async()?;
         Ok(())

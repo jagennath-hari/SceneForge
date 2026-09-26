@@ -45,6 +45,12 @@ void RerunRecorder::Image(const DepthFrame& frame) {
     if (this->image_(this->session_,frame.rgb.data(),frame.camera.width,frame.camera.height,
                      frame.id,error.data(),error.size()) != 0) { throw std::runtime_error(error.data()); }
 }
+void RerunRecorder::Dense(const float* xyz, const std::uint8_t* rgb, std::size_t count) {
+    std::array<char,2048> error{};
+    if (this->snapshot_(this->session_,4,xyz,rgb,count,nullptr,nullptr,0,error.data(),error.size()) != 0) {
+        throw std::runtime_error(error.data());
+    }
+}
 void RerunRecorder::Snapshot(const SparseMap& map, std::uint32_t stage) {
     constexpr std::size_t point_limit = 50000;
     const std::size_t stride = std::max<std::size_t>(1, (map.landmarks.size()+point_limit-1)/point_limit);

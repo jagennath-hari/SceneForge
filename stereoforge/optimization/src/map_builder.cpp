@@ -115,6 +115,11 @@ MapBuilder::MapBuilder(int device, int iterations, bool check_jacobians)
     : solver_(device), iterations_(iterations), check_jacobians_(check_jacobians) {
     if (iterations < 1 || iterations > 500) { throw std::invalid_argument("BA iterations must be 1..500"); }
 }
+void MapBuilder::RerunDense(const float* xyz, const std::uint8_t* rgb, std::size_t count) {
+    if (!this->recorder_) { return; }
+    try { this->recorder_->Dense(xyz,rgb,count); }
+    catch (...) { this->recorder_.reset(); throw; }
+}
 void MapBuilder::RerunEvent(const std::string& message) {
     if (!this->recorder_) { return; }
     try { this->recorder_->Event(message); }
@@ -597,6 +602,7 @@ void MapBuilder::Finalize(const std::function<void(const std::string&)>& progres
     intrinsics(0,2) = Median(values[2]); intrinsics(1,2) = Median(values[3]);
     for (std::pair<const FrameId,Camera>& entry : candidate.cameras) { entry.second.intrinsics = intrinsics; }
     progress("global BA: joint shared fx/fy/cx/cy, poses and landmarks");
+    if (this->recorder_) { this->RerunEvent("Global BA: optimizing shared intrinsics, poses and landmarks; frustums update after validation"); }
     this->Optimize(candidate,false,true);
     progress("validating shared-intrinsics global BA");
     try {

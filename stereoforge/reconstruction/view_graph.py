@@ -34,11 +34,11 @@ class VerifiedGraph:
         self.tracks: list[dict[int, np.ndarray]] = []
         self.summary: dict = {}
 
-    def read(self, files: list[Path], on_progress=None) -> None:
+    def read(self, files: list[Path], on_progress=None, on_activity=None) -> None:
         with Progress("Building measured feature tracks", sum(path.stat().st_size for path in files), "B") as progress:
-            self._read(files, progress, on_progress)
+            self._read(files, progress, on_progress, on_activity)
 
-    def _read(self, files: list[Path], progress: Progress, on_progress=None) -> None:
+    def _read(self, files: list[Path], progress: Progress, on_progress=None, on_activity=None) -> None:
         progress.status("reading verified matches")
         edges = []
         verified_pairs = 0
@@ -93,7 +93,7 @@ class VerifiedGraph:
         edges.sort(reverse=True)
         progress.reset(len(edges), "edge", "joining consistent tracks")
         rejected = 0
-        for _, a, b in edges:
+        for edge_index, (_, a, b) in enumerate(edges):
             x, y = root(a), root(b)
             if x == y:
                 progress.advance()
@@ -106,14 +106,22 @@ class VerifiedGraph:
                 x, y = y, x
             parent[y] = x
             members[x].update(members.pop(y))
+            if on_activity is not None and edge_index % 20000 == 0:
+                frames = sorted(members[x])[:8]
+                on_activity(f"Building measured tracks: {edge_index+1}/{len(edges)} edges — sampled observation links",
+                            frames, list(zip(frames, frames[1:])), ready=True)
             progress.advance()
         if on_progress is not None:
             on_progress(f"Building tracks: {len(members):,} components; collecting tracks with at least three views")
         progress.reset(len(members), "track", "collecting tracks with at least three views")
         self.tracks = []
-        for group in members.values():
+        for group_index, group in enumerate(members.values()):
             if len(group) >= 3:
                 self.tracks.append({f: self.pixels[node] for f, node in sorted(group.items())})
+                if on_activity is not None and (len(self.tracks) == 1 or len(self.tracks) % 20000 == 0):
+                    frames = sorted(group)[:8]
+                    on_activity(f"Collecting measured tracks: {group_index+1}/{len(members)} components",
+                                frames, list(zip(frames, frames[1:])), ready=True)
             progress.advance()
         progress.reset(self.count, "frame", "checking image connectivity")
         components, pending = [], set(self.neighbors)

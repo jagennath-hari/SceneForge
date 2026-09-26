@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub fn log(rec: &RecordingStream, root: &str, cameras: &[f32], ids: &[i64], images: &BTreeMap<i64, Thumbnail>, logged_images: &mut BTreeSet<String>, protected: &BTreeSet<i64>) -> Result<()> {
     let centers: Vec<[f32; 3]> = cameras.chunks_exact(18).map(|c| [c[9], c[10], c[11]]).collect();
-    let size = 0.18; // Fixed presentation size in normalized display coordinates.
+    let size = 0.07; // Fixed presentation size in normalized display coordinates.
     let color = if root == "world/map" { Color::from_rgb(50, 200, 255) } else { Color::from_rgb(255, 180, 40) };
     let mut trajectory: Vec<Vec<[f32; 3]>> = Vec::new();
     for (index, c) in cameras.chunks_exact(18).enumerate() {

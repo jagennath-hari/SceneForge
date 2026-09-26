@@ -52,6 +52,8 @@ class ReconstructionFrontend:
         with tracked(enumerate(paths), "Preparing feature images", len(paths), "frame") as pending:
             for index, path in pending:
                 destination = folder / f"{index:06d}.png"
+                if self.visualization is not None:
+                    self.visualization.activity(f"Preparing feature image: {index+1}/{len(paths)}", [index])
                 if not destination.exists():
                     tensor = load_and_preprocess_images([str(path)], mode="balanced", image_resolution=512)[0]
                     pixels = (tensor.numpy().transpose(1, 2, 0) * 255).round().astype(np.uint8)
@@ -65,6 +67,7 @@ class ReconstructionFrontend:
                     if index % 20 == 0 or index == len(paths)-1:
                         self.visualization.event(f"Preparing feature images: {index+1}/{len(paths)}; schematic keyframe layout")
                     self.visualization.keyframe(index, destination)
+                    self.visualization.activity(f"Feature image ready: {index+1}/{len(paths)}", [index], ready=True)
         if len(sizes) != 1:
             raise ValueError("Video input must use a uniform processed image size")
         self.size_wh = next(iter(sizes))
@@ -81,6 +84,8 @@ class ReconstructionFrontend:
         width, height = self.size_wh
         batches = range(0, max(count - 1, 0), 64)
         if any(not (folder / f"{start:06d}.jsonl").is_file() for start in batches):
+            if self.visualization is not None:
+                self.visualization.event('Preparing RaCo–ALIKED + LightGlue+: loading models or building missing engines')
             models = VideoFrameSampler.model_arguments(self.keyframe_config)[1]
         with Progress("Verifying temporal image pairs", total=len(batches), unit="batch") as progress:
             for start in batches:
@@ -88,7 +93,7 @@ class ReconstructionFrontend:
                 if destination.is_file():
                     result.append(destination)
                     if self.visualization is not None:
-                        self.visualization.event(f"Verified matching batch {start//64+1}/{len(batches)}; keyframes remain unposed")
+                        self.visualization.matched_batch(destination)
                     progress.status(f"reused batch · source frames {start}–{min(start+64, count-1)-1}")
                     progress.advance()
                     continue
@@ -104,6 +109,11 @@ class ReconstructionFrontend:
                 if self.device:
                     command.append(str(self.device))
                 progress.status(f"source frames {start}–{min(start+64, count-1)-1}")
+                if self.visualization is not None:
+                    sample = pairs[:16]
+                    self.visualization.activity(
+                        f"Matching batch {start//64+1}/{len(batches)} — requested pairs, awaiting verification",
+                        sorted({f for pair in sample for f in pair}), sample)
                 with destination.with_suffix(".log").open("w") as log:
                     subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
                 # Verify identity and schema before marking this batch reusable.
@@ -115,7 +125,7 @@ class ReconstructionFrontend:
                 temporary.rename(destination)
                 result.append(destination)
                 if self.visualization is not None:
-                    self.visualization.event(f"Verified matching batch {start//64+1}/{len(batches)}; keyframes remain unposed")
+                    self.visualization.matched_batch(destination)
                 progress.advance()
         return result
 

@@ -6,7 +6,7 @@ StereoForge will convert a monocular video into stereoscopic side-by-side video.
 Its central idea is to use scene geometry to choose a virtual stereo baseline
 that adapts over time, then synthesize the second eye with StereoSpace.
 
-The current deliverable is **inspectable geometry and sparse refinement for one
+The current deliverable is **inspectable geometry, sparse BA and supported dense refinement for one
 continuous, uncut recording**. Drone footage and walkthroughs are the intended
 inputs. Edited movies, shot detection, live visualization, baseline control,
 StereoSpace inference, and video encoding are outside the implemented scope.
@@ -21,57 +21,119 @@ Continuous video → ordered keyframes → measured global feature tracks
     → overlapping VGGT-Ω windows → local cuNLS BA
     → initialize each window in the first window's gauge with Sim(3)
     → merge shared cameras/tracks → joint robust cuNLS BA
-    → one camera trajectory, colored sparse cloud and viewer
+    → shared-calibration global BA → dense refinement + fusion
+    → one camera trajectory, colored cloud and viewer
 ```
 
-The map grows in window order. Each global keyframe has one camera, each fused
+The map grows in graph-ranked window order. Each global keyframe has one camera, each fused
 track one sparse landmark. Local GNC-TLS filters initialization outliers; joint
 BA uses a three-pixel radial Huber loss in the custom CUDA pixel factor. Shared
-camera/landmark checks and current/earlier withheld-observation checks remain
+camera support and current/earlier withheld-observation checks remain
 mandatory before a candidate replaces the accepted map. Priors remain those of
 the initialized solve; this is not an unanchored global optimizer or an exact
 GTSfM reproduction. Non-overlap child landmarks are preserved during reconciliation.
 
-If alignment lacks sufficient shared depth-observable landmarks, C++ recovery
-registers incoming frames against the established map using measured global-track
-2D-to-3D correspondences and OpenCV PnP/RANSAC. A typed insufficient-support error
-selects this path; fitted-transform geometry failures are not bypassed. Existing
-camera poses/depths seed recovery directly in the common gauge. No incoming depth
-scale is inferred or copied. CPU Eigen triangulation adds previously absent tracks
-only after three registered views and >=1 degree of parallax support them.
+After merging, final BA first optimizes one shared `fx, fy` block with a fixed
+principal point, then shared `cx, cy` with a two-pixel prior per camera. Poses and
+sparse landmarks move in both stages; the first camera remains fixed. All cameras
+must have identical processed dimensions. Shared calibration assumes unchanged
+zoom/crop; principal refinement is rolled back to the validated focal-only result
+if its solve or boundary checks fail. Status records `shared_calibration_stage`
+(1=focal-only, 2=principal refinement accepted). Optional Jacobian diagnostics cover
+all 13 reprojection tangent coordinates, including the principal point.
 
-PnP uses a deterministic training/holdout split: >=30/10 correspondences.
-Concentrated image features are allowed; no image-grid coverage gate is applied
-before or after pose estimation. RANSAC uses a four-pixel threshold, 1000
-iterations and 0.999 confidence; refined training support must retain >=20 points
-and >=50% of training candidates. At least 80% of held-out pixels
-must be within five pixels with positive depth. Holdouts are excluded from BA and
-future extensions, stored only in native memory, and validated after joint BA and
-subsequent merges. Old-boundary checks remain mandatory. A failed recovery leaves
-the accepted map untouched. This does not recover failures before alignment or
-invent correspondences when map tracks are unavailable. The implementation has
-not been compiled or exercised by the coding agent.
+Dense refinement is a separate, conservative geometric pass using the final map.
+Sparse observations calibrate each VGGT depth map to the map's arbitrary scale.
+CUDA tensor operations check six nearby keyframes (offsets ±1, ±2, ±4): valid
+confidence, positive depth, 5% depth agreement, two-pixel round-trip reprojection,
+0.5-degree parallax and color agreement. Inverse-depth consensus updates are checked
+again against the neighbors. At least two neighbors must support a pixel before it
+enters the cloud. Unsupported pixels retain their scaled prior and an explicit
+unsupported mask; this does not fill unseen surfaces or guarantee moving objects
+are removed. Raw VGGT windows are preserved.
+
+`dense/` contains calibrated priors, refined depth arrays, support masks and preview
+images. C++ voxel fusion exports `dense_point_cloud.ply`; `point_cloud.ply` and the
+main viewer show that same dense result, while `sparse_point_cloud.ply` preserves
+BA landmarks. The viewer caps displayed points at 240,000; PLY exports all fused
+voxels. `--dense-voxel-fraction` sets voxel width relative to median scene depth
+(default 0.01). Fusion stops explicitly at five million voxels rather than silently
+truncating output; increase this fraction to reduce memory. Status reports dense
+coverage, unanchored frames, voxel size and point count. Failed dense refinement
+preserves the sparse map. This stage uses PyTorch CUDA for dense projection/sampling,
+C++ for fusion and custom CUDA/cuNLS for calibration BA; it has not been run by the
+coding agent.
+
+Window merging follows measured connections rather than timestamp order. All VGGT
+windows are inferred first. C++ ranks seed candidates by tracks observed in at least
+three window frames; subsequent candidates are ranked by shared cameras, then
+existing-map track support. A rejected candidate is deferred without changing the
+accepted map and is retried at most once per map revision. Windows without shared
+cameras wait for a connection; tracks alone do not bypass the camera alignment.
+When no candidate can advance the map, scheduling stops instead of retrying forever.
+
+Accepted frame-to-window ownership selects depth priors for arbitrary merge order.
+Python keeps a two-window tensor cache and loads only the accepted source windows
+needed for the current overlap; it does not retain every dense window in RAM.
+A final global cuNLS BA pass optimizes the assembled map and validates all stored
+boundaries. Final status includes `merge_order`, `unresolved_windows` with reasons,
+and `global_ba_complete`. Completion requires every selected frame and successful
+final BA; incomplete coverage is published as partial. No disconnected component
+is placed into the map with an invented transform. A failed bridge in a chain may
+still prevent full coverage when there is no alternative connection.
+
+Every window is initialized from shared camera poses. Relative camera orientations
+provide a robust rotation estimate. Shared camera displacements supply scale when
+at least three consistent pairs move more than 2% of scene depth in both maps.
+During small translations or rotation, matching pixels in identical shared RGB
+frames supply a median depth-ratio scale prior. Accepted source-window depths are loaded on demand; reprojection-consistent sparse landmarks calibrate each frame's
+depth to its current BA gauge before ratios are compared. This is an approximate
+scale prior, not corrected dense depth. Shared camera centers anchor translation.
+
+Local windows may contain multiple connected camera/track groups. Each input
+group receives its own local BA solve, and groups are recomputed after outlier
+filtering. Each surviving group is independently aligned to the unchanged accepted
+map using its shared cameras. A single shared camera can anchor rotation and
+translation when shared-frame depth supplies scale. A group with no shared camera
+or usable scale evidence is rejected with its frame range and shared-camera count;
+it is not silently dropped. The seed must be connected, and combined-map
+connectivity, per-camera support and post-BA overlap checks remain mandatory.
+
+Overlap validation requires at least 40 held-out observations overall. A shared
+camera with fewer than five holdouts is marked as insufficiently validated in a
+saved warning, rather than stopping BA. Its observations still count toward the
+80% overall agreement requirement. Per-camera 80% checks apply when at least five
+holdouts exist, including at later merges; camera preservation and connectivity
+checks remain mandatory.
+
+There is no PnP recovery branch or mandatory 60-landmark triangulation-angle gate.
+Measured feature tracks still connect the windows for robust joint BA. Rotation
+disagreement is reported as an alignment warning; absent scale evidence, invalid
+transforms, disconnected maps and failed post-BA overlap checks still reject a
+candidate. Warnings are retained in `status.json`. The established map is preserved
+on rejection. Depth/RGB caching is bounded; raw VGGT tensors remain on disk.
 
 `--window-size` and `--overlap` count keyframes. All keyframes are covered, with a
 possibly shorter final window. VGGT inference is scheduled across visible GPUs
 (or one selected device) and workers exit before sequential cuNLS BA begins.
 Single-GPU operation uses the same code. A persistent C++ MapBuilder owns cameras,
 global landmark IDs, observations and validation boundaries. Eigen implements depth
-initialization, quality checks, RANSAC/Sim(3), track extension and validation on CPU.
+initialization, camera-based Sim(3), track extension and validation on CPU.
 Local and joint BA use typed in-memory buffers with the existing CUDA/cuNLS factors.
 Python loads VGGT tensors, verifies processed image grids, invokes the native builder
 through pybind11 and publishes the final map. No per-window solver JSON files,
 subprocesses or COLMAP exports are used, including at final publication. BA options,
 statistics and results use typed C++ structs, with no JSON dependency in the native
 map/solver library. The legacy standalone JSON adapter is separate from this path.
-Native Eigen LM replaces the
-SciPy seven-parameter solve with the same objective and acceptance thresholds;
-sampling and solver numerics differ, so runtime equivalence is not yet established. The production path does not instantiate or call pyCuSFM.
+The previous landmark-RANSAC/seven-parameter alignment and PnP recovery have been
+removed from the native map builder. Shared camera orientation averaging and
+robust center/depth scale statistics now initialize Sim(3). The production path
+does not instantiate or call pyCuSFM. This change has not been compiled or run by
+the coding agent.
 
-The default output has one viewer, `trajectory.json`, and an uncapped colored
-`point_cloud.ply`. Units are arbitrary reconstruction units. VGGT depth is retained
-as an initialization artifact and is not silently warped or claimed to be refined
-by sparse BA. `--diagnostics` enables CUDA Jacobian checks. One progress bar shows
+The default output has one viewer, `trajectory.json`, refined-depth artifacts and
+a voxel-fused `point_cloud.ply`; the sparse BA cloud is retained separately. Units are arbitrary reconstruction units. Raw VGGT depth remains an initialization artifact. Dense refinement is a
+separate post-BA pass; only multi-view-supported pixels enter the fused cloud. `--diagnostics` enables CUDA Jacobian checks. One progress bar shows
 the native stage; final status includes aggregate stage timings and a failure reason.
 Input caches and final output metadata remain, without per-window diagnostic dumps.
 

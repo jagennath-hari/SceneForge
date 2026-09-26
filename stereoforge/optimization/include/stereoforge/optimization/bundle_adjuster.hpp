@@ -22,6 +22,9 @@ struct BAOptions {
     float huber_delta_pixels = 0;
     int gnc_rounds = 64;
     int lm_iterations = 50;
+    bool shared_intrinsics = false;
+    bool optimize_principal = false;
+    float principal_sigma_pixels = 2;
     bool use_gnc = true;
     bool check_jacobians = false;
     bool verbose = false;

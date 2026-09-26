@@ -6,6 +6,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <numeric>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -83,8 +84,8 @@ std::array<double, 3> ReferencePixelResidual(
     const double z = std::max(camera[2], near);
     const double fx = std::exp(static_cast<double>(focal[0]) + (column == 9 ? step : 0));
     const double fy = std::exp(static_cast<double>(focal[1]) + (column == 10 ? step : 0));
-    const double u = fx*camera[0]/z + principal[0] - pixel[0];
-    const double v = fy*camera[1]/z + principal[1] - pixel[1];
+    const double u = fx*camera[0]/z + principal[0] + (column == 11 ? step : 0) - pixel[0];
+    const double v = fy*camera[1]/z + principal[1] + (column == 12 ? step : 0) - pixel[1];
     const double radius = std::hypot(u, v);
     const double q = huber_delta > 0 && radius > huber_delta ? huber_delta/radius : 1;
     const double h = std::sqrt(q*(2-q));
@@ -98,16 +99,16 @@ float CheckPixelJacobian(const cunls::SE3Transform& pose, const cunls::Vector<3>
     cunls::dvector<cunls::SE3Transform> changed_pose(std::vector<cunls::SE3Transform>{pose});
     cunls::dvector<cunls::Vector<3>> changed_point(std::vector<cunls::Vector<3>>{point});
     cunls::dvector<float> changed_focal(focal), pixels(pixel), principal_device(principal);
-    cunls::dvector<float> weight(std::vector<float>{1}), residual(3), jacobian(33);
+    cunls::dvector<float> weight(std::vector<float>{1}), residual(3), jacobian(39);
     const std::vector<const float*> pointers = {reinterpret_cast<const float*>(changed_pose.data()),
-        reinterpret_cast<const float*>(changed_point.data()), changed_focal.data()};
+        reinterpret_cast<const float*>(changed_point.data()), changed_focal.data(), principal_device.data()};
     cunls::dvector<const float*> links(pointers);
-    PixelReprojectionFactors factor(pixels.data(), principal_device.data(), weight.data(), 1, huber_delta);
+    PixelReprojectionFactors factor(pixels.data(), weight.data(), 1, huber_delta);
     if (!factor.Evaluate(residual.data(), jacobian.data(), links.data(), stream)) {
         throw std::runtime_error("Jacobian diagnostic evaluation failed");
     }
     THROW_ON_CUDA_ERROR(cudaStreamSynchronize(stream));
-    std::vector<float> analytic(33);
+    std::vector<float> analytic(39);
     jacobian.CopyToHost(analytic.data(), analytic.size());
     std::vector<float> cuda_residual(3);
     residual.CopyToHost(cuda_residual.data(), cuda_residual.size());
@@ -121,7 +122,7 @@ float CheckPixelJacobian(const cunls::SE3Transform& pose, const cunls::Vector<3>
         }
     }
     float maximum = 0;
-    for (int column = 0; column < 11; ++column) {
+    for (int column = 0; column < 13; ++column) {
         // FP64 avoids cancellation from perturbing/subtracting FP32 pixels.
         // Still require two successive passing, mutually consistent estimates.
         std::vector<double> previous(3, 0);
@@ -141,7 +142,7 @@ float CheckPixelJacobian(const cunls::SE3Transform& pose, const cunls::Vector<3>
             double current_error = 0;
             for (int row = 0; row < 3; ++row) {
                 numerical[row] = (plus[row]-minus[row])/(2*epsilon);
-                const double exact = analytic[11*row+column];
+                const double exact = analytic[13*row+column];
                 const double tolerance = 0.05 + 0.01*std::max(std::abs(numerical[row]), std::abs(exact));
                 normalized_errors[row] = std::abs(numerical[row]-exact)/tolerance;
                 passed = passed && std::isfinite(normalized_errors[row]) && normalized_errors[row] <= 1;
@@ -216,16 +217,31 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
         throw std::invalid_argument("Need at least three cameras and three supported landmarks");
     }
     std::vector<cunls::SE3Transform> poses(cameras.size());
-    std::vector<float> focals, log_focals;
+    std::vector<float> focals, log_focals, centers;
     for (std::size_t i = 0; i < cameras.size(); ++i) {
         const std::vector<float> pose = std::vector<float>(cameras[i].world_to_camera.begin(), cameras[i].world_to_camera.end());
         ValidatePose(pose);
         std::copy(pose.begin(), pose.end(), poses[i].data());
         const std::vector<float> k = std::vector<float>(cameras[i].intrinsics.begin(), cameras[i].intrinsics.end());
         if (!std::all_of(k.begin(), k.end(), [](float v) { return std::isfinite(v); }) || k[0] <= 0 || k[1] <= 0) { throw std::invalid_argument("Intrinsics must be finite with positive focals"); }
+        centers.insert(centers.end(), {k[2], k[3]});
         focals.insert(focals.end(), {k[0], k[1]});
         log_focals.insert(log_focals.end(), {std::log(k[0]), std::log(k[1])});
     }
+    if (options.optimize_principal && !options.shared_intrinsics) {
+        throw std::invalid_argument("Principal refinement requires shared calibration");
+    }
+    if (options.shared_intrinsics) {
+        for (const BACamera& camera : cameras) {
+            if (camera.intrinsics != cameras.front().intrinsics) {
+                throw std::invalid_argument("Shared BA requires one initial calibration");
+            }
+        }
+    }
+    const std::size_t calibration_count = options.shared_intrinsics ? 1 : cameras.size();
+    std::vector<float> center_states_values = centers;
+    center_states_values.resize(2*calibration_count);
+    log_focals.resize(2*calibration_count);
     std::vector<cunls::Vector<3>> positions(points.size());
     for (std::size_t i = 0; i < points.size(); ++i) {
         const std::vector<float> xyz = std::vector<float>(points[i].begin(), points[i].end());
@@ -271,26 +287,35 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
     cunls::dvector<cunls::SE3Transform> device_poses(poses), prior_poses(poses);
     cunls::dvector<cunls::Vector<3>> device_points(positions);
     cunls::dvector<float> device_focals(log_focals), prior_focals(focals);
-    cunls::dvector<float> device_pixels(pixels), device_principal(principal);
+    cunls::dvector<float> device_pixels(pixels);
+    cunls::dvector<float> device_centers(center_states_values), prior_centers(centers);
+    std::vector<int> fixed_centers(options.optimize_principal ? 0 : calibration_count);
+    std::iota(fixed_centers.begin(),fixed_centers.end(),0);
+    cunls::dvector<int> fixed_centers_device(fixed_centers);
     cunls::dvector<float> device_weights(std::vector<float>(observations.size(), 1.0f));
     cunls::dvector<float> device_errors(observations.size());
     cunls::dvector<int> constants(std::vector<int>{0});
     cunls::SE3StateBatch pose_states(blas, reinterpret_cast<const float*>(device_poses.data()),
                                    poses.size(), constants.data(), 1);
     cunls::VectorStateBatch<3> point_states(reinterpret_cast<const float*>(device_points.data()), positions.size());
-    cunls::VectorStateBatch<2> focal_states(device_focals.data(), cameras.size());
-    PixelReprojectionFactors reprojection(device_pixels.data(), device_principal.data(), device_weights.data(), observations.size(), huber_delta);
+    cunls::VectorStateBatch<2> focal_states(device_focals.data(), calibration_count);
+    cunls::VectorStateBatch<2> center_states(device_centers.data(), calibration_count, fixed_centers_device.data(), fixed_centers.size());
+    PixelReprojectionFactors reprojection(device_pixels.data(), device_weights.data(), observations.size(), huber_delta);
     PosePriorFactors pose_priors(prior_poses.data(), poses.size(), rotation_sigma, translation_sigma);
-    FocalPriorFactors focal_priors(prior_focals.data(), poses.size(), focal_sigma);
-    std::vector<float*> links, pose_links, focal_links;
+    CalibrationPriorFactors focal_priors(prior_focals.data(), poses.size(), focal_sigma);
+    CalibrationPriorFactors center_priors(prior_centers.data(), poses.size(),
+        PositiveOption(options.principal_sigma_pixels,"principal_sigma_pixels"), false);
+    std::vector<float*> links, pose_links, focal_links, center_links;
     for (std::size_t i = 0; i < observations.size(); ++i) {
         links.push_back(pose_states.StateBlockDevicePtr(camera_ids[i]));
         links.push_back(point_states.StateBlockDevicePtr(point_ids[i]));
-        links.push_back(focal_states.StateBlockDevicePtr(camera_ids[i]));
+        links.push_back(focal_states.StateBlockDevicePtr(options.shared_intrinsics ? 0 : camera_ids[i]));
+        links.push_back(center_states.StateBlockDevicePtr(options.shared_intrinsics ? 0 : camera_ids[i]));
     }
     for (std::size_t i = 0; i < cameras.size(); ++i) {
         pose_links.push_back(pose_states.StateBlockDevicePtr(i));
-        focal_links.push_back(focal_states.StateBlockDevicePtr(i));
+        focal_links.push_back(focal_states.StateBlockDevicePtr(options.shared_intrinsics ? 0 : i));
+        center_links.push_back(center_states.StateBlockDevicePtr(options.shared_intrinsics ? 0 : i));
     }
     const std::vector<const float*> const_links(links.begin(), links.end());
     cunls::dvector<const float*> device_links(const_links);
@@ -298,7 +323,7 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
     lm.base_options.max_num_iterations = static_cast<std::size_t>(iterations);
     lm.base_options.sparse_linear_solver_type = cunls::SparseLinearSolverType::cuDSS;
     std::vector<float> errors(observations.size()), weights(observations.size(), 1);
-    EvaluatePixelErrors(device_pixels.data(), device_principal.data(), device_links.data(),
+    EvaluatePixelErrors(device_pixels.data(), device_links.data(),
                         device_errors.data(), observations.size(), stream.GetStream());
     THROW_ON_CUDA_ERROR(cudaStreamSynchronize(stream.GetStream()));
     device_errors.CopyToHost(errors.data(), errors.size());
@@ -318,14 +343,15 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
         for (std::size_t sample = 0; sample < samples; ++sample) {
             const std::size_t i = sample*observations.size()/samples;
             const std::size_t camera = camera_ids[i];
+            const std::size_t calibration = options.shared_intrinsics ? 0 : camera;
             maximum_error = std::max(maximum_error, CheckPixelJacobian(poses[camera], positions[point_ids[i]],
-                {log_focals[2*camera], log_focals[2*camera+1]}, {pixels[2*i], pixels[2*i+1]},
+                {log_focals[2*calibration], log_focals[2*calibration+1]}, {pixels[2*i], pixels[2*i+1]},
                 {principal[2*i], principal[2*i+1]}, stream.GetStream(), huber_delta));
             if (huber_delta > 0) {
                 // Exercise the robust branch even when all sampled data fit
                 // inside the quadratic region. This changes diagnostics only.
                 maximum_error = std::max(maximum_error, CheckPixelJacobian(poses[camera], positions[point_ids[i]],
-                    {log_focals[2*camera], log_focals[2*camera+1]},
+                    {log_focals[2*calibration], log_focals[2*calibration+1]},
                     {pixels[2*i] + 10*huber_delta, pixels[2*i+1]},
                     {principal[2*i], principal[2*i+1]}, stream.GetStream(), huber_delta));
             }
@@ -355,13 +381,14 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
         cunls::VectorStateBatch<3> round_points(reinterpret_cast<const float*>(device_points.data()),
             positions.size(), frozen_device.data(), frozen.size());
         cunls::Problem problem;
-        problem.AddStateBatch(&pose_states); problem.AddStateBatch(&round_points); problem.AddStateBatch(&focal_states);
+        problem.AddStateBatch(&pose_states); problem.AddStateBatch(&round_points); problem.AddStateBatch(&focal_states); problem.AddStateBatch(&center_states);
         problem.AddFactorBatch(&reprojection, links);
         problem.AddFactorBatch(&pose_priors, pose_links); problem.AddFactorBatch(&focal_priors, focal_links);
+        if (options.optimize_principal) { problem.AddFactorBatch(&center_priors, center_links); }
         if (!problem.CheckConsistency()) { throw std::runtime_error("cuNLS graph consistency failed"); }
         cunls::LevenbergMarquardtMinimizer minimizer(lm);
         const cunls::MinimizerSummary summary = minimizer.Minimize(stream.GetStream(), problem);
-        EvaluatePixelErrors(device_pixels.data(), device_principal.data(), device_links.data(),
+        EvaluatePixelErrors(device_pixels.data(), device_links.data(),
                             device_errors.data(), observations.size(), stream.GetStream());
         THROW_ON_CUDA_ERROR(cudaStreamSynchronize(stream.GetStream()));
         if (!std::isfinite(summary.final_cost) || !std::isfinite(summary.initial_cost) ||
@@ -395,19 +422,22 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
     device_poses.CopyToHost(poses.data(), poses.size());
     device_points.CopyToHost(positions.data(), positions.size());
     device_focals.CopyToHost(log_focals.data(), log_focals.size());
+    device_centers.CopyToHost(center_states_values.data(),center_states_values.size());
     BAResult output;
     for (std::size_t i = 0; i < poses.size(); ++i) {
+        const std::size_t calibration = options.shared_intrinsics ? 0 : i;
         const std::vector<float> pose(poses[i].begin(), poses[i].end());
         ValidatePose(pose);
         if (!std::all_of(pose.begin(), pose.end(), [](float v) { return std::isfinite(v); }) ||
-            !std::isfinite(std::exp(log_focals[2*i])) || !std::isfinite(std::exp(log_focals[2*i+1])) ||
-            std::exp(log_focals[2*i]) <= 0 || std::exp(log_focals[2*i+1]) <= 0) {
+            !std::isfinite(std::exp(log_focals[2*calibration])) || !std::isfinite(std::exp(log_focals[2*calibration+1])) ||
+            std::exp(log_focals[2*calibration]) <= 0 || std::exp(log_focals[2*calibration+1]) <= 0) {
             throw std::runtime_error("Invalid optimized camera");
         }
         BACamera camera;
         std::copy(pose.begin(), pose.end(), camera.world_to_camera.begin());
-        camera.intrinsics = {std::exp(log_focals[2*i]), std::exp(log_focals[2*i+1]),
-                             cameras[i].intrinsics[2], cameras[i].intrinsics[3]};
+        camera.intrinsics = {std::exp(log_focals[2*calibration]), std::exp(log_focals[2*calibration+1]),
+                             center_states_values[2*calibration], center_states_values[2*calibration+1]};
+        if (!std::isfinite(camera.intrinsics[2]) || !std::isfinite(camera.intrinsics[3])) { throw std::runtime_error("Nonfinite principal point"); }
         output.cameras.push_back(camera);
     }
     for (const cunls::Vector<3>& point : positions) {

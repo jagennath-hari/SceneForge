@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 import json
 import logging
+import shutil
+from PIL import Image
 from pathlib import Path
 
 import numpy as np
@@ -11,12 +13,13 @@ from stereoforge.refinement.sparse_model import SparseModel
 from stereoforge.utils.artifacts import write_json
 from stereoforge.utils.progress import Progress, progress_group
 from stereoforge.utils.visualization import GeometryReportWriter
-from .native_map import NativeMap
+from .native_map import NativeMap, WindowRejected
+from .dense import DenseRefiner, DenseOptions
 from .frontend import ReconstructionFrontend
 from .inference import infer_clusters
 from .view_graph import Cluster, VerifiedGraph
 
-POLICY = 'native_windowed_cunls_v2'
+POLICY = 'native_graph_dense_cunls_v5'
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,8 +29,11 @@ class WindowOptions:
     neighbors: int = 4
     device: str = 'cuda'
     lm_iterations: int = 300
+    dense_voxel_fraction: float = 0.01
 
     def __post_init__(self) -> None:
+        if not 0.001 <= self.dense_voxel_fraction <= 0.1:
+            raise ValueError('Dense voxel fraction must be between 0.001 and 0.1')
         if self.window_size < 8 or not 6 <= self.overlap < self.window_size:
             raise ValueError('Require window-size >= 8 and 6 <= overlap < window-size')
         if not 1 <= self.neighbors <= 12 or not 1 <= self.lm_iterations <= 500:
@@ -61,9 +67,15 @@ class WindowReconstructor(ReconstructionFrontend):
     def publish(self, status: str, error: str | None = None) -> dict:
         model = self.current
         self.summary.update(native_stage_seconds=self.native.stage_seconds, status=status, registered_frames=len(model.cameras) if model else 0,
-                            error=error, dense_depth_refined=False,
+                            error=error, dense_depth_refined=bool(self.summary.get("dense_refinement")),
+                            shared_calibration_stage=self.native.builder.calibration_stage,
+                            native_stage=self.native.last_stage,
+                            alignment_warnings=self.native.alignment_warnings,
+                            alignment_confidence_warning=bool(self.native.alignment_warnings),
                             reconstruction_name='StereoForge · VGGT windows + cuNLS',
                             units='reconstruction_units', attempt=str(self.attempt.relative_to(self.output)))
+        if model is not None and self.native.builder.calibration_stage:
+            self.summary['shared_intrinsics'] = next(iter(model.cameras.values())).intrinsics.tolist()
         self.summary['missing_frames'] = sorted(set(range(self.summary['input_frames'])) - (set(model.cameras) if model else set()))
         write_json(self.output / 'status.json', self.summary)
         if model is not None:
@@ -80,6 +92,34 @@ class WindowReconstructor(ReconstructionFrontend):
             # The viewer may subsample large clouds; export every optimized point.
             GeometryReportWriter._write_ply(self.output / 'point_cloud.ply',
                 np.asarray([p.xyz for p in model.points]), np.asarray([p.rgb for p in model.points], dtype=np.uint8))
+            if self.summary.get('dense_refinement'):
+                # Preserve sparse output; the main viewer and download show the
+                # validated dense cloud. Raw VGGT windows are never overwritten.
+                (self.output / 'point_cloud.ply').replace(self.output / 'sparse_point_cloud.ply')
+                shutil.copyfile(self.output / 'dense_point_cloud.ply', self.output / 'point_cloud.ply')
+                metadata = json.loads((self.output / 'metadata.json').read_text())
+                metadata.update(sparse_only=False, dense_depth_refined=True,
+                                reconstruction_name='StereoForge · refined dense cloud',
+                                dense_refinement=self.summary['dense_refinement'])
+                coverage = {item['frame']: item for item in self.summary['dense_refinement']['coverage']}
+                for frame in metadata['frames']:
+                    index = frame['frame_index']
+                    if index in coverage:
+                        item = coverage[index]
+                        frame['valid_fraction'] = item['supported_pixels']/item['total_pixels']
+                        frame['depth_p50'] = item['depth_median']
+                        frame['previews']['depth'] = f'dense/{index:06d}_depth.png'
+                        frame['previews']['confidence'] = f'dense/{index:06d}_support.png'
+                    else:
+                        blank = self.output / 'dense' / 'unsupported.png'
+                        if not blank.exists():
+                            Image.new('L',tuple(reversed(frame['processed_size_hw']))).save(blank)
+                        frame['previews'].update(depth='dense/unsupported.png', confidence='dense/unsupported.png')
+                write_json(self.output / 'metadata.json',metadata)
+                with np.load(self.output / 'dense' / 'preview.npz') as preview:
+                    order = {frame: index for index, frame in enumerate(sorted(model.cameras))}
+                    appeared = np.array([order[int(frame)] for frame in preview['frames']],dtype=np.int64)
+                    GeometryReportWriter._write_viewer(self.output,metadata,preview['xyz'],preview['rgb'],appeared)
         return self.summary
 
     def run(self, paths: list[Path], checkpoint: Path, timestamps: tuple | None) -> dict:
@@ -105,17 +145,61 @@ class WindowReconstructor(ReconstructionFrontend):
             infer_clusters(checkpoint, paths, windows, self.output / 'vggt', self.devices)
             with Progress('Loading native feature tracks'):
                 self.native.load_tracks(tracks)
+            pending = {window.identifier: window for window in windows}
+            # Frame ownership supplies accepted raw depths in the appropriate
+            # gauge, independent of processing order. Tensors remain disk-cached.
+            owners: dict[int, Path] = {}
+            attempted_at: dict[int, int] = {}
+            reasons: dict[int, str] = {}
+            self.summary['merge_order'] = []
+            self.summary['unresolved_windows'] = []
+            self.summary['global_ba_complete'] = False
             with progress_group('Building common map', len(windows), 'window') as progress:
-                for index, window in enumerate(windows):
+                while pending:
+                    revision = self.native.accepted_windows
+                    eligible = [window for key, window in sorted(pending.items())
+                                if attempted_at.get(key) != revision]
+                    ranked = self.native.rank_windows([window.frames for window in eligible])
+                    if not ranked:
+                        break
+                    window = eligible[ranked[0]]
+                    index = window.identifier
                     self.summary['stage'] = f'window_{index}'
                     def update(stage: str) -> None:
                         progress.status(f'window {index+1}/{len(windows)} | {stage}')
-                    self.native.add_window(self.output / 'vggt' / f'{window.identifier}.pt', self.images, update)
+                    references = {frame: owners[frame] for frame in window.frames if frame in owners}
+                    source = self.output / 'vggt' / f'{index}.pt'
+                    try:
+                        self.native.add_window(source, self.images, references, update)
+                    except WindowRejected as error:
+                        attempted_at[index] = revision
+                        reasons[index] = str(error)
+                        logging.warning('Deferred window %d at map revision %d: %s', index, revision, error)
+                        continue
+                    for frame in window.frames:
+                        owners.setdefault(frame, source)
+                    del pending[index]
+                    reasons.pop(index, None)
+                    self.summary['merge_order'].append(index)
                     self.summary['accepted_windows'] = self.native.accepted_windows
                     progress.advance()
+                self.summary['unresolved_windows'] = [
+                    {'window': key, 'frames': window.frames,
+                     'reason': reasons.get(key, 'No shared camera with the accepted map'),
+                     'last_attempt_revision': attempted_at.get(key)}
+                    for key, window in sorted(pending.items())]
+            if not self.native.accepted_windows:
+                raise RuntimeError('No window could initialize a connected map; inspect unresolved_windows in status.json')
+            self.summary['stage'] = 'global_ba'
+            with Progress('Final global bundle adjustment') as progress:
+                self.native.finalize(lambda stage: progress.status(stage))
+            self.summary['global_ba_complete'] = True
             self.current = self.native.export()
             if self.current is None or set(self.current.cameras) != set(range(len(paths))):
-                raise ValueError('Common map does not contain every selected keyframe')
+                self.summary['stage'] = 'unresolved_windows'
+                return self.publish('partial', 'No further connected windows could be accepted; inspect unresolved_windows')
+            self.summary['stage'] = 'dense_refinement'
+            self.summary['dense_refinement'] = DenseRefiner(self.output,self.device, DenseOptions(voxel_depth_fraction=self.options.dense_voxel_fraction)).run(self.current,owners)
             self.summary['stage'] = 'finished'
             return self.publish('complete')
         except (Exception, KeyboardInterrupt) as error:

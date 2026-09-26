@@ -1,221 +1,165 @@
 #include "stereoforge/optimization/map_builder.hpp"
-#include <Eigen/Cholesky>
 #include <Eigen/Geometry>
-#include <Eigen/LU>
 #include <Eigen/SVD>
 #include <algorithm>
 #include <cmath>
-#include <numeric>
-#include <random>
-#include <stdexcept>
+#include <limits>
+#include <optional>
 
 namespace stereoforge::optimization {
 namespace {
 constexpr double kPi = 3.14159265358979323846;
-using Parameters = Eigen::Matrix<double, 7, 1>;
-double Median(std::vector<double> v) {
-    if (v.empty()) { throw std::runtime_error("Empty alignment statistic"); }
-    std::sort(v.begin(), v.end());
-    return v.size()%2 ? v[v.size()/2] : (v[v.size()/2-1]+v[v.size()/2])/2;
+double Median(std::vector<double> values) {
+    if (values.empty()) { throw std::runtime_error("No scale evidence in shared cameras or depths"); }
+    std::sort(values.begin(),values.end());
+    return values.size()%2 ? values[values.size()/2] : (values[values.size()/2-1]+values[values.size()/2])/2;
 }
-bool Reliable(const SparseMap& model, const Landmark& point) {
-    if (point.observations.size() < 3) { return false; }
-    std::vector<Eigen::Vector3d> rays;
-    std::vector<double> errors;
-    for (const std::pair<const FrameId, Eigen::Vector2d>& obs : point.observations) {
-        const Camera& camera = model.cameras.at(obs.first);
-        const Eigen::Vector3d ray = (camera.rotation*camera.intrinsics.inverse()*Eigen::Vector3d(obs.second.x(),obs.second.y(),1)).normalized();
-        const double error = Reprojection(camera, point.position, obs.second);
-        if (!ray.allFinite() || !std::isfinite(error) || error > 3) { return false; }
-        rays.push_back(ray); errors.push_back(error);
+Eigen::Vector3d MedianVector(const std::vector<Eigen::Vector3d>& values) {
+    Eigen::Vector3d result;
+    for (int axis = 0; axis < 3; ++axis) {
+        std::vector<double> coordinates;
+        for (const Eigen::Vector3d& value : values) { coordinates.push_back(value[axis]); }
+        result[axis] = Median(coordinates);
     }
-    if (Median(errors) > 1.5) { return false; }
-    double cosine = 1;
-    for (std::size_t i = 0; i < rays.size(); ++i) {
-        for (std::size_t j = 0; j < i; ++j) { cosine = std::min(cosine, rays[i].dot(rays[j])); }
-    }
-    const double angle = std::acos(std::clamp(cosine,-1.0,1.0))*180/kPi;
-    return angle >= 5 && angle <= 90;
-}
-Similarity Fit(const std::vector<Eigen::Vector3d>& source, const std::vector<Eigen::Vector3d>& target,
-               const std::vector<std::size_t>& indices) {
-    Eigen::Vector3d a = Eigen::Vector3d::Zero(), b = Eigen::Vector3d::Zero();
-    for (const std::size_t i : indices) { a += source[i]; b += target[i]; }
-    a /= indices.size(); b /= indices.size();
-    Eigen::Matrix3d covariance = Eigen::Matrix3d::Zero();
-    double variance = 0;
-    for (const std::size_t i : indices) { covariance += (target[i]-b)*(source[i]-a).transpose(); variance += (source[i]-a).squaredNorm(); }
-    covariance /= indices.size(); variance /= indices.size();
-    const Eigen::JacobiSVD<Eigen::Matrix3d> svd(covariance, Eigen::ComputeFullU|Eigen::ComputeFullV);
-    const Eigen::Vector3d singular = svd.singularValues();
-    if (singular[0] <= 0 || singular[1] < singular[0]*1e-6 || variance <= 0) { throw std::runtime_error("Degenerate Sim(3) support"); }
-    Eigen::Vector3d signs(1,1,(svd.matrixU()*svd.matrixV().transpose()).determinant() < 0 ? -1 : 1);
-    Similarity result;
-    result.rotation = svd.matrixU()*signs.asDiagonal()*svd.matrixV().transpose();
-    result.scale = singular.dot(signs)/variance;
-    result.translation = b-result.scale*result.rotation*a;
-    if (!std::isfinite(result.scale) || result.scale <= 0 || !result.translation.allFinite()) { throw std::runtime_error("Invalid Sim(3)"); }
     return result;
 }
-Eigen::Matrix3d Exp(const Eigen::Vector3d& v) {
-    const double angle = v.norm();
-    if (angle < 1e-16) { return Eigen::Matrix3d::Identity(); }
-    return Eigen::AngleAxisd(angle, v/angle).toRotationMatrix();
+double RotationError(const Eigen::Matrix3d& a, const Eigen::Matrix3d& b) {
+    return std::acos(std::clamp(((a.transpose()*b).trace()-1)/2,-1.0,1.0));
 }
-void CheckCoverage(const SparseMap& model, const std::vector<TrackId>& ids, const std::vector<std::size_t>& indices,
-                   const std::vector<FrameId>& shared) {
-    std::size_t supported = 0;
-    for (const FrameId frame : shared) {
-        const Camera& camera = model.cameras.at(frame);
-        std::set<std::pair<int,int>> cells;
-        std::size_t count = 0;
-        for (const std::size_t i : indices) {
-            const Observations& obs = model.landmarks.at(ids[i]).observations;
-            if (!obs.contains(frame)) { continue; }
-            const Eigen::Vector2d uv = obs.at(frame);
-            cells.emplace(std::clamp(static_cast<int>(4*uv.x()/camera.width),0,3), std::clamp(static_cast<int>(4*uv.y()/camera.height),0,3));
-            ++count;
-        }
-        supported += count >= 3 && cells.size() >= 3;
+Eigen::Matrix3d MeanRotation(const std::vector<Eigen::Matrix3d>& rotations) {
+    // Start at the angular medoid, then use Huber-weighted chordal averaging.
+    Eigen::Matrix3d result = rotations.front();
+    double best = std::numeric_limits<double>::infinity();
+    for (const Eigen::Matrix3d& candidate : rotations) {
+        double cost = 0;
+        for (const Eigen::Matrix3d& rotation : rotations) { cost += RotationError(candidate,rotation); }
+        if (cost < best) { best = cost; result = candidate; }
     }
-    if (supported < 6) { throw std::runtime_error("Alignment landmarks lack six-camera image coverage"); }
+    for (int iteration = 0; iteration < 10; ++iteration) {
+        Eigen::Matrix3d sum = Eigen::Matrix3d::Zero();
+        for (const Eigen::Matrix3d& rotation : rotations) {
+            const double angle = RotationError(result,rotation);
+            sum += std::min(1.0,(5*kPi/180)/std::max(angle,1e-12))*rotation;
+        }
+        const Eigen::JacobiSVD<Eigen::Matrix3d> svd(sum,Eigen::ComputeFullU|Eigen::ComputeFullV);
+        Eigen::Vector3d signs(1,1,(svd.matrixU()*svd.matrixV().transpose()).determinant() < 0 ? -1 : 1);
+        const Eigen::Matrix3d next = svd.matrixU()*signs.asDiagonal()*svd.matrixV().transpose();
+        const double change = RotationError(result,next);
+        result = next;
+        if (change < 1e-8) { break; }
+    }
+    return result;
 }
-// Seven-dimensional CPU solve. The objective matches the previous camera-aware
-// soft-L1 group means; Eigen handles the tiny dense normal system. BA remains CUDA.
-Similarity Refine(const Similarity& initial, const std::vector<Eigen::Vector3d>& source,
-                  const std::vector<Eigen::Vector3d>& target, const std::vector<std::size_t>& train,
-                  const SparseMap& reference, const SparseMap& local, const std::vector<FrameId>& shared, double depth) {
-    std::vector<FrameId> cameras;
-    for (std::size_t i = 0; i < shared.size(); ++i) { if (i%3) { cameras.push_back(shared[i]); } }
-    Eigen::Vector3d center = Eigen::Vector3d::Zero();
-    for (const std::size_t i : train) { center += source[i]; } center /= train.size();
-    const Eigen::Vector3d anchor = initial.scale*initial.rotation*center+initial.translation;
-    const std::function<Similarity(const Parameters&)> decode = [&](const Parameters& p) {
-        Similarity s;
-        s.scale = initial.scale*std::exp(p[0]);
-        s.rotation = Exp(p.segment<3>(1))*initial.rotation;
-        s.translation = anchor+depth*p.tail<3>()-s.scale*s.rotation*center;
-        return s;
-    };
-    const std::function<Eigen::VectorXd(const Parameters&)> residual = [&](const Parameters& p) {
-        const Similarity s = decode(p);
-        Eigen::VectorXd r(3*(train.size()+2*cameras.size()));
-        Eigen::Index offset = 0;
-        const std::function<void(const Eigen::Vector3d&, std::size_t)> append = [&](const Eigen::Vector3d& value, std::size_t count) {
-            const double weight = std::sqrt(2/(std::sqrt(1+value.squaredNorm())+1))/std::sqrt(static_cast<double>(count));
-            r.segment<3>(offset) = weight*value; offset += 3;
-        };
-        for (const std::size_t i : train) { append((s.scale*s.rotation*source[i]+s.translation-target[i])/(.05*depth),train.size()); }
-        for (const FrameId f : cameras) { append((s.scale*s.rotation*local.cameras.at(f).center+s.translation-reference.cameras.at(f).center)/(.05*depth),cameras.size()); }
-        for (const FrameId f : cameras) {
-            const Eigen::AngleAxisd aa(reference.cameras.at(f).rotation.transpose()*s.rotation*local.cameras.at(f).rotation);
-            append(aa.axis()*aa.angle()/(10*kPi/180),cameras.size());
-        }
-        return r;
-    };
-    Parameters p = Parameters::Zero();
-    Eigen::VectorXd r = residual(p);
-    double damping = 1e-3;
-    bool converged = false;
-    for (int iteration = 0; iteration < 200; ++iteration) {
-        Eigen::MatrixXd jacobian(r.size(),7);
-        for (int column = 0; column < 7; ++column) {
-            const double h = 1e-6*std::max(1.0,std::abs(p[column]));
-            Parameters plus = p, minus = p; plus[column] += h; minus[column] -= h;
-            jacobian.col(column) = (residual(plus)-residual(minus))/(2*h);
-        }
-        const Eigen::Matrix<double,7,7> normal = jacobian.transpose()*jacobian;
-        const Parameters gradient = jacobian.transpose()*r;
-        if (gradient.lpNorm<Eigen::Infinity>() < 1e-9) { converged = true; break; }
-        Eigen::Matrix<double,7,7> damped = normal;
-        for (int i = 0; i < 7; ++i) { damped(i,i) += damping*std::max(1.0,normal(i,i)); }
-        const Parameters step = damped.ldlt().solve(-gradient);
-        if (!step.allFinite()) { throw std::runtime_error("Nonfinite camera-aware Sim(3) step"); }
-        const Parameters candidate = p+step;
-        if (std::abs(candidate[0]) >= std::log(4.0)) { damping *= 10; continue; }
-        const Eigen::VectorXd next = residual(candidate);
-        if (next.allFinite() && next.squaredNorm() < r.squaredNorm()) {
-            const double improvement = r.squaredNorm()-next.squaredNorm();
-            const double old_cost = r.squaredNorm();
-            p = candidate; r = next; damping = std::max(1e-12,damping/3);
-            if (improvement <= 1e-9*old_cost || step.norm() < 1e-9*(1e-9+p.norm())) { converged = true; break; }
-        } else {
-            // Stationary finite objective, not a large damping-induced small step.
-            if (step.norm() < 1e-9*(1e-9+p.norm()) && damping < 1e-3) { converged = true; break; }
-            damping *= 10;
+struct DepthGauge {
+    double factor;
+    double scene_depth;
+};
+std::optional<DepthGauge> Gauge(const SparseMap& model, const DepthFrame& frame) {
+    const Camera& camera = model.cameras.at(frame.id);
+    std::vector<double> ratios, depths;
+    for (const std::pair<const TrackId,Landmark>& entry : model.landmarks) {
+        const Landmark& point = entry.second;
+        if (!point.observations.contains(frame.id)) { continue; }
+        const Eigen::Vector2d pixel = point.observations.at(frame.id);
+        if (!pixel.allFinite() || Reprojection(camera,point.position,pixel) > 3) { continue; }
+        const int x = static_cast<int>(std::lround(pixel.x())), y = static_cast<int>(std::lround(pixel.y()));
+        if (x < 0 || y < 0 || x >= frame.camera.width || y >= frame.camera.height) { continue; }
+        const double raw = frame.depth[static_cast<std::size_t>(y)*frame.camera.width+x];
+        const double optimized = (camera.rotation.transpose()*(point.position-camera.center)).z();
+        if (std::isfinite(raw) && raw > 0 && std::isfinite(optimized) && optimized > 0) {
+            ratios.push_back(std::log(optimized/raw)); depths.push_back(optimized);
         }
     }
-    if (!converged || !r.allFinite() || std::abs(p[0]) >= std::log(4.0)-1e-8) { throw std::runtime_error("Camera-aware Sim(3) did not converge to an interior solution"); }
-    return decode(p);
+    // This calibrates an approximate depth prior to the current BA gauge, not
+    // a dense-depth correction. No shared track IDs or triangulation angle gate.
+    if (ratios.size() < 3) { return std::nullopt; }
+    return DepthGauge{std::exp(Median(ratios)),Median(depths)};
+}
+void CheckImage(const DepthFrame& frame) {
+    if (frame.camera.width <= 0 || frame.camera.height <= 0 ||
+        frame.depth.size() != static_cast<std::size_t>(frame.camera.width)*frame.camera.height ||
+        frame.rgb.size() != 3*frame.depth.size()) {
+        throw std::runtime_error("Invalid shared depth/image dimensions");
+    }
 }
 }
-Similarity Align(const SparseMap& reference, const SparseMap& local) {
+Similarity Align(const SparseMap& reference, const SparseMap& local,
+                 const std::vector<DepthFrame>& previous, const std::vector<DepthFrame>& incoming,
+                 const std::function<void(const std::string&)>& progress) {
     std::vector<FrameId> shared;
-    for (const std::pair<const FrameId, Camera>& c : local.cameras) { if (reference.cameras.contains(c.first)) { shared.push_back(c.first); } }
-    std::vector<TrackId> ids;
-    std::vector<Eigen::Vector3d> source, target;
-    std::vector<double> distances;
-    std::vector<std::size_t> eligible;
-    for (const std::pair<const TrackId, Landmark>& entry : local.landmarks) {
-        if (!reference.landmarks.contains(entry.first)) { continue; }
-        const Landmark& a = reference.landmarks.at(entry.first);
-        const Landmark& b = entry.second;
-        bool common = false;
-        for (const FrameId f : shared) {
-            if (a.observations.contains(f) && b.observations.contains(f)) {
-                const Eigen::Vector2d x = a.observations.at(f), y = b.observations.at(f);
-                if (std::nearbyint(x.x()*10000) == std::nearbyint(y.x()*10000) && std::nearbyint(x.y()*10000) == std::nearbyint(y.y()*10000)) { common = true; }
+    std::vector<Eigen::Matrix3d> rotations;
+    for (const std::pair<const FrameId,Camera>& entry : local.cameras) {
+        if (!reference.cameras.contains(entry.first)) { continue; }
+        shared.push_back(entry.first);
+        rotations.push_back(reference.cameras.at(entry.first).rotation*entry.second.rotation.transpose());
+    }
+    if (shared.empty()) { throw std::runtime_error("Camera alignment needs a shared frame"); }
+    Similarity result;
+    result.rotation = MeanRotation(rotations);
+    std::map<FrameId,const DepthFrame*> old_frames, new_frames;
+    for (const DepthFrame& frame : previous) { CheckImage(frame); old_frames.emplace(frame.id,&frame); }
+    for (const DepthFrame& frame : incoming) { CheckImage(frame); new_frames.emplace(frame.id,&frame); }
+    std::vector<double> depth_scales, reference_depths, local_depths;
+    for (const FrameId id : shared) {
+        if (!old_frames.contains(id) || !new_frames.contains(id)) { continue; }
+        const DepthFrame& a = *old_frames.at(id);
+        const DepthFrame& b = *new_frames.at(id);
+        if (a.camera.width != b.camera.width || a.camera.height != b.camera.height || a.rgb != b.rgb) {
+            throw std::runtime_error("Shared processed RGB differs at frame " + std::to_string(id));
+        }
+        const std::optional<DepthGauge> ga = Gauge(reference,a), gb = Gauge(local,b);
+        if (!ga || !gb) { continue; }
+        reference_depths.push_back(ga->scene_depth); local_depths.push_back(gb->scene_depth);
+        std::vector<double> ratios;
+        // Equal frame weighting and a bounded deterministic pixel sample.
+        const std::size_t stride = std::max<std::size_t>(1,a.depth.size()/2048);
+        for (std::size_t pixel = 0; pixel < a.depth.size(); pixel += stride) {
+            const double da = a.depth[pixel]*ga->factor, db = b.depth[pixel]*gb->factor;
+            if (std::isfinite(da) && std::isfinite(db) && da > 0 && db > 0) { ratios.push_back(std::log(da/db)); }
+        }
+        if (!ratios.empty()) { depth_scales.push_back(Median(ratios)); }
+    }
+    // Use center displacement only when it is appreciable relative to scene
+    // depth in BOTH gauges. Ratios of near-zero baselines are not scale evidence.
+    std::vector<double> center_scales;
+    if (!reference_depths.empty() && !local_depths.empty()) {
+        const double target_floor = .02*Median(reference_depths), source_floor = .02*Median(local_depths);
+        for (std::size_t i = 0; i < shared.size(); ++i) {
+            for (std::size_t j = 0; j < i; ++j) {
+                const Eigen::Vector3d source = result.rotation*(local.cameras.at(shared[i]).center-local.cameras.at(shared[j]).center);
+                const Eigen::Vector3d target = reference.cameras.at(shared[i]).center-reference.cameras.at(shared[j]).center;
+                if (source.norm() <= source_floor || target.norm() <= target_floor) { continue; }
+                if (source.dot(target)/(source.norm()*target.norm()) < .8) { continue; }
+                const double scale = source.dot(target)/source.squaredNorm();
+                if (std::isfinite(scale) && scale > 0) { center_scales.push_back(std::log(scale)); }
             }
         }
-        if (!common) { continue; }
-        if (Reliable(reference,a) && Reliable(local,b)) { eligible.push_back(ids.size()); }
-        ids.push_back(entry.first); source.push_back(b.position); target.push_back(a.position);
-        for (const FrameId f : shared) { if (a.observations.contains(f)) { distances.push_back((a.position-reference.cameras.at(f).center).norm()); } }
     }
-    if (shared.size() < 6) { throw std::runtime_error("Alignment requires six shared cameras"); }
-    if (ids.size() < 60 || eligible.size() < 60) {
-        throw InsufficientAlignmentSupport("Insufficient shared alignment support: " + std::to_string(shared.size()) + " cameras, " + std::to_string(eligible.size()) + "/60 depth-observable landmarks");
+    const bool from_centers = center_scales.size() >= 3;
+    result.scale = std::exp(Median(from_centers ? center_scales : depth_scales));
+    std::vector<Eigen::Vector3d> translations;
+    for (const FrameId id : shared) {
+        translations.push_back(reference.cameras.at(id).center-result.scale*result.rotation*local.cameras.at(id).center);
     }
-    const double depth = Median(distances);
-    if (!std::isfinite(depth) || depth <= 1e-8) { throw std::runtime_error("Degenerate overlap scale"); }
-    std::mt19937 generator(0);
-    std::shuffle(eligible.begin(),eligible.end(),generator);
-    std::vector<std::size_t> train, held;
-    for (std::size_t i = 0; i < eligible.size(); ++i) { (i%3 ? train : held).push_back(eligible[i]); }
-    for (const std::vector<std::size_t>* subset : {&train,&held}) { CheckCoverage(reference,ids,*subset,shared); CheckCoverage(local,ids,*subset,shared); }
-    std::vector<std::size_t> best;
-    std::uniform_int_distribution<std::size_t> choose(0,train.size()-1);
-    for (int trial = 0; trial < 512; ++trial) {
-        std::set<std::size_t> selected;
-        while (selected.size() < 3) { selected.insert(train[choose(generator)]); }
-        Similarity candidate;
-        try { candidate = Fit(source,target,std::vector<std::size_t>(selected.begin(),selected.end())); }
-        catch (const std::runtime_error&) { continue; }
-        std::vector<std::size_t> inliers;
-        for (const std::size_t i : train) { if ((candidate.scale*candidate.rotation*source[i]+candidate.translation-target[i]).norm() <= .05*depth) { inliers.push_back(i); } }
-        if (inliers.size() > best.size()) { best = std::move(inliers); }
+    result.translation = MedianVector(translations);
+    if (!std::isfinite(result.scale) || result.scale <= 0 || !result.rotation.allFinite() || !result.translation.allFinite()) {
+        throw std::runtime_error("Shared-camera alignment produced invalid Sim(3)");
     }
-    if (best.size() < 20) { throw std::runtime_error("No robust Sim(3) initialization"); }
-    const Similarity result = Refine(Fit(source,target,best),source,target,train,reference,local,shared,depth);
-    for (const std::vector<std::size_t>* subset : {&train,&held}) {
-        std::size_t passed = 0;
-        for (const std::size_t i : *subset) { passed += (result.scale*result.rotation*source[i]+result.translation-target[i]).norm() <= .05*depth; }
-        if (passed < .8*subset->size()) { throw std::runtime_error("Sim(3) landmark agreement below 80%"); }
+    std::vector<double> angles;
+    for (const Eigen::Matrix3d& rotation : rotations) { angles.push_back(RotationError(result.rotation,rotation)*180/kPi); }
+    if (Median(angles) > 10) {
+        progress("WARNING: Shared camera rotation disagreement: median " + std::to_string(Median(angles)) + " degrees; joint BA must refine the initialization");
     }
-    for (const FrameId f : shared) {
-        const Camera& a = reference.cameras.at(f); const Camera& b = local.cameras.at(f);
-        const double angle = std::acos(std::clamp(((a.rotation.transpose()*result.rotation*b.rotation).trace()-1)/2,-1.0,1.0))*180/kPi;
-        if (angle > 10 || (result.scale*result.rotation*b.center+result.translation-a.center).norm() > .05*depth) {
-            throw std::runtime_error("Sim(3) shared camera disagreement at frame " + std::to_string(f));
-        }
-    }
+    progress(from_centers ? "camera alignment: scale from shared centers" : "camera alignment: scale from shared-frame depth prior");
     return result;
 }
 void Transform(SparseMap& model, const Similarity& transform) {
-    for (std::pair<const FrameId, Camera>& entry : model.cameras) {
+    for (std::pair<const FrameId,Camera>& entry : model.cameras) {
         entry.second.rotation = transform.rotation*entry.second.rotation;
         entry.second.center = transform.scale*transform.rotation*entry.second.center+transform.translation;
     }
-    for (std::pair<const TrackId, Landmark>& entry : model.landmarks) { entry.second.position = transform.scale*transform.rotation*entry.second.position+transform.translation; }
+    for (std::pair<const TrackId,Landmark>& entry : model.landmarks) {
+        entry.second.position = transform.scale*transform.rotation*entry.second.position+transform.translation;
+    }
 }
 } // namespace stereoforge::optimization

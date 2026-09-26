@@ -135,13 +135,16 @@ class ReconstructionViewer {
   requestAnimationFrame(t=>this.animate(t));
  }
 }
+if(data.dense_depth_refined){$('depth').closest('figure').querySelector('figcaption').textContent='Supported depth · bright far, black unsupported (per-frame range)';$('confidence').closest('figure').querySelector('figcaption').textContent='Multi-view support mask';}
 $('summary').textContent=`${data.frames.length} frames · ${data.points.length.toLocaleString()} sampled points · ${data.units==='meters'?'Calibrated meters':'Scale uncalibrated'}`;
 if(data.reconstruction_name)$('reconstruction-name').textContent=data.reconstruction_name;
-if(data.sparse_only){
+if(data.sparse_only || data.dense_depth_refined){
+ if(data.sparse_only){
  $('depth').closest('figure').hidden=true;$('confidence').closest('figure').hidden=true;
+ }
  document.querySelector('a[href="geometry.npz"]').hidden=true;
  document.querySelector('a[href="contact_sheet.jpg"]').hidden=true;
- $('summary').textContent+=` · ${data.frames.length}/${data.input_frames} registered · Dense depth not refined`;
+ $('summary').textContent+=` · ${data.frames.length}/${data.input_frames} registered · ${data.dense_depth_refined?'Multi-view refined depth':'Dense depth not refined'}`;
 }
 if(data.refinement_link){$('refinement-link').hidden=false;$('refinement-link').href=data.refinement_link;$('refinement-link').textContent=data.refinement_label;}
 if(data.sparse_refinement){

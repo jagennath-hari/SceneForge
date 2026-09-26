@@ -20,13 +20,28 @@ bool SamePixel(const Eigen::Vector2d& a, const Eigen::Vector2d& b) {
     return std::nearbyint(a.x()*10000) == std::nearbyint(b.x()*10000) &&
            std::nearbyint(a.y()*10000) == std::nearbyint(b.y()*10000);
 }
-void CheckSupport(const SparseMap& model) {
-    if (model.cameras.empty()) { throw std::runtime_error("Empty map"); }
+using SupportCounts = std::map<FrameId, std::size_t>;
+SupportCounts CountSupport(const SparseMap& model) {
+    SupportCounts counts;
+    for (const std::pair<const TrackId, Landmark>& point : model.landmarks) {
+        for (const std::pair<const FrameId, Eigen::Vector2d>& observation : point.second.observations) {
+            ++counts[observation.first];
+        }
+    }
+    return counts;
+}
+std::size_t SupportAt(const SupportCounts& counts, FrameId frame) {
+    return counts.contains(frame) ? counts.at(frame) : 0;
+}
+void CheckSupport(const SparseMap& model, const std::string& stage,
+                  const SupportCounts* before = nullptr, const SupportCounts* after_pixel_filter = nullptr,
+                  bool require_connected = true) {
+    if (model.cameras.empty()) { throw std::runtime_error(stage + ": empty map"); }
     std::map<FrameId, std::size_t> support;
     std::map<FrameId, std::set<FrameId>> adjacency;
     for (const std::pair<const TrackId, Landmark>& entry : model.landmarks) {
         const Observations& obs = entry.second.observations;
-        if (obs.size() < 3) { throw std::runtime_error("Landmark has fewer than three observations"); }
+        if (obs.size() < 3) { throw std::runtime_error(stage + ": landmark has fewer than three observations"); }
         const FrameId first = obs.begin()->first;
         for (const std::pair<const FrameId, Eigen::Vector2d>& o : obs) {
             ++support[o.first];
@@ -42,11 +57,53 @@ void CheckSupport(const SparseMap& model) {
         pending.insert(pending.end(), adjacency[frame].begin(), adjacency[frame].end());
     }
     for (const std::pair<const FrameId, Camera>& camera : model.cameras) {
-        if (support[camera.first] < 6 || !reached.contains(camera.first)) {
-            throw std::runtime_error("Map is disconnected or camera support is below six at frame " + std::to_string(camera.first));
+        if (support[camera.first] < 6 || (require_connected && !reached.contains(camera.first))) {
+            std::string message = stage + ": frame " + std::to_string(camera.first) +
+                " has " + std::to_string(support[camera.first]) + " surviving landmark observations (minimum 6); " +
+                "connected to anchor " + std::to_string(model.cameras.begin()->first) + "=" +
+                (reached.contains(camera.first) ? "yes" : "no") + "; anchor component " +
+                std::to_string(reached.size()) + "/" + std::to_string(model.cameras.size()) + " cameras";
+            if (before != nullptr) {
+                message += "; observations before this stage=" + std::to_string(SupportAt(*before,camera.first));
+            }
+            if (after_pixel_filter != nullptr) {
+                message += "; after 3px/positive-depth filtering=" + std::to_string(SupportAt(*after_pixel_filter,camera.first)) +
+                    "; after removing tracks with fewer than 3 views=" + std::to_string(support[camera.first]);
+            }
+            throw std::runtime_error(message);
         }
     }
 }
+std::vector<SparseMap> ConnectedGroups(const SparseMap& model) {
+    std::map<FrameId, std::vector<FrameId>> adjacency;
+    for (const std::pair<const TrackId, Landmark>& point : model.landmarks) {
+        const FrameId first = point.second.observations.begin()->first;
+        for (const std::pair<const FrameId, Eigen::Vector2d>& observation : point.second.observations) {
+            adjacency[first].push_back(observation.first);
+            adjacency[observation.first].push_back(first);
+        }
+    }
+    std::map<FrameId, std::size_t> membership;
+    std::vector<SparseMap> groups;
+    for (const std::pair<const FrameId, Camera>& camera : model.cameras) {
+        if (membership.contains(camera.first)) { continue; }
+        const std::size_t index = groups.size();
+        groups.emplace_back();
+        std::vector<FrameId> pending{camera.first};
+        while (!pending.empty()) {
+            const FrameId frame = pending.back(); pending.pop_back();
+            if (!membership.emplace(frame,index).second) { continue; }
+            groups.back().cameras.emplace(frame,model.cameras.at(frame));
+            const std::vector<FrameId>& neighbors = adjacency[frame];
+            pending.insert(pending.end(),neighbors.begin(),neighbors.end());
+        }
+    }
+    for (const std::pair<const TrackId, Landmark>& point : model.landmarks) {
+        groups.at(membership.at(point.second.observations.begin()->first)).landmarks.emplace(point);
+    }
+    return groups;
+}
+
 }
 double Reprojection(const Camera& camera, const Eigen::Vector3d& point, const Eigen::Vector2d& pixel) {
     const Eigen::Vector3d local = camera.rotation.transpose()*(point-camera.center);
@@ -127,11 +184,13 @@ SparseMap MapBuilder::Initialize(const std::vector<DepthFrame>& frames) const {
         model.landmarks.emplace(id, std::move(point));
     }
     if (model.landmarks.size() < 60) { throw std::runtime_error("Window initialization has fewer than 60 landmarks"); }
-    CheckSupport(model);
+    CheckSupport(model, "VGGT landmark initialization", nullptr, nullptr, false);
     return model;
 }
-void MapBuilder::Optimize(SparseMap& model, bool local) const {
-    CheckSupport(model);
+void MapBuilder::Optimize(SparseMap& model, bool local, int calibration_stage) const {
+    const std::string stage = local ? "local BA" : "joint BA";
+    CheckSupport(model, stage + " input");
+    const SupportCounts before = CountSupport(model);
     const Eigen::Vector3d origin = model.cameras.begin()->second.center;
     Eigen::Vector3d previous = origin;
     std::vector<double> steps;
@@ -146,6 +205,8 @@ void MapBuilder::Optimize(SparseMap& model, bool local) const {
     if (steps.empty()) { throw std::runtime_error("Degenerate camera baseline"); }
     const double scale = Median(steps);
     BAInput input;
+    input.options.shared_intrinsics = calibration_stage > 0;
+    input.options.optimize_principal = calibration_stage == 2;
     input.options.use_gnc = local;
     input.options.huber_delta_pixels = local ? 0 : 3;
     input.options.lm_iterations = local ? 50 : this->iterations_;
@@ -184,6 +245,7 @@ void MapBuilder::Optimize(SparseMap& model, bool local) const {
         }
         camera.rotation = r.transpose(); camera.center = -r.transpose()*t*scale+origin;
         camera.intrinsics(0,0) = result.cameras[i].intrinsics[0]; camera.intrinsics(1,1) = result.cameras[i].intrinsics[1];
+        camera.intrinsics(0,2) = result.cameras[i].intrinsics[2]; camera.intrinsics(1,2) = result.cameras[i].intrinsics[3];
     }
     for (std::size_t i = 0; i < point_ids.size(); ++i) {
         Landmark& point = model.landmarks.at(point_ids[i]);
@@ -192,8 +254,9 @@ void MapBuilder::Optimize(SparseMap& model, bool local) const {
             return Reprojection(model.cameras.at(o.first), point.position, o.second) > 3;
         });
     }
+    const SupportCounts after_pixel_filter = CountSupport(model);
     std::erase_if(model.landmarks, [](const std::pair<const TrackId, Landmark>& p) { return p.second.observations.size() < 3; });
-    CheckSupport(model);
+    CheckSupport(model, stage + " output", &before, &after_pixel_filter, !local);
 }
 SparseMap MapBuilder::Combine(const SparseMap& local) const {
     SparseMap combined = this->map_;
@@ -232,11 +295,14 @@ SparseMap MapBuilder::Combine(const SparseMap& local) const {
         }
     }
     std::erase_if(combined.landmarks, [](const std::pair<const TrackId, Landmark>& p) { return p.second.observations.size() < 3; });
-    CheckSupport(combined);
+    const SupportCounts established = CountSupport(this->map_);
+    CheckSupport(combined, "combining tracks (before=accepted map)", &established);
     return combined;
 }
-Boundary MapBuilder::Withhold(SparseMap& combined, const SparseMap& local) const {
+Boundary MapBuilder::Withhold(SparseMap& combined, const SparseMap& local,
+                              const std::function<void(const std::string&)>& progress) const {
     Boundary boundary;
+    const SupportCounts before = CountSupport(combined);
     std::map<FrameId, std::size_t> support, counts;
     for (const std::pair<const FrameId, Camera>& camera : combined.cameras) { boundary.cameras.insert(camera.first); }
     for (const std::pair<const FrameId, Camera>& camera : local.cameras) {
@@ -266,10 +332,19 @@ Boundary MapBuilder::Withhold(SparseMap& combined, const SparseMap& local) const
         --support[selected]; ++counts[selected];
     }
     if (boundary.observations.size() < 40) { throw std::runtime_error("Fewer than 40 held-out overlap observations"); }
+    std::string insufficient;
     for (const FrameId frame : boundary.shared) {
-        if (counts[frame] < 5) { throw std::runtime_error("Fewer than five held-out observations for frame " + std::to_string(frame)); }
+        if (counts[frame] < 5) {
+            if (!insufficient.empty()) { insufficient += ", "; }
+            insufficient += std::to_string(frame) + "=" + std::to_string(counts[frame]);
+        }
     }
-    CheckSupport(combined);
+    if (!insufficient.empty()) {
+        progress("WARNING: Insufficient individual validation support (frame=holdouts): " + insufficient +
+            "; fewer than 5 each. Continuing with " + std::to_string(boundary.observations.size()) +
+            " overlap holdouts; these cameras are not individually validated");
+    }
+    CheckSupport(combined, "withholding overlap observations", &before);
     return boundary;
 }
 void MapBuilder::Validate(const SparseMap& model, const Boundary& boundary) const {
@@ -287,41 +362,138 @@ void MapBuilder::Validate(const SparseMap& model, const Boundary& boundary) cons
     }
     if (total < .8*boundary.observations.size()) { throw std::runtime_error("Overlap validation below 80% overall"); }
     for (const FrameId frame : boundary.shared) {
-        if (passed[frame] < .8*counts[frame]) { throw std::runtime_error("Overlap validation below 80% at frame " + std::to_string(frame)); }
+        // A tiny holdout sample is insufficient evidence for a per-camera
+        // verdict. Its observations still count in the mandatory overall check.
+        if (counts[frame] >= 5 && passed[frame] < .8*counts[frame]) { throw std::runtime_error("Overlap validation below 80% at frame " + std::to_string(frame)); }
     }
     for (const FrameId frame : boundary.cameras) {
         if (!model.cameras.contains(frame)) { throw std::runtime_error("Validation lost camera " + std::to_string(frame)); }
     }
 }
-void MapBuilder::AddWindow(const std::vector<DepthFrame>& frames, const std::function<void(const std::string&)>& progress) {
+void MapBuilder::AddWindow(const std::vector<DepthFrame>& frames, const std::vector<DepthFrame>& reference_frames,
+                           const std::function<void(const std::string&)>& progress) {
     progress("initializing landmarks");
-    SparseMap local = this->Initialize(frames);
-    progress("local cuNLS BA");
-    this->Optimize(local, true);
-    if (this->accepted_windows_ == 0) { this->map_ = std::move(local); ++this->accepted_windows_; return; }
-    progress("shared-camera/landmark Sim(3)");
-    SparseMap candidate;
-    Boundary recovery_checks;
-    try {
-        const Similarity alignment = Align(this->map_, local);
-        Transform(local, alignment);
-        progress("combining tracks");
-        candidate = this->Combine(local);
-    } catch (const InsufficientAlignmentSupport& error) {
-        progress(std::string("PnP recovery: ") + error.what());
-        candidate = this->Recover(frames, local, recovery_checks, progress);
+    const SparseMap initialized = this->Initialize(frames);
+    std::vector<SparseMap> initial_groups = ConnectedGroups(initialized);
+    if (this->accepted_windows_ == 0 && initial_groups.size() != 1) {
+        throw std::runtime_error("Seed window is disconnected; no established map exists to anchor its groups");
     }
-    const Boundary boundary = this->Withhold(candidate, local);
+    SparseMap refined;
+    // Separate solves anchor each input component independently. GNC filtering
+    // may split it further, so discover components again after local BA.
+    for (std::size_t i = 0; i < initial_groups.size(); ++i) {
+        progress("local cuNLS BA: group " + std::to_string(i+1) + "/" + std::to_string(initial_groups.size()));
+        this->Optimize(initial_groups[i], true);
+        refined.cameras.merge(initial_groups[i].cameras);
+        refined.landmarks.merge(initial_groups[i].landmarks);
+    }
+    if (this->accepted_windows_ == 0) {
+        CheckSupport(refined, "seed after local BA");
+        this->map_ = std::move(refined);
+        ++this->accepted_windows_;
+        return;
+    }
+    std::vector<SparseMap> groups = ConnectedGroups(refined);
+    SparseMap local;
+    for (std::size_t i = 0; i < groups.size(); ++i) {
+        SparseMap& group = groups[i];
+        std::size_t shared = 0;
+        for (const std::pair<const FrameId, Camera>& camera : group.cameras) {
+            shared += this->map_.cameras.contains(camera.first);
+        }
+        const std::string label = "local group " + std::to_string(i+1) + "/" + std::to_string(groups.size()) +
+            " (frames " + std::to_string(group.cameras.begin()->first) + ".." +
+            std::to_string(group.cameras.rbegin()->first) + ", " + std::to_string(shared) + " shared cameras)";
+        if (shared == 0) {
+            throw std::runtime_error(label + ": cannot anchor to the established map");
+        }
+        progress("shared-camera Sim(3): " + label);
+        try {
+            const Similarity alignment = Align(this->map_, group, reference_frames, frames, progress);
+            Transform(group, alignment);
+        } catch (const std::runtime_error& error) {
+            throw std::runtime_error(label + ": " + error.what());
+        }
+        // Components partition cameras and global tracks. All transforms are
+        // estimated against the unchanged accepted map, never another new group.
+        local.cameras.merge(group.cameras);
+        local.landmarks.merge(group.landmarks);
+    }
+    progress("combining tracks");
+    SparseMap candidate = this->Combine(local);
+    progress("withholding overlap observations");
+    const Boundary boundary = this->Withhold(candidate, local, progress);
     progress("joint cuNLS BA");
     this->Optimize(candidate, false);
     progress("validating overlaps");
     this->Validate(candidate, boundary);
-    if (!recovery_checks.observations.empty()) { this->Validate(candidate, recovery_checks); }
     for (const Boundary& previous : this->boundaries_) { this->Validate(candidate, previous); }
-    // Transactional commit: a rejected candidate never mutates the accepted map.
+    // Commit only after validation; deferred attempts leave the map unchanged.
     this->map_ = std::move(candidate);
     this->boundaries_.push_back(boundary);
-    if (!recovery_checks.observations.empty()) { this->boundaries_.push_back(std::move(recovery_checks)); }
     ++this->accepted_windows_;
+}
+std::vector<std::size_t> MapBuilder::RankWindows(const std::vector<std::vector<FrameId>>& windows) const {
+    // Rank cheap graph evidence before loading VGGT tensors or running local BA.
+    // Feature tracks alone cannot provide the shared-camera Sim(3) anchor.
+    std::vector<std::tuple<std::size_t,std::size_t,std::size_t>> ranked;
+    for (std::size_t index = 0; index < windows.size(); ++index) {
+        std::map<TrackId,std::size_t> support;
+        std::size_t cameras = 0;
+        for (const FrameId frame : windows[index]) {
+            cameras += this->map_.cameras.contains(frame);
+            if (!this->frame_tracks_.contains(frame)) { continue; }
+            for (const TrackId track : this->frame_tracks_.at(frame)) { ++support[track]; }
+        }
+        if (this->accepted_windows_ != 0 && cameras == 0) { continue; }
+        std::size_t tracks = 0;
+        for (const std::pair<const TrackId,std::size_t>& entry : support) {
+            if (entry.second >= 3 && (this->accepted_windows_ == 0 || this->map_.landmarks.contains(entry.first))) { ++tracks; }
+        }
+        ranked.emplace_back(cameras,tracks,index);
+    }
+    std::sort(ranked.begin(),ranked.end(),[](const std::tuple<std::size_t,std::size_t,std::size_t>& a,
+                                           const std::tuple<std::size_t,std::size_t,std::size_t>& b) {
+        if (std::get<0>(a) != std::get<0>(b)) { return std::get<0>(a) > std::get<0>(b); }
+        if (std::get<1>(a) != std::get<1>(b)) { return std::get<1>(a) > std::get<1>(b); }
+        return std::get<2>(a) < std::get<2>(b);
+    });
+    std::vector<std::size_t> result;
+    for (const std::tuple<std::size_t,std::size_t,std::size_t>& entry : ranked) { result.push_back(std::get<2>(entry)); }
+    return result;
+}
+void MapBuilder::Finalize(const std::function<void(const std::string&)>& progress) {
+    if (this->accepted_windows_ == 0) { throw std::runtime_error("No accepted map for global BA"); }
+    SparseMap candidate = this->map_;
+    const Camera& first = candidate.cameras.begin()->second;
+    std::array<std::vector<double>,4> values;
+    for (const std::pair<const FrameId,Camera>& entry : candidate.cameras) {
+        if (entry.second.width != first.width || entry.second.height != first.height) {
+            throw std::runtime_error("Shared calibration requires identical processed image dimensions");
+        }
+        values[0].push_back(entry.second.intrinsics(0,0)); values[1].push_back(entry.second.intrinsics(1,1));
+        values[2].push_back(entry.second.intrinsics(0,2)); values[3].push_back(entry.second.intrinsics(1,2));
+    }
+    Eigen::Matrix3d intrinsics = first.intrinsics;
+    intrinsics(0,0) = Median(values[0]); intrinsics(1,1) = Median(values[1]);
+    intrinsics(0,2) = Median(values[2]); intrinsics(1,2) = Median(values[3]);
+    for (std::pair<const FrameId,Camera>& entry : candidate.cameras) { entry.second.intrinsics = intrinsics; }
+    progress("global BA: shared fx/fy, fixed principal point");
+    this->Optimize(candidate,false,1);
+    for (const Boundary& boundary : this->boundaries_) { this->Validate(candidate,boundary); }
+    int completed_stage = 1;
+    SparseMap principal_candidate = candidate;
+    progress("global BA: shared fx/fy/cx/cy with principal prior");
+    try {
+        this->Optimize(principal_candidate,false,2);
+        for (const Boundary& boundary : this->boundaries_) { this->Validate(principal_candidate,boundary); }
+        candidate = std::move(principal_candidate);
+        completed_stage = 2;
+    } catch (const std::runtime_error& error) {
+        progress(std::string("WARNING: Principal-point refinement rejected; keeping validated shared focal BA: ") + error.what());
+    }
+
+    this->map_ = std::move(candidate);
+    this->calibration_stage_ = completed_stage;
 }
 } // namespace stereoforge::optimization

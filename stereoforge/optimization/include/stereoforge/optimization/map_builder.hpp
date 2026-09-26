@@ -36,10 +36,6 @@ struct DepthFrame {
     std::vector<float> depth;
     std::vector<std::uint8_t> rgb;
 };
-class InsufficientAlignmentSupport final : public std::runtime_error {
-public:
-    using std::runtime_error::runtime_error;
-};
 struct Similarity {
     double scale = 1;
     Eigen::Matrix3d rotation = Eigen::Matrix3d::Identity();
@@ -57,26 +53,31 @@ struct Boundary {
     std::set<FrameId> cameras;
 };
 [[nodiscard]] double Reprojection(const Camera& camera, const Eigen::Vector3d& point, const Eigen::Vector2d& pixel);
-[[nodiscard]] Similarity Align(const SparseMap& reference, const SparseMap& local);
+[[nodiscard]] Similarity Align(const SparseMap& reference, const SparseMap& local,
+                               const std::vector<DepthFrame>& previous, const std::vector<DepthFrame>& incoming,
+                               const std::function<void(const std::string&)>& progress);
 void Transform(SparseMap& model, const Similarity& transform);
 class MapBuilder final {
 public:
     MapBuilder(int device, int iterations, bool check_jacobians);
     void SetTracks(std::vector<Observations> tracks);
-    void AddWindow(const std::vector<DepthFrame>& frames, const std::function<void(const std::string&)>& progress);
+    void AddWindow(const std::vector<DepthFrame>& frames, const std::vector<DepthFrame>& reference_frames,
+                   const std::function<void(const std::string&)>& progress);
+    [[nodiscard]] std::vector<std::size_t> RankWindows(const std::vector<std::vector<FrameId>>& windows) const;
+    void Finalize(const std::function<void(const std::string&)>& progress);
     [[nodiscard]] const SparseMap& Map() const;
     [[nodiscard]] std::size_t AcceptedWindows() const;
+    [[nodiscard]] int CalibrationStage() const { return this->calibration_stage_; }
 private:
     [[nodiscard]] SparseMap Initialize(const std::vector<DepthFrame>& frames) const;
-    void Optimize(SparseMap& model, bool local) const;
+    void Optimize(SparseMap& model, bool local, int calibration_stage = 0) const;
     [[nodiscard]] SparseMap Combine(const SparseMap& local) const;
-    [[nodiscard]] SparseMap Recover(const std::vector<DepthFrame>& frames, const SparseMap& local,
-                                    Boundary& recovery_checks,
+    [[nodiscard]] Boundary Withhold(SparseMap& combined, const SparseMap& local,
                                     const std::function<void(const std::string&)>& progress) const;
-    [[nodiscard]] Boundary Withhold(SparseMap& combined, const SparseMap& local) const;
     void Validate(const SparseMap& model, const Boundary& boundary) const;
     BundleAdjuster solver_;
     int iterations_;
+    int calibration_stage_ = 0;
     bool check_jacobians_;
     std::vector<Observations> tracks_;
     std::map<FrameId, std::vector<TrackId>> frame_tracks_;

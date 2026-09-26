@@ -49,6 +49,7 @@ def main() -> int:
     parser.add_argument('--neighbors', type=int, help='Temporal feature matching neighbors (default 4)')
     parser.add_argument('--device', help='cuda: visible GPUs for VGGT, first GPU for BA; cuda:N: one GPU')
     parser.add_argument('--lm-iterations', type=int, help='Joint BA iteration budget (default 300)')
+    parser.add_argument('--dense-voxel-fraction', type=float, help='Voxel width / median scene depth (default 0.01; larger uses less memory)')
     parser.add_argument('--keyframe-config', type=Path)
     parser.add_argument('--diagnostics', action='store_true', help='Check native CUDA Jacobians (slower; no intermediate map dumps)')
     parser.add_argument('--debug', action='store_true', help='Show exception traceback')
@@ -61,7 +62,7 @@ def main() -> int:
         if args.resume:
             if any(value is not None for value in (args.output, args.checkpoint, args.window_size,
                     args.overlap, args.neighbors, args.device, args.keyframe_config)):
-                raise ValueError('--resume keeps saved input/window settings; only the BA budget and diagnostics may change')
+                raise ValueError('--resume keeps saved input/window settings; only the BA budget, dense voxel fraction and diagnostics may change')
             candidate = args.resume.expanduser().resolve()
             saved = json.loads((candidate / 'request.json').read_text())
             if saved.get('pipeline') != POLICY:
@@ -70,6 +71,8 @@ def main() -> int:
             if signature(video, config) != saved['signature']:
                 raise ValueError('Inputs or implementation changed; start a fresh --video run to avoid stale derived inputs')
             options = WindowOptions(**saved['options'])
+            if args.dense_voxel_fraction is not None:
+                options = replace(options, dense_voxel_fraction=args.dense_voxel_fraction)
             if args.lm_iterations is not None:
                 options = replace(options, lm_iterations=args.lm_iterations)
             checkpoint = Path(saved['checkpoint'])
@@ -86,7 +89,8 @@ def main() -> int:
                                     overlap=args.overlap if args.overlap is not None else 8,
                                     neighbors=args.neighbors if args.neighbors is not None else 4,
                                     device=args.device or 'cuda',
-                                    lm_iterations=args.lm_iterations if args.lm_iterations is not None else 300)
+                                    lm_iterations=args.lm_iterations if args.lm_iterations is not None else 300,
+                                    dense_voxel_fraction=args.dense_voxel_fraction if args.dense_voxel_fraction is not None else 0.01)
             output = (args.output or ROOT / 'data/intermediate' / datetime.now(timezone.utc).strftime(
                 'reconstruction_%Y%m%d_%H%M%S_%f')).expanduser().resolve()
             output.mkdir(parents=True, exist_ok=False)
@@ -100,7 +104,7 @@ def main() -> int:
         attempt.mkdir()
         write_json(attempt / 'options.json', {**asdict(options), 'diagnostics': args.diagnostics})
         reconstructor = WindowReconstructor(options, output, config, attempt, args.diagnostics)
-        logging.info('Video → keyframes → overlapping VGGT windows → common map + cuNLS BA')
+        logging.info('Video → keyframes → VGGT windows → graph-ordered map → shared-calibration BA → dense refinement')
         sampler = VideoFrameSampler(keyframe_config=config)
         folder = output / 'input_frames'
         if (folder / 'manifest.json').is_file():

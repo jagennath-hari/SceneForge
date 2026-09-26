@@ -8,6 +8,10 @@ pub fn log(rec: &RecordingStream, root: &str, cameras: &[f32], ids: &[i64], imag
     let centers: Vec<[f32; 3]> = cameras.chunks_exact(18).map(|c| [c[9], c[10], c[11]]).collect();
     let size = 0.07; // Fixed presentation size in normalized display coordinates.
     let color = if root == "world/map" { Color::from_rgb(50, 200, 255) } else { Color::from_rgb(255, 180, 40) };
+    let camera_color = if root == "world/map" {
+        Color::from_unmultiplied_rgba(50,200,255,115)
+    } else { color };
+    let image_opacity = if root == "world/map" { 0.25_f32 } else { 1.0_f32 };
     let mut trajectory: Vec<Vec<[f32; 3]>> = Vec::new();
     for (index, c) in cameras.chunks_exact(18).enumerate() {
         if !c.iter().all(|v| v.is_finite()) || c[12] <= 0.0 || c[13] <= 0.0 || c[16] <= 0.0 || c[17] <= 0.0 {
@@ -29,11 +33,14 @@ pub fn log(rec: &RecordingStream, root: &str, cameras: &[f32], ids: &[i64], imag
             [c[12]*sx, 0.0, 0.0], [0.0, c[13]*sy, 0.0], [c[14]*sx, c[15]*sy, 1.0],
         ]).with_resolution(resolution)
           .with_camera_xyz(ViewCoordinates::RDF)
-          .with_image_plane_distance(size).with_color(color))?;
+          .with_image_plane_distance(size).with_color(camera_color))?;
+        // Opacity is a separate component update: cached RGB textures need not
+        // be uploaded again when a camera joins the accepted map.
+        rec.log(format!("{path}/image"), &rerun::Image::update_fields().with_opacity(image_opacity))?;
         if let Some(image) = image {
             let image_path = format!("{path}/image");
             if logged_images.insert(image_path.clone()) {
-                rec.log(image_path, &rerun::Image::from_rgb24(image.rgb.clone(), [image.width,image.height]))?;
+                rec.log(image_path, &rerun::Image::from_rgb24(image.rgb.clone(), [image.width,image.height]).with_opacity(image_opacity))?;
             }
         }
         if index > 0 && ids[index] == ids[index-1]+1 {

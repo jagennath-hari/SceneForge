@@ -54,6 +54,20 @@ pub extern "C" fn sf_rerun_open(path: *const c_char, output: *mut *mut std::ffi:
         ))?;
         // Display convention only: no gravity alignment or coordinate change.
         recording.log_static("world", &ViewCoordinates::RDF())?;
+        // Static presentation reference survives every stage and timeline seek.
+        // It is the normalized display origin, not a surveyed world coordinate.
+        recording.log_static("world/origin/axes", &rerun::LineStrips3D::new([
+            vec![[0.0_f32,0.0,0.0],[1.0,0.0,0.0]],
+            vec![[0.0_f32,0.0,0.0],[0.0,1.0,0.0]],
+            vec![[0.0_f32,0.0,0.0],[0.0,0.0,1.0]],
+        ]).with_colors([Color::from_rgb(235,75,75), Color::from_rgb(80,210,100), Color::from_rgb(80,140,255)])
+          .with_radii([rerun::components::Radius::new_ui_points(1.5)]))?;
+        recording.log_static("world/origin/labels", &Points3D::new([
+            [0.0_f32,0.0,0.0],[1.1,0.0,0.0],[0.0,1.1,0.0],[0.0,0.0,1.1],
+        ]).with_labels(["Display origin", "+X", "+Y", "+Z"])
+          .with_colors([Color::from_rgb(220,220,220), Color::from_rgb(235,75,75),
+                        Color::from_rgb(80,210,100), Color::from_rgb(80,140,255)])
+          .with_radii([rerun::components::Radius::new_ui_points(2.0)]))?;
         recording.log_static("pipeline/layout_legend", &TextLog::new(
             "GRAY cameras = schematic sphere, arbitrary FOV. ORANGE groups = independently normalized VGGT windows. BLUE map = accepted geometry in normalized display coordinates."))?;
         recording.log("pipeline/stage", &TextLog::new(

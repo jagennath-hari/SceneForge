@@ -315,7 +315,10 @@ Overlapping windows reuse those entities; accepted poses are not overwritten by
 later provisional windows. Completed window point previews are retired.
 Gray cameras have arbitrary display FOV until VGGT supplies calibration.
 
-The viewer uses one full-width 3D scene, without a pipeline-status pane. Inspection
+The viewer uses one full-width 3D scene, without a pipeline-status pane.
+A labeled display origin and red X, green Y, blue Z axes appear immediately and
+remain visible throughout processing. This is a normalized display reference,
+not a surveyed origin or metric scale. Inspection
 panels and the timeline start collapsed. Logs remain recorded under `pipeline`.
 During image preparation, the active camera is highlighted amber and becomes
 green when its processed thumbnail is ready. Matching displays up to 16 requested

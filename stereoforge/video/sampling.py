@@ -57,7 +57,7 @@ class VideoFrameSampler:
         if self.max_edge == 1:
             raise ValueError("max_edge must be zero or at least two")
 
-    def sample(self, video: Path, destination: Path) -> SampledFrames:
+    def sample(self, video: Path, destination: Path, on_progress=None) -> SampledFrames:
         executable = shutil.which("stereoforge-extract-frames")
         if executable is None:
             raise RuntimeError("Native video extractor is missing. Rebuild the Docker environment with "
@@ -106,7 +106,7 @@ class VideoFrameSampler:
                 progress.bar.total = len(cached.paths)
                 progress.status("reusing saved frames" if progress.completed == 0 else "publishing saved frames")
                 progress.advance(len(cached.paths) - progress.completed)
-                document = (self._select(cache, progress) if self.keyframes else
+                document = (self._select(cache, progress, on_progress) if self.keyframes else
                             json.loads((cache / "manifest.json").read_text(encoding="utf-8")))
                 progress.status(f"publishing {len(document['frames'])} geometry frames")
                 for index, record in enumerate(document["frames"]):
@@ -119,7 +119,7 @@ class VideoFrameSampler:
                     shutil.copy2(cache / "parallel_diagnostic.json", destination / "parallel_diagnostic.json")
         return self._read_manifest(destination)
 
-    def _select(self, cache: Path, progress: Progress) -> dict:
+    def _select(self, cache: Path, progress: Progress, on_progress=None) -> dict:
         executable = shutil.which("stereoforge-select-keyframes")
         if executable is None:
             raise RuntimeError("Native keyframe selector is missing; stop the container and rebuild the Docker environment")
@@ -130,14 +130,20 @@ class VideoFrameSampler:
         output = cache / f"keyframes_{signature}.json"
         progress.bar.set_description("Selecting keyframes")
         progress.description = "Selecting keyframes"
+        candidates = json.loads((cache / "manifest.json").read_text(encoding="utf-8"))["frames"]
+        def notify(event: dict) -> None:
+            if on_progress is None:
+                return
+            index = min(max(event['saved']-1, 0), len(candidates)-1)
+            record = candidates[index]
+            on_progress({**event, 'timestamp_seconds': record['timestamp_seconds']}, cache / record['file'])
         if not output.is_file():
             self._run_process([executable, "--input", str(cache), "--output", str(output),
-                               "--config", str(self.keyframe_config), *model_args], progress, "Keyframe selection")
+                               "--config", str(self.keyframe_config), *model_args], progress, "Keyframe selection", notify if on_progress is not None else None)
         document = json.loads(output.read_text(encoding="utf-8"))
         status = document.get("keyframe_selection", {}).get("status")
         if status != "complete":
             raise RuntimeError(f"Keyframe selection: {status}. Inspect {output}; adjust configs/keyframes_raco.json or use --all-frames for diagnostics")
-        candidates = json.loads((cache / "manifest.json").read_text(encoding="utf-8"))["frames"]
         if document.get("candidate_frame_count") != len(candidates) or len(document["frames"]) < 3:
             raise ValueError("Keyframe selection has inconsistent frame counts")
         previous = -1
@@ -153,6 +159,9 @@ class VideoFrameSampler:
         document["keyframe_selection"]["settings"] = json.loads(config)
         if model_identity:
             document["keyframe_selection"]["model_manifest"] = json.loads(model_identity)
+        if on_progress is not None:
+            notify({'saved': len(candidates), 'total': len(candidates),
+                    'stage': f"Selection complete: {len(document['frames'])} keyframes (cache reused when available)"})
         progress.status(f"reusing selection: {len(document['frames'])} keyframes")
         return document
 
@@ -197,7 +206,7 @@ class VideoFrameSampler:
         self._run_process(command, progress, "Native frame extraction")
 
     @staticmethod
-    def _run_process(command: list[str], progress: Progress, operation: str) -> None:
+    def _run_process(command: list[str], progress: Progress, operation: str, on_progress=None) -> None:
         # stderr remains visible; stdout contains only the native progress protocol.
         process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True, start_new_session=True)
         try:
@@ -213,6 +222,8 @@ class VideoFrameSampler:
                 timestamp = event.get("timestamp_seconds")
                 progress.status(f"video {timestamp:.1f}s | {stage}" if timestamp is not None else stage)
                 progress.advance(event["saved"] - progress.completed)
+                if on_progress is not None:
+                    on_progress(event)
             result = process.wait()
             if result != 0:
                 raise RuntimeError(f"{operation} failed (exit {result}); see its error/report above")

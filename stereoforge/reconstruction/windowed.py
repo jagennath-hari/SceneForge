@@ -133,16 +133,27 @@ class WindowReconstructor(ReconstructionFrontend):
             if not tracks.exists():
                 graph = VerifiedGraph(len(paths))
                 files = self._match(len(paths))
-                graph.read(files)
+                if self.visualization is not None:
+                    self.visualization.event('Building measured feature tracks from verified image matches')
+                graph.read(files, on_progress=self.visualization.event if self.visualization is not None else None)
+                if self.visualization is not None:
+                    self.visualization.tracks(graph.tracks, self.images)
                 write_json(self.output / 'graph.json', graph.summary)
                 temporary = tracks.with_suffix('.partial')
                 with temporary.open('w') as stream:
                     for track in graph.tracks:
                         stream.write(json.dumps({str(f): uv.tolist() for f, uv in track.items()})+'\n')
                 temporary.replace(tracks)
+            elif self.visualization is not None:
+                self.visualization.event('Reusing saved measured feature tracks; matching and track building skipped')
             write_json(self.output / 'windows.json', {'windows': [window.document() for window in windows]})
             self.summary['stage'] = 'vggt'
-            infer_clusters(checkpoint, paths, windows, self.output / 'vggt', self.devices)
+            on_window = None
+            if self.visualization is not None:
+                self.visualization.event('VGGT inference: waiting for the first window; local maps remain separate until Sim(3)')
+                def on_window(identifier: int) -> None:
+                    self.visualization.window(self.output / 'vggt' / f'{identifier}.pt', list(self.images.values()), identifier)
+            infer_clusters(checkpoint, paths, windows, self.output / 'vggt', self.devices, on_complete=on_window)
             with Progress('Loading native feature tracks'):
                 self.native.load_tracks(tracks)
             pending = {window.identifier: window for window in windows}

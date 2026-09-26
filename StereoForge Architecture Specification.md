@@ -1044,8 +1044,8 @@ all estimates and still stops the solve.
 
 `--rerun` records map-building stages via the official Rerun Rust SDK 0.38.1.
 StereoForge owns `stereoforge/visualization`, a Rust cdylib with a narrow C ABI;
-the C++ map builder loads it only when recording is requested. Python only enables
-recording. No upstream Rerun code is modified and no Rerun C++/Python SDK is used.
+the C++ map builder loads it only when recording is requested. Python routes existing frontend stage outputs through typed native bindings;
+all Rerun SDK calls, camera entities and the blueprint are implemented in Rust. No upstream Rerun code is modified and no Rerun C++/Python SDK is used.
 The library writes `pipeline.rrd` per map attempt: VGGT-initialized sparse window,
 Sim(3)-aligned provisional window, accepted common maps and final shared BA.
 The timeline is reconstruction step (graph order), with a representative processed
@@ -1054,5 +1054,16 @@ points per snapshot. Independent local coordinates have a separate entity root.
 Snapshots clear replaced entities; rejected candidates never overwrite the accepted
 map. The Rust SDK launches the standard viewer and sends one recording to both a
 gRPC sink and a file sink. Live updates use gRPC; saved files are for replay,
-not file tailing. Stage flushes are asynchronous and shutdown flushing is bounded. Feature extraction and dense fusion are not yet logged. Visualization
+not file tailing. Stage flushes are asynchronous and shutdown flushing is bounded.
+The default blueprint separates the common map, local VGGT window, frontend
+images/features and stage logs. Selection shows throttled candidate RGB/progress;
+preparation shows processed images; matching shows a verified pair per batch;
+track building shows phase progress and observed feature locations. Each completed
+VGGT inference window produces a bounded raw-depth cloud and its predicted cameras
+without placing it into the common-map coordinate system. Camera-to-world
+`Transform3D` entities carry RGB axes and calibrated child `Pinhole` entities using
+fx/fy/cx/cy, processed image resolution and RDF optical axes. Representative RGB
+images attach to the corresponding pinhole. World RDF is a display convention,
+not gravity estimation. Dense fusion and per-iteration optimizer updates are not
+yet logged. Visualization
 errors disable recording with a warning; reconstruction validation is unchanged.

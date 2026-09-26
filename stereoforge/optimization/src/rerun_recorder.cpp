@@ -13,9 +13,10 @@ RerunRecorder::RerunRecorder(const std::string& path) {
     try {
         const Open open = reinterpret_cast<Open>(dlsym(this->library_, "sf_rerun_open"));
         this->snapshot_ = reinterpret_cast<SnapshotCall>(dlsym(this->library_, "sf_rerun_snapshot"));
+        this->event_ = reinterpret_cast<EventCall>(dlsym(this->library_, "sf_rerun_event"));
         this->image_ = reinterpret_cast<ImageCall>(dlsym(this->library_, "sf_rerun_image"));
         this->close_ = reinterpret_cast<Close>(dlsym(this->library_, "sf_rerun_close"));
-        if (open == nullptr || this->snapshot_ == nullptr || this->close_ == nullptr || this->image_ == nullptr) {
+        if (open == nullptr || this->snapshot_ == nullptr || this->close_ == nullptr || this->image_ == nullptr || this->event_ == nullptr) {
             throw std::runtime_error("Incompatible Rust Rerun adapter; rebuild Docker");
         }
         std::array<char,2048> error{};
@@ -28,6 +29,12 @@ RerunRecorder::~RerunRecorder() {
     if (this->session_ != nullptr) { this->close_(this->session_); }
     // Rust/Rerun may own background threads or TLS destructors. Keep the DSO
     // loaded until process exit rather than unloading code those threads use.
+}
+void RerunRecorder::Event(const std::string& message, const std::uint8_t* rgb, std::uint32_t width, std::uint32_t height,
+                          const float* points, std::size_t point_count, const float* segments, std::size_t segment_count) {
+    std::array<char,2048> error{};
+    if (this->event_(this->session_,message.c_str(),rgb,width,height,points,point_count,segments,segment_count,
+                    error.data(),error.size()) != 0) { throw std::runtime_error(error.data()); }
 }
 void RerunRecorder::Image(const DepthFrame& frame) {
     if (frame.camera.width <= 0 || frame.camera.height <= 0 ||

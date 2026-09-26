@@ -115,6 +115,43 @@ MapBuilder::MapBuilder(int device, int iterations, bool check_jacobians)
     : solver_(device), iterations_(iterations), check_jacobians_(check_jacobians) {
     if (iterations < 1 || iterations > 500) { throw std::invalid_argument("BA iterations must be 1..500"); }
 }
+void MapBuilder::RerunEvent(const std::string& message, const std::uint8_t* rgb, std::uint32_t width, std::uint32_t height,
+                            const float* points, std::size_t point_count, const float* segments, std::size_t segment_count) {
+    if (!this->recorder_) { return; }
+    try { this->recorder_->Event(message,rgb,width,height,points,point_count,segments,segment_count); }
+    catch (...) { this->recorder_.reset(); throw; }
+}
+void MapBuilder::PreviewWindow(const std::vector<DepthFrame>& frames) {
+    if (!this->recorder_ || frames.empty()) { return; }
+    try {
+        SparseMap preview;
+        TrackId id = 0;
+        for (const DepthFrame& frame : frames) {
+            if (frame.camera.width <= 0 || frame.camera.height <= 0 ||
+                frame.depth.size() != static_cast<std::size_t>(frame.camera.width)*frame.camera.height ||
+                frame.rgb.size() != 3*frame.depth.size() || !frame.camera.intrinsics.allFinite() ||
+                frame.camera.intrinsics(0,0) <= 0 || frame.camera.intrinsics(1,1) <= 0) {
+                throw std::runtime_error("Invalid VGGT preview frame dimensions/calibration");
+            }
+            preview.cameras.emplace(frame.id,frame.camera);
+            const std::size_t stride = std::max<std::size_t>(1,(frame.depth.size()+1999)/2000);
+            for (std::size_t pixel=0; pixel<frame.depth.size(); pixel+=stride) {
+                const double z = frame.depth[pixel];
+                if (!std::isfinite(z) || z <= 0) { continue; }
+                const double u = static_cast<double>(pixel % frame.camera.width);
+                const double v = static_cast<double>(pixel / frame.camera.width);
+                const Eigen::Vector3d ray((u-frame.camera.intrinsics(0,2))/frame.camera.intrinsics(0,0),
+                                           (v-frame.camera.intrinsics(1,2))/frame.camera.intrinsics(1,1),1);
+                Landmark point;
+                point.position = frame.camera.rotation*(ray*z)+frame.camera.center;
+                point.color = {frame.rgb[3*pixel],frame.rgb[3*pixel+1],frame.rgb[3*pixel+2]};
+                preview.landmarks.emplace(id++,std::move(point));
+            }
+        }
+        this->recorder_->Snapshot(preview,0);
+        this->recorder_->Image(frames.front());
+    } catch (...) { this->recorder_.reset(); throw; }
+}
 void MapBuilder::EnableRerun(const std::string& path) {
     this->recorder_ = std::make_unique<RerunRecorder>(path);
 }
@@ -463,7 +500,7 @@ void MapBuilder::AddWindow(const std::vector<DepthFrame>& frames, const std::vec
         CheckSupport(refined, "seed after local BA");
         this->map_ = std::move(refined);
         ++this->accepted_windows_;
-        this->Record(this->map_,2,progress);
+        this->Record(this->map_,2,progress,frames.empty() ? nullptr : &frames.front());
         return;
     }
     std::vector<SparseMap> groups = ConnectedGroups(refined);
@@ -506,7 +543,7 @@ void MapBuilder::AddWindow(const std::vector<DepthFrame>& frames, const std::vec
     this->map_ = std::move(candidate);
     this->boundaries_.push_back(boundary);
     ++this->accepted_windows_;
-    this->Record(this->map_,2,progress);
+    this->Record(this->map_,2,progress,frames.empty() ? nullptr : &frames.front());
 }
 std::vector<std::size_t> MapBuilder::RankWindows(const std::vector<std::vector<FrameId>>& windows) const {
     // Rank cheap graph evidence before loading VGGT tensors or running local BA.

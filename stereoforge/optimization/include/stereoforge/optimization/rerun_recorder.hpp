@@ -13,6 +13,8 @@ public:
     ~RerunRecorder();
     RerunRecorder(const RerunRecorder&) = delete;
     RerunRecorder& operator=(const RerunRecorder&) = delete;
+    void Event(const std::string& message, const std::uint8_t* rgb, std::uint32_t width, std::uint32_t height,
+               const float* points, std::size_t point_count, const float* segments, std::size_t segment_count);
     void Image(const DepthFrame& frame);
     void Snapshot(const SparseMap& map, std::uint32_t stage);
 private:
@@ -20,10 +22,13 @@ private:
     using SnapshotCall = int (*)(void*, std::uint32_t, const float*, const std::uint8_t*, std::size_t,
                                  const float*, const std::int64_t*, std::size_t, char*, std::size_t);
     using ImageCall = int (*)(void*, const std::uint8_t*, std::uint32_t, std::uint32_t, std::int64_t, char*, std::size_t);
+    using EventCall = int (*)(void*, const char*, const std::uint8_t*, std::uint32_t, std::uint32_t,
+                              const float*, std::size_t, const float*, std::size_t, char*, std::size_t);
     using Close = void (*)(void*);
     void* library_ = nullptr;
     void* session_ = nullptr;
     SnapshotCall snapshot_ = nullptr;
+    EventCall event_ = nullptr;
     ImageCall image_ = nullptr;
     Close close_ = nullptr;
 };

@@ -1,6 +1,7 @@
 """Independent small VGGT clusters scheduled across visible GPUs."""
 
 from dataclasses import replace
+from collections.abc import Callable
 import logging
 import multiprocessing as mp
 from multiprocessing.queues import Queue
@@ -38,9 +39,14 @@ def _worker(device: str, checkpoint: str, paths: list[str], jobs: list[tuple[int
 
 
 def infer_clusters(checkpoint: Path, paths: list[Path], leaves: list,
-                   output: Path, devices: list[str]) -> None:
+                   output: Path, devices: list[str], on_complete: Callable[[int], None] | None = None) -> None:
     output.mkdir(exist_ok=True)
     jobs = [(node.identifier, node.frames) for node in leaves if not (output / f"{node.identifier}.pt").is_file()]
+    if on_complete is not None:
+        pending_ids = {identifier for identifier, _ in jobs}
+        for node in leaves:
+            if node.identifier not in pending_ids:
+                on_complete(node.identifier)
     if not jobs:
         return
     context = mp.get_context("spawn")
@@ -63,6 +69,8 @@ def infer_clusters(checkpoint: Path, paths: list[Path], leaves: list,
                     continue
                 if kind == "error":
                     raise RuntimeError(str(value))
+                if on_complete is not None:
+                    on_complete(value)
                 completed += 1
                 progress.advance(1)
     finally:

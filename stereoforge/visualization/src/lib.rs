@@ -1,11 +1,14 @@
 //! StereoForge's Rust SDK adapter. Borrowed C buffers are copied before return.
 //! ABI calls are serialized by one C++ owner; no upstream Rerun modifications.
 use std::{ffi::{CStr, c_char}, panic::{AssertUnwindSafe, catch_unwind}, slice};
-use rerun::{Clear, Color, LineStrips3D, Points3D, RecordingStream, TextLog, TimeCell};
+mod cameras;
+mod layout;
+use rerun::{Clear, Color, Points3D, RecordingStream, TextLog, TimeCell, ViewCoordinates};
 
 struct Session {
     recording: RecordingStream,
     step: i64,
+    camera_root: Option<String>,
 }
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -39,15 +42,18 @@ pub extern "C" fn sf_rerun_open(path: *const c_char, output: *mut *mut std::ffi:
         // actual port returned by the SDK, not an assumed localhost port.
         let viewer = rerun::spawn(&rerun::SpawnOptions::default())?;
         let uri = format!("rerun+http://127.0.0.1:{}/proxy", viewer.port).parse()?;
-        let recording = rerun::RecordingStreamBuilder::new("StereoForge").set_sinks((
+        let recording = rerun::RecordingStreamBuilder::new("StereoForge").with_blueprint(layout::blueprint()).set_sinks((
             rerun::sink::FileSink::new(path)?,
             rerun::sink::GrpcSink::new(uri),
         ))?;
+        // Display convention only: no gravity alignment or coordinate change.
+        recording.log_static("world", &ViewCoordinates::RDF)?;
+        recording.log_static("local_window", &ViewCoordinates::RDF)?;
         recording.log("pipeline/stage", &TextLog::new(
-            "Preparing reconstruction. Map updates begin after VGGT window inference."
+            "Preparing reconstruction. Images/features appear first; each completed VGGT window has independent coordinates."
         ))?;
         recording.flush_async()?;
-        let session = Box::new(Session { recording, step: 0 });
+        let session = Box::new(Session { recording, step: 0, camera_root: None });
         unsafe { *output = Box::into_raw(session).cast(); }
         Ok(())
     })
@@ -91,38 +97,8 @@ pub extern "C" fn sf_rerun_snapshot(handle: *mut std::ffi::c_void, stage: u32,
         let colors: Vec<Color> = rgb.chunks_exact(3).map(|c| Color::from_rgb(c[0], c[1], c[2])).collect();
         rec.log(format!("{root}/points"), &Points3D::new(positions).with_colors(colors))?;
 
-        // OpenCV camera coordinates: +X right, +Y down, +Z forward. Construct
-        // frustums from K and camera-to-world directly; never invert the pose.
-        let centers: Vec<[f32; 3]> = cameras.chunks_exact(18).map(|c| [c[9], c[10], c[11]]).collect();
-        let mut steps: Vec<f32> = centers.windows(2).map(|p| {
-            ((p[0][0]-p[1][0]).powi(2)+(p[0][1]-p[1][1]).powi(2)+(p[0][2]-p[1][2]).powi(2)).sqrt()
-        }).filter(|v| v.is_finite() && *v > 0.0).collect();
-        steps.sort_by(f32::total_cmp);
-        let size = if steps.is_empty() { 0.1 } else { steps[steps.len()/2]*0.5 };
-        let mut frustums: Vec<Vec<[f32; 3]>> = Vec::new();
-        let mut trajectory: Vec<Vec<[f32; 3]>> = Vec::new();
-        for (index, c) in cameras.chunks_exact(18).enumerate() {
-            if !c.iter().all(|v| v.is_finite()) || c[12] <= 0.0 || c[13] <= 0.0 {
-                return Err("Invalid camera supplied to viewer".into());
-            }
-            let center = centers[index];
-            let mut corners = Vec::new();
-            for [u, v] in [[0.0, 0.0], [c[16], 0.0], [c[16], c[17]], [0.0, c[17]]] {
-                let ray = [(u-c[14])/c[12]*size, (v-c[15])/c[13]*size, size];
-                let p: [f32; 3] = std::array::from_fn(|r| center[r]+c[3*r]*ray[0]+c[3*r+1]*ray[1]+c[3*r+2]*ray[2]);
-                corners.push(p);
-                frustums.push(vec![center, p]);
-            }
-            corners.push(corners[0]);
-            frustums.push(corners);
-            if index > 0 && ids[index] == ids[index-1]+1 {
-                trajectory.push(vec![centers[index-1], center]);
-            }
-        }
-        rec.log(format!("{root}/cameras"), &Points3D::new(centers)
-            .with_labels(ids.iter().map(ToString::to_string)).with_colors([Color::from_rgb(255, 180, 40)]))?;
-        rec.log(format!("{root}/frustums"), &LineStrips3D::new(frustums).with_colors([Color::from_rgb(255, 180, 40)]))?;
-        rec.log(format!("{root}/trajectory"), &LineStrips3D::new(trajectory).with_colors([Color::from_rgb(50, 200, 255)]))?;
+        cameras::log(rec, root, cameras, ids)?;
+        session.camera_root = Some(root.to_owned());
         rec.flush_async()?;
         Ok(())
     })
@@ -156,9 +132,59 @@ pub extern "C" fn sf_rerun_image(handle: *mut std::ffi::c_void, rgb: *const u8,
         let session = unsafe { &mut *handle.cast::<Session>() };
         let bytes = unsafe { slice::from_raw_parts(rgb, count) }.to_vec();
         session.recording.set_time("reconstruction_step", TimeCell::from_sequence(session.step));
-        session.recording.log("active_keyframe/image", &rerun::Image::from_rgb24(bytes, [width, height]))?;
-        session.recording.log("active_keyframe/info", &TextLog::new(format!("Window representative keyframe {frame}; processed RGB")))?;
+        session.recording.log("frontend", &Clear::recursive())?;
+        session.recording.log("frontend/image", &rerun::Image::from_rgb24(bytes.clone(), [width, height]))?;
+        if let Some(root) = &session.camera_root {
+            session.recording.log(format!("{root}/cameras/{frame}/image"),
+                &rerun::Image::from_rgb24(bytes, [width, height]))?;
+        }
+        session.recording.log("pipeline/image_info", &TextLog::new(format!("Window representative keyframe {frame}; processed RGB")))?;
         session.recording.flush_async()?;
+        Ok(())
+    })
+}
+
+// Typed frontend event; no JSON or Python Rerun SDK. Optional packed RGB,
+// pixel coordinates (Nx2), and verified match segments (Nx4) share one canvas.
+#[unsafe(no_mangle)]
+pub extern "C" fn sf_rerun_event(handle: *mut std::ffi::c_void, message: *const c_char,
+    rgb: *const u8, width: u32, height: u32, xy: *const f32, point_count: usize,
+    segments: *const f32, segment_count: usize, error: *mut c_char, capacity: usize) -> i32 {
+    guarded(error, capacity, || {
+        if handle.is_null() || message.is_null() { return Err("Invalid frontend event".into()); }
+        let count = (width as usize).checked_mul(height as usize).and_then(|n| n.checked_mul(3)).ok_or("Image overflow")?;
+        let point_len = point_count.checked_mul(2).ok_or("Point overflow")?;
+        let line_len = segment_count.checked_mul(4).ok_or("Match overflow")?;
+        if (count > 0 && rgb.is_null()) || (point_len > 0 && xy.is_null()) || (line_len > 0 && segments.is_null()) {
+            return Err("Null frontend buffer".into());
+        }
+        // SAFETY: StereoForge's binding validates shapes and retains all buffers
+        // through this call. SDK archetypes own copies before the call returns.
+        let session = unsafe { &mut *handle.cast::<Session>() };
+        let message = unsafe { CStr::from_ptr(message) }.to_str()?;
+        session.step += 1;
+        session.camera_root = None;
+        let rec = &session.recording;
+        rec.set_time("reconstruction_step", TimeCell::from_sequence(session.step));
+        rec.log("pipeline/stage", &TextLog::new(message))?;
+        if count > 0 {
+            rec.log("frontend", &Clear::recursive())?;
+            let bytes = unsafe { slice::from_raw_parts(rgb, count) }.to_vec();
+            rec.log("frontend/image", &rerun::Image::from_rgb24(bytes, [width, height]))?;
+        }
+        if point_len > 0 {
+            let points: Vec<[f32; 2]> = unsafe { slice::from_raw_parts(xy, point_len) }
+                .chunks_exact(2).map(|p| [p[0], p[1]]).collect();
+            rec.log("frontend/features", &rerun::Points2D::new(points)
+                .with_colors([Color::from_rgb(80, 255, 80)]).with_radii([2.0]))?;
+        }
+        if line_len > 0 {
+            let lines: Vec<[[f32; 2]; 2]> = unsafe { slice::from_raw_parts(segments, line_len) }
+                .chunks_exact(4).map(|p| [[p[0], p[1]], [p[2], p[3]]]).collect();
+            rec.log("frontend/matches", &rerun::LineStrips2D::new(lines)
+                .with_colors([Color::from_rgb(80, 255, 80)]))?;
+        }
+        rec.flush_async()?;
         Ok(())
     })
 }

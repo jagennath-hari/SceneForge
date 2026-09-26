@@ -34,11 +34,11 @@ class VerifiedGraph:
         self.tracks: list[dict[int, np.ndarray]] = []
         self.summary: dict = {}
 
-    def read(self, files: list[Path]) -> None:
+    def read(self, files: list[Path], on_progress=None) -> None:
         with Progress("Building measured feature tracks", sum(path.stat().st_size for path in files), "B") as progress:
-            self._read(files, progress)
+            self._read(files, progress, on_progress)
 
-    def _read(self, files: list[Path], progress: Progress) -> None:
+    def _read(self, files: list[Path], progress: Progress, on_progress=None) -> None:
         progress.status("reading verified matches")
         edges = []
         verified_pairs = 0
@@ -87,6 +87,8 @@ class VerifiedGraph:
                 node = parent[node]
             return node
 
+        if on_progress is not None:
+            on_progress(f"Building tracks: sorting {len(edges):,} verified match edges")
         progress.status(f"sorting {len(edges):,} match edges")
         edges.sort(reverse=True)
         progress.reset(len(edges), "edge", "joining consistent tracks")
@@ -105,6 +107,8 @@ class VerifiedGraph:
             parent[y] = x
             members[x].update(members.pop(y))
             progress.advance()
+        if on_progress is not None:
+            on_progress(f"Building tracks: {len(members):,} components; collecting tracks with at least three views")
         progress.reset(len(members), "track", "collecting tracks with at least three views")
         self.tracks = []
         for group in members.values():

@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 class ReconstructionFrontend:
     def __init__(self, options: WindowOptions, output: Path, keyframe_config: Path) -> None:
         self.options, self.output, self.keyframe_config = options, output, keyframe_config
+        self.visualization = None
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA is required for reconstruction matching and optimization")
         self.devices = ([f"cuda:{i}" for i in range(torch.cuda.device_count())] if options.device == "cuda"
@@ -60,6 +61,8 @@ class ReconstructionFrontend:
                 with Image.open(destination) as image:
                     sizes.add(image.size)
                 result[index] = destination
+                if self.visualization is not None and (index % 20 == 0 or index == len(paths)-1):
+                    self.visualization.event(f"Preparing feature images: {index+1}/{len(paths)}; processed keyframe {index}", destination)
         if len(sizes) != 1:
             raise ValueError("Video input must use a uniform processed image size")
         self.size_wh = next(iter(sizes))
@@ -82,6 +85,8 @@ class ReconstructionFrontend:
                 destination = folder / f"{start:06d}.jsonl"
                 if destination.is_file():
                     result.append(destination)
+                    if self.visualization is not None:
+                        self.visualization.match_batch(destination, self.images)
                     progress.status(f"reused batch · source frames {start}–{min(start+64, count-1)-1}")
                     progress.advance()
                     continue
@@ -107,6 +112,8 @@ class ReconstructionFrontend:
                     raise ValueError("Rebuild Docker: pair matcher lacks stable global feature IDs")
                 temporary.rename(destination)
                 result.append(destination)
+                if self.visualization is not None:
+                    self.visualization.match_batch(destination, self.images)
                 progress.advance()
         return result
 

@@ -30,7 +30,7 @@ so::DepthFrame ReadFrame(so::FrameId id, const Eigen::Matrix4d& pose, const Eige
 }
 }
 PYBIND11_MODULE(_stereoforge_map, module) {
-    module.attr("api_version") = 10;
+    module.attr("api_version") = 11;
     py::class_<so::DenseFusion>(module,"DenseFusion")
         .def(py::init<double>())
         .def("add",[](so::DenseFusion& fusion,
@@ -68,6 +68,19 @@ PYBIND11_MODULE(_stereoforge_map, module) {
     py::class_<so::DepthFrame>(module,"DepthFrame").def(py::init(&ReadFrame));
     py::class_<so::MapBuilder>(module,"MapBuilder")
         .def(py::init<int,int,bool>())
+        .def("rerun_event",[](so::MapBuilder& builder, const std::string& message,
+            const py::array_t<std::uint8_t,py::array::c_style|py::array::forcecast>& rgb,
+            const py::array_t<float,py::array::c_style|py::array::forcecast>& points,
+            const py::array_t<float,py::array::c_style|py::array::forcecast>& segments) {
+            if (rgb.ndim()!=3 || rgb.shape(2)!=3 || points.ndim()!=2 || points.shape(1)!=2 ||
+                segments.ndim()!=2 || segments.shape(1)!=4) { throw std::invalid_argument("Invalid Rerun event array shapes"); }
+            const std::uint8_t* pixels=rgb.data(); const float* xy=points.data(); const float* lines=segments.data();
+            const std::uint32_t width=rgb.shape(1),height=rgb.shape(0);
+            const std::size_t point_count=points.shape(0),segment_count=segments.shape(0);
+            py::gil_scoped_release release;
+            builder.RerunEvent(message,pixels,width,height,xy,point_count,lines,segment_count);
+        })
+        .def("preview_window",&so::MapBuilder::PreviewWindow,py::call_guard<py::gil_scoped_release>())
         .def("enable_rerun",&so::MapBuilder::EnableRerun,py::call_guard<py::gil_scoped_release>())
         .def("set_tracks",&so::MapBuilder::SetTracks,py::call_guard<py::gil_scoped_release>())
         .def("add_window",&so::MapBuilder::AddWindow,py::call_guard<py::gil_scoped_release>())

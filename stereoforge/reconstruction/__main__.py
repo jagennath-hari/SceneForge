@@ -13,6 +13,7 @@ from uuid import uuid4
 from stereoforge.geometry.inputs import validate_image_paths
 from stereoforge.geometry.checkpoint import resolve_checkpoint
 from .native_map import native_backend
+from .visualization import ReconstructionVisualization
 from stereoforge.utils.artifacts import write_json
 from stereoforge.video.sampling import VideoFrameSampler
 from .windowed import WindowReconstructor, WindowOptions, POLICY
@@ -108,8 +109,11 @@ def main() -> int:
         if args.rerun:
             recording = attempt / 'pipeline.rrd'
             reconstructor.native.builder.enable_rerun(str(recording))
+            reconstructor.visualization = ReconstructionVisualization(reconstructor.native)
             logging.info('Rerun live viewer connected; recording also saved to %s', recording)
         logging.info('Video → keyframes → VGGT windows → graph-ordered map → shared-calibration BA → dense refinement')
+        if reconstructor.visualization is not None:
+            reconstructor.visualization.event("Decoding / selecting keyframes: waiting for ordered candidate images")
         sampler = VideoFrameSampler(keyframe_config=config)
         folder = output / 'input_frames'
         if (folder / 'manifest.json').is_file():
@@ -117,7 +121,10 @@ def main() -> int:
         else:
             if folder.exists():
                 folder.rename(folder.with_name('input_frames.failed_' + uuid4().hex[:8]))
-            sampled = sampler.sample(video, folder)
+            sampled = sampler.sample(video, folder, on_progress=reconstructor.visualization.selection
+                                     if reconstructor.visualization is not None else None)
+        if reconstructor.visualization is not None:
+            reconstructor.visualization.event(f"Selected {len(sampled.paths)} keyframes from {sampled.candidate_frame_count} candidates", sampled.paths[0])
         validate_image_paths(sampled.paths)
         write_json(output / 'selection.json', {'frames': len(sampled.paths),
                    'decoded_candidates': sampled.candidate_frame_count,

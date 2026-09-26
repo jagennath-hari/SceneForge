@@ -10,7 +10,6 @@ use rerun::{Color, Points3D, RecordingStream, TextLog, TimeCell, ViewCoordinates
 struct Session {
     recording: RecordingStream,
     step: i64,
-    chase: layout::ChaseEye,
     rotations: std::collections::BTreeMap<i64,[f32;9]>,
     map_fit: Option<([f32;3], f32)>,
     centers: std::collections::BTreeMap<i64,[f32;3]>,
@@ -78,7 +77,7 @@ pub extern "C" fn sf_rerun_open(path: *const c_char, output: *mut *mut std::ffi:
             "Preparing reconstruction. Selected images appear on a schematic sphere; their camera entities move through VGGT groups into the accepted map."
         ))?;
         recording.flush_async()?;
-        let session = Box::new(Session { recording, step: 0, chase: Default::default(), rotations: Default::default(), map_fit: None, centers: Default::default(), camera_root: None, staging: staging::Staging::default(), logged_images: BTreeSet::new() });
+        let session = Box::new(Session { recording, step: 0, rotations: Default::default(), map_fit: None, centers: Default::default(), camera_root: None, staging: staging::Staging::default(), logged_images: BTreeSet::new() });
         unsafe { *output = Box::into_raw(session).cast(); }
         Ok(())
     })
@@ -230,12 +229,11 @@ pub extern "C" fn sf_rerun_status(handle: *mut std::ffi::c_void, message: *const
         if let Ok(payload) = serde_json::from_str::<serde_json::Value>(message) {
             if let Some(frame) = payload["follow_frame"].as_i64() {
                 if let (Some(center),Some(rotation)) = (session.centers.get(&frame),session.rotations.get(&frame)) {
-                    session.chase.follow(&session.recording,*center,*rotation)?;
+                    layout::follow(&session.recording,*center,*rotation)?;
                 }
             }
             if payload["overview"].as_bool() == Some(true) {
                 layout::frame(&session.recording,10.0)?;
-                session.chase = Default::default();
             }
         }
         activity::log(&session.recording, message, &session.centers, &session.staging.images)?;

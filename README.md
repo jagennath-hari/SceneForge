@@ -371,8 +371,10 @@ orbit; manual navigation can detach from tracking. Track `world/presentation_eye
 again to resume following. The presentation camera is excluded from scene content
 so it does not inflate bounds or appear as another reconstructed camera.
 
-During dense calibration and refinement, the presentation eye follows behind and
-slightly above the active optimized camera. Position and direction are smoothed,
-with a fixed lens/offset and stable up reference. Dense previews do not trigger
+During dense calibration and refinement, the presentation eye stays directly
+behind the active optimized camera at a fixed camera-local offset, using that
+camera's full orientation and a fixed lens. There is no lagging position filter
+or fixed-up reconstruction of the camera basis. Refinement starts at its first
+camera immediately, rather than drifting back from calibration's final camera. Dense previews do not trigger
 bounding-box zoom changes. Completion returns to the whole-scene overview.
 These remain discrete processing updates, not interpolated animation frames.

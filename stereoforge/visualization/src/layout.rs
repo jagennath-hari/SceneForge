@@ -61,45 +61,19 @@ pub fn frame(recording: &RecordingStream, radius: f32) -> Result<()> {
     Ok(())
 }
 
-/// Smoothed chase view with fixed distance/FOV and a stable up direction.
-/// No per-frame bounding-box fitting, which can cause zoom pumping.
-#[derive(Default)]
-pub struct ChaseEye {
-    state: Option<([f32;3], [f32;3], [f32;3], [f32;3])>,
-}
-
-fn unit(v: [f32;3]) -> Option<[f32;3]> {
-    let norm = v.iter().map(|x| x*x).sum::<f32>().sqrt();
-    if !norm.is_finite() || norm < 1e-6 { None } else { Some(v.map(|x| x/norm)) }
-}
-fn cross(a: [f32;3], b: [f32;3]) -> [f32;3] {
-    [a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]]
-}
-
-impl ChaseEye {
-    pub fn follow(&mut self, rec: &RecordingStream, center: [f32;3], rotation: [f32;9]) -> Result<()> {
-        let Some(desired_forward) = unit([rotation[2],rotation[5],rotation[8]]) else { return Ok(()); };
-        let desired_up = [-rotation[1],-rotation[4],-rotation[7]];
-        let (old_eye, old_forward, up, old_right) = self.state.unwrap_or((
-            std::array::from_fn(|a| center[a]-1.2*desired_forward[a]+0.35*desired_up[a]),
-            desired_forward, desired_up, [rotation[0],rotation[3],rotation[6]],
-        ));
-        let forward = unit(std::array::from_fn(|a| old_forward[a]*0.85+desired_forward[a]*0.15))
-            .unwrap_or(old_forward);
-        // Near the up-axis, project the previous right direction onto the new
-        // view plane rather than constructing a non-orthogonal camera basis.
-        let dot = (0..3).map(|a| old_right[a]*forward[a]).sum::<f32>();
-        let fallback = unit(std::array::from_fn(|a| old_right[a]-dot*forward[a]));
-        let Some(right) = unit(cross(forward,up)).or(fallback) else { return Ok(()); };
-        let down = unit(cross(forward,right)).unwrap_or(up.map(|v| -v));
-        let desired_eye: [f32;3] = std::array::from_fn(|a| center[a]-1.2*forward[a]+0.35*up[a]);
-        let delta: [f32;3] = std::array::from_fn(|a| desired_eye[a]-old_eye[a]);
-        let distance = delta.iter().map(|v| v*v).sum::<f32>().sqrt();
-        let gain = if distance < 0.01 { 0.0 } else { 0.15_f32.min(0.25/distance) };
-        let eye: [f32;3] = std::array::from_fn(|a| old_eye[a]+gain*delta[a]);
-        rec.log(EYE, &rerun::Transform3D::from_translation_mat3x3(eye,[right,down,forward]))?;
-        // Keep the same lens as the overview. Only the view pose follows the camera.
-        self.state = Some((eye,forward,up,right));
-        Ok(())
+/// Rigid camera-relative view: exactly behind the current processing camera.
+/// Use its complete orientation, avoiding fixed-up singularities and lag when
+/// refinement restarts at the first frame after calibration finishes.
+pub fn follow(rec: &RecordingStream, center: [f32;3], rotation: [f32;9]) -> Result<()> {
+    if !center.iter().chain(rotation.iter()).all(|v| v.is_finite()) {
+        return Err("Nonfinite presentation camera pose".into());
     }
+    // Incoming R_c2w is row-major; Rerun takes its basis vectors as columns.
+    let right = [rotation[0],rotation[3],rotation[6]];
+    let down = [rotation[1],rotation[4],rotation[7]];
+    let forward = [rotation[2],rotation[5],rotation[8]];
+    let eye: [f32;3] = std::array::from_fn(|a| center[a]-1.2*forward[a]);
+    rec.log(EYE, &rerun::Transform3D::from_translation_mat3x3(eye,[right,down,forward]))?;
+    // Lens and distance stay fixed throughout calibration and fusion.
+    Ok(())
 }

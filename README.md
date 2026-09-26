@@ -21,6 +21,11 @@ python -m stereoforge.reconstruction --video data/input/barn.mp4
 
 Defaults are `--window-size 32 --overlap 16 --lm-iterations 500`, with Rerun enabled.
 Window size and overlap count **selected keyframes**, not original video frames.
+
+`configs/keyframes_raco.json` is the active configuration file for RaCo–ALIKED +
+LightGlue keyframe selection and engine preparation. Reconstruction window/BA
+settings use the CLI defaults above and can be overridden with flags. The obsolete
+`default.yaml` demo/pyCuSFM configuration and its loader have been removed.
 The final window may be shorter and retains every remaining keyframe. Overlap
 must be at least six and smaller than the window size. Each window is refined
 locally, then added to the current common map using shared cameras and measured
@@ -357,3 +362,11 @@ after fusion it is replaced by the final voxel-fused preview (up to 240,000 poin
 Dense and sparse points share the final map display transform. Full-resolution
 clouds remain in PLY exports. Global BA displays a solve status, then updates all
 calibrated frustums on acceptance; solver-iteration states are not streamed.
+
+The Rerun viewport initially follows a separate presentation camera via
+`EyeControls3D`. It frames the schematic sphere from an oblique angle, then fits
+accepted global-BA and dense snapshots to their visible bounds. It never changes
+reconstruction cameras. Updates follow geometry snapshots rather than a timed
+orbit; manual navigation can detach from tracking. Track `world/presentation_eye`
+again to resume following. The presentation camera is excluded from scene content
+so it does not inflate bounds or appear as another reconstructed camera.

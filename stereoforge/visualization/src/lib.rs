@@ -48,10 +48,12 @@ pub extern "C" fn sf_rerun_open(path: *const c_char, output: *mut *mut std::ffi:
         // actual port returned by the SDK, not an assumed localhost port.
         let viewer = rerun::spawn(&rerun::SpawnOptions::default())?;
         let uri = format!("rerun+http://127.0.0.1:{}/proxy", viewer.port).parse()?;
-        let recording = rerun::RecordingStreamBuilder::new("StereoForge").with_blueprint(layout::blueprint()).set_sinks((
+        let recording = rerun::RecordingStreamBuilder::new("StereoForge").set_sinks((
             rerun::sink::FileSink::new(path)?,
             rerun::sink::GrpcSink::new(uri),
         ))?;
+        layout::install(&recording)?;
+        layout::frame(&recording, 10.0)?;
         // Display convention only: no gravity alignment or coordinate change.
         recording.log_static("world", &ViewCoordinates::RDF())?;
         // Static presentation reference survives every stage and timeline seek.
@@ -118,6 +120,10 @@ pub extern "C" fn sf_rerun_snapshot(handle: *mut std::ffi::c_void, stage: u32,
                     positions.push(p); colors.push(Color::from_rgb(color[0],color[1],color[2]));
                 }
             }
+            let radius = positions.iter().chain(session.centers.values())
+                .map(|p| p.iter().map(|v| v*v).sum::<f32>().sqrt())
+                .fold(3.0_f32, f32::max).min(10.0);
+            layout::frame(rec, radius)?;
             rec.log("world/map/dense", &Points3D::new(positions).with_colors(colors)
                 .with_radii([rerun::components::Radius::new_ui_points(1.0)]))?;
             rec.flush_async()?;
@@ -145,6 +151,12 @@ pub extern "C" fn sf_rerun_snapshot(handle: *mut std::ffi::c_void, stage: u32,
             .filter(|(p, _)| p.iter().all(|v| v.is_finite()) && p.iter().map(|v| v*v).sum::<f32>() <= 100.0)
             .collect();
         let positions: Vec<[f32; 3]> = visible.iter().map(|(p,_)| [p[0],p[1],p[2]]).collect();
+        let radius = if stage == 3 {
+            positions.iter().chain(session.centers.values())
+                .map(|p| p.iter().map(|v| v*v).sum::<f32>().sqrt())
+                .fold(3.0_f32, f32::max).min(10.0)
+        } else { 10.0 }; // Include all still-unposed cameras on the sphere.
+        layout::frame(rec, radius)?;
         let colors: Vec<Color> = visible.iter().map(|(_,c)| Color::from_rgb(c[0],c[1],c[2])).collect();
         rec.log(format!("{root}/points"), &Points3D::new(positions).with_colors(colors)
             .with_radii([rerun::components::Radius::new_ui_points(1.5)]))?;

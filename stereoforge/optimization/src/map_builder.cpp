@@ -347,10 +347,37 @@ Boundary MapBuilder::Withhold(SparseMap& combined, const SparseMap& local,
     CheckSupport(combined, "withholding overlap observations", &before);
     return boundary;
 }
-void MapBuilder::Validate(const SparseMap& model, const Boundary& boundary) const {
+void MapBuilder::Validate(const SparseMap& model, const Boundary& boundary,
+                          const std::function<void(const std::string&)>* global_progress) const {
     std::map<FrameId, std::size_t> counts, passed, missing, unsupported, reprojection_failed;
+    std::map<FrameId, std::vector<double>> previous_errors, current_errors;
+    std::map<FrameId, std::size_t> previous_passed;
     std::size_t total = 0;
     for (const Holdout& held : boundary.observations) {
+        if (global_progress != nullptr) {
+            double before = std::numeric_limits<double>::infinity();
+            double after = std::numeric_limits<double>::infinity();
+            if (this->map_.landmarks.contains(held.track) && this->map_.cameras.contains(held.frame)) {
+                const Landmark& old_point = this->map_.landmarks.at(held.track);
+                before = Reprojection(this->map_.cameras.at(held.frame), old_point.position, held.pixel);
+                std::size_t old_support = 0;
+                for (const std::pair<const FrameId, Eigen::Vector2d>& observation : held.training) {
+                    if (old_point.observations.contains(observation.first) &&
+                        SamePixel(observation.second, old_point.observations.at(observation.first))) { ++old_support; }
+                }
+                if (old_support >= 2 && before <= 5) { ++previous_passed[held.frame]; }
+            }
+            if (model.landmarks.contains(held.track) && model.cameras.contains(held.frame)) {
+                after = Reprojection(model.cameras.at(held.frame), model.landmarks.at(held.track).position, held.pixel);
+                if (std::isfinite(before) && !std::isfinite(after)) {
+                    throw std::runtime_error("Global BA introduced invalid held-out geometry at frame " + std::to_string(held.frame));
+                }
+            }
+            // Missing landmarks stay in the comparison as infinite error;
+            // filtering must not improve the score by shrinking its denominator.
+            previous_errors[held.frame].push_back(before);
+            current_errors[held.frame].push_back(after);
+        }
         ++counts[held.frame];
         if (!model.landmarks.contains(held.track) || !model.cameras.contains(held.frame)) { ++missing[held.frame]; continue; }
         const Landmark& point = model.landmarks.at(held.track);
@@ -366,6 +393,28 @@ void MapBuilder::Validate(const SparseMap& model, const Boundary& boundary) cons
     for (const FrameId frame : boundary.shared) {
         // A tiny holdout sample is insufficient evidence for a per-camera
         // verdict. Its observations still count in the mandatory overall check.
+        if (global_progress != nullptr && counts[frame] >= 5) {
+            const double before_median = Median(previous_errors.at(frame));
+            const double after_median = Median(current_errors.at(frame));
+            const double before_fraction = static_cast<double>(previous_passed[frame])/counts[frame];
+            const double after_fraction = static_cast<double>(passed[frame])/counts[frame];
+            const std::string comparison = "frame " + std::to_string(frame) + ": held-out agreement " +
+                std::to_string(previous_passed[frame]) + "/" + std::to_string(counts[frame]) + " -> " +
+                std::to_string(passed[frame]) + "/" + std::to_string(counts[frame]) +
+                "; median error " + std::to_string(before_median) + " -> " + std::to_string(after_median) +
+                " px; missing=" + std::to_string(missing[frame]) + "; lost support=" + std::to_string(unsupported[frame]);
+            // Final calibration may redistribute small errors between frames.
+            // Reject large regressions, not a marginal crossing of 80%.
+            if (!std::isfinite(after_median) || after_median > std::max(10.0, 2.0*before_median) ||
+                before_fraction-after_fraction > .20) {
+                throw std::runtime_error("Global BA severe per-frame degradation: " + comparison);
+            }
+            if (after_fraction < .8) {
+                (*global_progress)("WARNING: Global BA lower-confidence " + comparison +
+                    "; boundary agreement=" + std::to_string(total) + "/" + std::to_string(boundary.observations.size()));
+            }
+            continue;
+        }
         if (counts[frame] >= 5 && passed[frame] < .8*counts[frame]) { throw std::runtime_error("Overlap validation below 80% at frame " + std::to_string(frame) +
             ": " + std::to_string(passed[frame]) + "/" + std::to_string(counts[frame]) + " passed (" +
             std::to_string(100.0*passed[frame]/counts[frame]) + "%); missing landmark/camera=" + std::to_string(missing[frame]) +
@@ -489,7 +538,7 @@ void MapBuilder::Finalize(const std::function<void(const std::string&)>& progres
     this->Optimize(candidate,false,true);
     progress("validating shared-intrinsics global BA");
     try {
-        for (const Boundary& boundary : this->boundaries_) { this->Validate(candidate,boundary); }
+        for (const Boundary& boundary : this->boundaries_) { this->Validate(candidate,boundary,&progress); }
     } catch (const std::runtime_error& error) {
         const Eigen::Matrix3d& optimized = candidate.cameras.begin()->second.intrinsics;
         throw std::runtime_error(std::string(error.what()) +

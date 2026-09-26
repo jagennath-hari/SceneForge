@@ -19,7 +19,7 @@ def native_backend():
         module = importlib.import_module('_stereoforge_map')
     except ImportError as error:
         raise RuntimeError('Rebuild Docker to install the native common-map builder (_stereoforge_map)') from error
-    if getattr(module, "api_version", None) != 8:
+    if getattr(module, "api_version", None) != 9:
         raise RuntimeError('Native common-map module is outdated. Stop the old container, rebuild Docker, and start a new container.')
     return module
 

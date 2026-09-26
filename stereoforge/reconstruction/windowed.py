@@ -19,7 +19,7 @@ from .frontend import ReconstructionFrontend
 from .inference import infer_clusters
 from .view_graph import Cluster, VerifiedGraph
 
-POLICY = 'native_graph_dense_cunls_v6'
+POLICY = 'native_graph_dense_cunls_v7'
 
 
 @dataclass(frozen=True, slots=True)

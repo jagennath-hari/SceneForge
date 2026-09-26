@@ -74,7 +74,8 @@ private:
     [[nodiscard]] SparseMap Combine(const SparseMap& local) const;
     [[nodiscard]] Boundary Withhold(SparseMap& combined, const SparseMap& local,
                                     const std::function<void(const std::string&)>& progress) const;
-    void Validate(const SparseMap& model, const Boundary& boundary) const;
+    void Validate(const SparseMap& model, const Boundary& boundary,
+                  const std::function<void(const std::string&)>* global_progress = nullptr) const;
     BundleAdjuster solver_;
     int iterations_;
     bool shared_calibration_complete_ = false;

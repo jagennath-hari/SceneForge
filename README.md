@@ -41,6 +41,14 @@ processed dimensions; shared calibration assumes unchanged zoom/crop. A failed
 solve or boundary check preserves the accepted sparse map and stops before dense
 refinement. Status records `shared_calibration_complete` and the final intrinsics.
 Optional Jacobian diagnostics cover all 13 reprojection tangent coordinates.
+Final global BA still requires 80% held-out agreement within five pixels for every
+boundary. Individual frames below 80% produce a lower-confidence warning with
+before/after counts and median errors. For frames with at least five holdouts,
+reject a drop exceeding 20 percentage points or a median error exceeding both
+10 pixels and twice its pre-BA value; nonfinite medians also reject. Newly invalid
+held-out projections reject independently of sample count. Missing landmarks
+remain in the denominator and count as infinite error. Window-merge validation
+retains its strict per-frame 80% check.
 
 Dense refinement is a separate, conservative geometric pass using the final map.
 Sparse observations calibrate each VGGT depth map to the map's arbitrary scale.

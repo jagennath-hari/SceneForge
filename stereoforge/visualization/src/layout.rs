@@ -96,3 +96,19 @@ pub fn orbit(rec: &RecordingStream, fraction: f32) -> Result<()> {
     rec.log(EYE, &rerun::Transform3D::from_translation_mat3x3(center,[right,down,forward]))?;
     Ok(())
 }
+
+/// Geometry-stage close-up. Rotation is deliberately modest; distance is based
+/// on the scene being inspected, not the unposed staging sphere.
+pub fn focus(rec: &RecordingStream, target: [f32;3], radius: f32, progress: f32) -> Result<()> {
+    let angle = -std::f32::consts::FRAC_PI_4 + progress.clamp(0.0,1.0)*0.6;
+    let horizontal = (2.0_f32/3.0).sqrt();
+    let direction = [horizontal*angle.cos(),-1.0/3.0_f32.sqrt(),horizontal*angle.sin()];
+    let eye: [f32;3] = std::array::from_fn(|a| target[a]+direction[a]*radius.max(0.7)*2.8);
+    let forward = direction.map(|v| -v);
+    let right = [-angle.sin(),0.0,angle.cos()];
+    let down = [forward[1]*right[2]-forward[2]*right[1],
+                forward[2]*right[0]-forward[0]*right[2],
+                forward[0]*right[1]-forward[1]*right[0]];
+    rec.log(EYE, &rerun::Transform3D::from_translation_mat3x3(eye,[right,down,forward]))?;
+    Ok(())
+}

@@ -53,13 +53,14 @@ pub extern "C" fn sf_rerun_open(path: *const c_char, output: *mut *mut std::ffi:
             rerun::sink::FileSink::new(path)?,
             rerun::sink::GrpcSink::new(uri),
         ))?;
-        // The tracked eye must exist before activating a blueprint that follows
-        // it; otherwise initial scene bounds can trigger fallback eye fitting.
+        // The blueprint follows reconstruction_step. Log the initial eye at
+        // step zero too: a temporal pose without that timeline is unavailable
+        // when the viewer queries it, until a later stage logs another pose.
+        recording.set_time("reconstruction_step", TimeCell::from_sequence(0));
+        recording.log_static("world", &ViewCoordinates::RDF())?;
         layout::frame(&recording, 10.0)?;
         recording.flush_with_timeout(std::time::Duration::from_secs(2))?;
         layout::install(&recording,layout::OVERVIEW_POSITION,[0.0;3],[0.0,-1.0,0.0])?;
-        // Display convention only: no gravity alignment or coordinate change.
-        recording.log_static("world", &ViewCoordinates::RDF())?;
         // Static presentation reference survives every stage and timeline seek.
         // It is the normalized display origin, not a surveyed world coordinate.
         recording.log_static("world/origin/axes", &rerun::LineStrips3D::new([
@@ -154,12 +155,25 @@ pub extern "C" fn sf_rerun_snapshot(handle: *mut std::ffi::c_void, stage: u32,
             .filter(|(p, _)| p.iter().all(|v| v.is_finite()) && p.iter().map(|v| v*v).sum::<f32>() <= 100.0)
             .collect();
         let positions: Vec<[f32; 3]> = visible.iter().map(|(p,_)| [p[0],p[1],p[2]]).collect();
-        let radius = if stage == 3 {
-            positions.iter().chain(session.centers.values())
-                .map(|p| p.iter().map(|v| v*v).sum::<f32>().sqrt())
-                .fold(3.0_f32, f32::max).min(10.0)
-        } else { 10.0 }; // Include all still-unposed cameras on the sphere.
-        layout::frame(rec, radius)?;
+        if stage == 0 && session.staging.accepted.is_empty() {
+            // Inference callbacks supply completed windows. Inspect that local
+            // group rather than fitting all unrelated staging groups together.
+            let target = staging::sphere(ids.first().copied().unwrap_or(0),5.0);
+            layout::focus(rec,target,2.5,0.0)?;
+        } else if stage >= 2 {
+            // Fit accepted geometry only. Unposed cameras elsewhere on the
+            // staging sphere must not force the overview to remain zoomed out.
+            let mut radii: Vec<f32> = positions.iter()
+                .map(|p| p.iter().map(|v| v*v).sum::<f32>().sqrt()).collect();
+            radii.sort_by(f32::total_cmp);
+            let point_radius = if radii.is_empty() { 1.0 } else { radii[(radii.len()-1)*95/100] };
+            let radius = cameras.chunks_exact(18)
+                .map(|c| c[9..12].iter().map(|v| v*v).sum::<f32>().sqrt())
+                .filter(|r| r.is_finite()).fold(point_radius,f32::max).clamp(1.0,10.0);
+            let completion = ids.len() as f32/session.staging.images.len().max(ids.len()).max(1) as f32;
+            // Tighten the margin and shift perspective as the map completes.
+            layout::focus(rec,[0.0;3],radius*(1.15-0.15*completion),completion)?;
+        }
         let colors: Vec<Color> = visible.iter().map(|(_,c)| Color::from_rgb(c[0],c[1],c[2])).collect();
         rec.log(format!("{root}/points"), &Points3D::new(positions).with_colors(colors)
             .with_radii([rerun::components::Radius::new_ui_points(1.5)]))?;

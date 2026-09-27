@@ -45,11 +45,11 @@ def main() -> int:
     source.add_argument('--resume', type=Path, help='Reuse inputs/VGGT windows from this pipeline; recompute map in a fresh attempt')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--checkpoint', type=Path)
-    parser.add_argument('--window-size', type=int, help='Keyframes per VGGT window (default 32)')
-    parser.add_argument('--overlap', type=int, help='Shared keyframes between windows (default 16)')
+    parser.add_argument('--window-size', type=int, help='Keyframes per VGGT window (default 64)')
+    parser.add_argument('--overlap', type=int, help='Shared keyframes between windows (default 32)')
     parser.add_argument('--neighbors', type=int, help='Temporal feature matching neighbors (default 4)')
     parser.add_argument('--device', help='cuda: visible GPUs for VGGT, first GPU for BA; cuda:N: one GPU')
-    parser.add_argument('--lm-iterations', type=int, help='Joint BA iteration budget (1–1000; default 500)')
+    parser.add_argument('--lm-iterations', type=int, help='Joint BA iteration budget (1–1000; default 1000)')
     parser.add_argument('--dense-voxel-fraction', type=float, help='Voxel width / median scene depth (default 0.01; larger uses less memory)')
     parser.add_argument('--keyframe-config', type=Path)
     parser.add_argument('--diagnostics', action='store_true', help='Check native CUDA Jacobians (slower; no intermediate map dumps)')
@@ -88,11 +88,11 @@ def main() -> int:
             if not video.is_file():
                 raise FileNotFoundError(f'Video not found: {video}')
             config = (args.keyframe_config or ROOT / 'configs/keyframes_raco.json').expanduser().resolve()
-            options = WindowOptions(window_size=args.window_size if args.window_size is not None else 32,
-                                    overlap=args.overlap if args.overlap is not None else 16,
+            options = WindowOptions(window_size=args.window_size if args.window_size is not None else 64,
+                                    overlap=args.overlap if args.overlap is not None else 32,
                                     neighbors=args.neighbors if args.neighbors is not None else 4,
                                     device=args.device or 'cuda',
-                                    lm_iterations=args.lm_iterations if args.lm_iterations is not None else 500,
+                                    lm_iterations=args.lm_iterations if args.lm_iterations is not None else 1000,
                                     dense_voxel_fraction=args.dense_voxel_fraction if args.dense_voxel_fraction is not None else 0.01)
             output = (args.output or ROOT / 'data/intermediate' / datetime.now(timezone.utc).strftime(
                 'reconstruction_%Y%m%d_%H%M%S_%f')).expanduser().resolve()

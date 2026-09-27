@@ -24,11 +24,11 @@ POLICY = 'native_graph_dense_cunls_v11'
 
 @dataclass(frozen=True, slots=True)
 class WindowOptions:
-    window_size: int = 32
-    overlap: int = 16
+    window_size: int = 64
+    overlap: int = 32
     neighbors: int = 4
     device: str = 'cuda'
-    lm_iterations: int = 500
+    lm_iterations: int = 1000
     dense_voxel_fraction: float = 0.01
 
     def __post_init__(self) -> None:

@@ -9,7 +9,7 @@ walkthroughs are the intended inputs. Stereo generation is no longer a project
 objective; earlier stereo roadmap material below is historical.
 
 The supported command is `python -m stereoforge.reconstruction --video
-PATH` (defaults: window size 32, overlap 16, 500 LM iterations). The current pipeline is:
+PATH` (defaults: window size 64, overlap 32, 1000 LM iterations). The current pipeline is:
 
 ```text
 Continuous video → ordered keyframes → measured global feature tracks

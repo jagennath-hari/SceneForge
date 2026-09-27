@@ -19,7 +19,7 @@ Inside Docker:
 python -m stereoforge.reconstruction --video data/input/barn.mp4
 ```
 
-Defaults are `--window-size 32 --overlap 16 --lm-iterations 500`, with Rerun enabled.
+Defaults are `--window-size 64 --overlap 32 --lm-iterations 1000`, with Rerun enabled.
 Window size and overlap count **selected keyframes**, not original video frames.
 The selection can now grow before VGGT: measured tracks identify temporal cuts
 with fewer than 60 crossing tracks. A bounded repair pass inserts real decoded
@@ -145,7 +145,7 @@ on rejection. Depth/RGB caching is bounded; raw VGGT tensors remain on disk.
 
 `--device cuda` uses visible GPUs for VGGT windows and the first visible GPU for
 BA. `--device cuda:0` selects one GPU. Single-GPU systems use the same pipeline.
-VGGT workers exit before BA begins. `--lm-iterations 500` is the default joint
+VGGT workers exit before BA begins. `--lm-iterations 1000` is the default joint
 solve budget; `--neighbors 4` controls temporal feature matching.
 
 Rerun opens automatically and records to
@@ -302,7 +302,7 @@ Launch the live viewer and record reconstruction stages with:
 
 ```bash
 python -m stereoforge.reconstruction --video data/input/barn.mp4 \
-  --window-size 32 --overlap 16 --lm-iterations 500 --rerun
+  --window-size 64 --overlap 32 --lm-iterations 1000 --rerun
 ```
 
 `--rerun` is enabled by default and launches the official viewer (or connects to one already

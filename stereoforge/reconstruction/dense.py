@@ -157,8 +157,9 @@ class DenseRefiner:
         coverage = []
         with Progress('Refining and fusing dense depth', total=len(anchored), unit='frame') as progress:
             for frame_index, frame in enumerate(anchored):
-                if visualization is not None:
-                    visualization.activity(f"Refining dense depth: {frame_index+1}/{len(anchored)}", [frame], follow_frame=frame, follow_start=frame_index == 0)
+                if visualization is not None and frame_index == 0:
+                    visualization.activity(f"Refining dense depth: 1/{len(anchored)}", [frame],
+                                           follow_frame=frame, follow_start=True)
                 camera = model.cameras[frame]
                 prior, valid, rgb = self._load(frame)
                 h, w = prior.shape
@@ -200,11 +201,10 @@ class DenseRefiner:
                 accepted_rgb = (rgb[accepted]*255).round().clamp(0, 255).to(torch.uint8).contiguous().cpu().numpy()
                 fusion.add(accepted_xyz, accepted_rgb, frame)
                 if visualization is not None:
-                    if frame_index % 8 == 0 or frame_index == len(anchored)-1:
-                        visualization.dense(accepted_xyz, accepted_rgb)
+                    visualization.dense(accepted_xyz, accepted_rgb)
                     visualization.activity(
                         f"Dense refinement: {frame_index+1}/{len(anchored)}; {count} supported pixels — sampled preview",
-                        [frame], ready=True)
+                        [frame], ready=True, follow_frame=frame)
                 progress.advance()
         if not accepted_pixels:
             raise RuntimeError('No dense pixels passed multi-view validation; sparse map retained')

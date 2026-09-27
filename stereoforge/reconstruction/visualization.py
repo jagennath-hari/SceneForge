@@ -19,6 +19,7 @@ class ReconstructionVisualization:
         self.last_orbit = 0.0
         self.last_activity = 0.0
         self.last_tracks = 0.0
+        self.last_dense = 0.0
         self.thumbnail_sources: dict[int, tuple[int, int, int, int]] = {}
         self.selected_previews: set[int] = set()
         self.image_sizes: dict[int, tuple[int, int]] = {}
@@ -80,15 +81,21 @@ class ReconstructionVisualization:
         if not self.enabled:
             return
         try:
+            now = monotonic()
             if final:
                 self.dense_samples.clear()
             else:
                 stride = max(1, (len(xyz)+511)//512)
-                self.dense_samples.append((xyz[::stride].copy(), rgb[::stride].copy()))
+                if len(xyz):
+                    self.dense_samples.append((xyz[::stride].copy(), rgb[::stride].copy()))
                 # Bound retained samples and logging volume even for long sequences.
                 self.dense_samples = self.dense_samples[-400:]
+                # Collect every processed frame, but keep live transport bounded.
+                if not self.dense_samples or now-self.last_dense < 0.2:
+                    return
                 xyz = np.concatenate([p for p, _ in self.dense_samples])
                 rgb = np.concatenate([c for _, c in self.dense_samples])
+            self.last_dense = now
             stride = max(1, (len(xyz)+239999)//240000)
             self.native.builder.rerun_dense(np.ascontiguousarray(xyz[::stride], dtype=np.float32),
                                            np.ascontiguousarray(rgb[::stride], dtype=np.uint8))

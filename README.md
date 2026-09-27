@@ -235,7 +235,7 @@ git submodule update --init --recursive
 bash scripts/build_and_start.sh
 ```
 
-The script builds the CUDA → base → geometry → stereo → cuNLS → Rust/Rerun image chain with
+The script builds the CUDA → base → geometry → cuNLS → Rust/Rerun image chain with
 BuildKit and starts an interactive container. If the named container is already
 running, it attaches without rebuilding. Exit/stop it before rebuilding changed
 Dockerfiles or native code. Python source and configuration changes are visible

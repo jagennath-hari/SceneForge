@@ -5,8 +5,6 @@
 !third_party/
 !third_party/vggt-omega/
 !third_party/vggt-omega/**
-!third_party/stereospace/
-!third_party/stereospace/**
 !third_party/cuNLS/
 !third_party/cuNLS/**
 !third_party/lightglue-onnx/

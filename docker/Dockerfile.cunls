@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG BASE_FROM=stereoforge/stereo:latest
+ARG BASE_FROM=stereoforge/geometry:latest
 FROM ${BASE_FROM} AS cunls
 
 # Build the checked-out submodule against the same CUDA toolkit as StereoForge.
@@ -78,7 +78,8 @@ RUN set -eu; \
 # Include source defaults so the image also contains the project without mounts.
 COPY --chown=${USER_UID}:${USER_GID} stereoforge/ /workspace/StereoForge/stereoforge/
 COPY --chown=${USER_UID}:${USER_GID} configs/ /workspace/StereoForge/configs/
-ENV HOME=/home/${USERNAME} \
+ENV PYTHONPATH=/workspace/StereoForge:${PYTHONPATH} \
+    HOME=/home/${USERNAME} \
     XDG_CACHE_HOME=/home/${USERNAME}/.cache \
     HF_HOME=/home/${USERNAME}/.cache/huggingface \
     TORCH_HOME=/home/${USERNAME}/.cache/torch

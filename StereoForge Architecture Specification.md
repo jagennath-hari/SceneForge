@@ -251,7 +251,7 @@ from the mounted workspace; dependency installation belongs to Dockerfiles and
 
 ## Environment boundary
 
-The image chain is CUDA → base → geometry → stereo → cuNLS. Each Dockerfile has
+The image chain is CUDA → base → geometry → cuNLS → Rust/Rerun. Each Dockerfile has
 an explicit named stage and accepts `BASE_FROM`. The current base is
 `nvidia/cuda:13.2.1-cudnn-devel-ubuntu24.04`. PyTorch uses the CUDA 13.2 wheel index;
 TensorRT retains its working version for native keyframe inference. cuNLS is built
@@ -269,9 +269,8 @@ The custom cuNLS local optimization diagnostic is implemented below; full pipeli
 One uv-created virtual environment is shared by all Python dependencies. The
 legacy TensorRT installation uses pip in that same environment. BuildKit caches
 package downloads. Native video extraction is built inside the geometry image.
-StereoSpace remains installed as preparation for the next stage, but is not yet
-called by the application. There is no Compose deployment or development-only
-Dockerfile.
+StereoSpace and its Docker layer have been removed from the reconstruction
+environment. There is no Compose deployment or development-only Dockerfile.
 
 The build/start script only builds and enters the environment; it does not launch
 inference. It selects the NVIDIA runtime, exposes GPUs, and uses the requested

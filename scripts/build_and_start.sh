@@ -8,7 +8,6 @@ CUDA_IMAGE="nvidia/cuda:13.2.1-cudnn-devel-ubuntu24.04"
 
 BASE_IMAGE="${ORG}/base:${TAG}"
 GEOMETRY_IMAGE="${ORG}/geometry:${TAG}"
-STEREO_IMAGE="${ORG}/stereo:${TAG}"
 CUNLS_IMAGE="${ORG}/cunls:${TAG}"
 RERUN_IMAGE="${ORG}/rerun:${TAG}"
 RUN_CONTAINER="stereoforge"
@@ -31,22 +30,20 @@ if docker ps --format '{{.Names}}' | grep -Fxq "${RUN_CONTAINER}"; then
     exec docker exec -it "${RUN_CONTAINER}" bash
 fi
 
-# Build order: NVIDIA CUDA → base → geometry → stereo → cuNLS → Rust/Rerun.
+# Build order: NVIDIA CUDA → base → geometry → cuNLS → Rust/Rerun.
 declare -A DOCKERFILES=(
     ["${BASE_IMAGE}"]="docker/Dockerfile.base"
     ["${GEOMETRY_IMAGE}"]="docker/Dockerfile.geometry"
-    ["${STEREO_IMAGE}"]="docker/Dockerfile.stereo"
     ["${CUNLS_IMAGE}"]="docker/Dockerfile.cunls"
     ["${RERUN_IMAGE}"]="docker/Dockerfile.rerun"
 )
 declare -A PARENTS=(
     ["${BASE_IMAGE}"]="${CUDA_IMAGE}"
     ["${GEOMETRY_IMAGE}"]="${BASE_IMAGE}"
-    ["${STEREO_IMAGE}"]="${GEOMETRY_IMAGE}"
-    ["${CUNLS_IMAGE}"]="${STEREO_IMAGE}"
+    ["${CUNLS_IMAGE}"]="${GEOMETRY_IMAGE}"
     ["${RERUN_IMAGE}"]="${CUNLS_IMAGE}"
 )
-BUILD_SEQUENCE=("${BASE_IMAGE}" "${GEOMETRY_IMAGE}" "${STEREO_IMAGE}" "${CUNLS_IMAGE}" "${RERUN_IMAGE}")
+BUILD_SEQUENCE=("${BASE_IMAGE}" "${GEOMETRY_IMAGE}" "${CUNLS_IMAGE}" "${RERUN_IMAGE}")
 
 # Optional runtime credential file; never pass its contents to Docker or builds.
 HF_SECRET_ARGS=()

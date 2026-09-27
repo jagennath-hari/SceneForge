@@ -36,6 +36,10 @@ class VerifiedGraph:
 
     def read(self, files: list[Path], on_progress=None, on_tracks=None, on_orbit=None,
              description: str = "Building measured feature tracks") -> None:
+        if on_progress is not None:
+            # Stage events clear Rerun's transient matching links. Send this
+            # before orbit updates, which intentionally preserve active tracks.
+            on_progress(f"{description}: reading verified matches")
         with Progress(description, sum(path.stat().st_size for path in files), "B") as progress:
             self._read(files, progress, on_progress, on_tracks, on_orbit)
 

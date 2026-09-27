@@ -53,3 +53,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY third_party/vggt-omega/ /opt/third_party/vggt-omega/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --no-build-isolation --no-deps /opt/third_party/vggt-omega
+
+# Local Torch Hub source: pinned by the submodule, no runtime GitHub code fetch.
+# The upstream aggregation module imports FAISS even for plain GeM inference.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --only-binary=:all: 'faiss-cpu==1.9.0.post1'
+COPY third_party/SelaVPRplusplus/hubconf.py third_party/SelaVPRplusplus/LICENSE /opt/third_party/SelaVPRplusplus/
+COPY third_party/SelaVPRplusplus/model/ /opt/third_party/SelaVPRplusplus/model/
+ENV SELAVPR_ROOT=/opt/third_party/SelaVPRplusplus
+# Do not load the model at build time. Hub weights use TORCH_HOME at runtime.
+# Do not add upstream's generic `model` package to the global PYTHONPATH.

@@ -266,6 +266,32 @@ This is an environment migration only: the older reconstruction paths documented
 below still require pyCuSFM and must be replaced before they run in the new image.
 The custom cuNLS local optimization diagnostic is implemented below; full pipeline migration remains pending.
 
+
+The geometry image includes the pinned SelaVPR++ Torch Hub source at
+`/opt/third_party/SelaVPRplusplus` (`SELAVPR_ROOT`) and its FAISS import dependency.
+It does not need a pip package installation. Use local Hub loading so model code
+comes from the submodule; checkpoint weights download on first use into the
+persistent `TORCH_HOME` cache. No model is loaded during the Docker build.
+Standard tensor inference uses upstream's PyTorch attention fallback when
+xFormers is absent. This prepares the dependency only: loop retrieval and loop
+constraints are not yet wired into reconstruction.
+
+```python
+import os
+import torch
+
+model = torch.hub.load(
+    os.environ["SELAVPR_ROOT"], "SelaVPRplusplus", source="local",
+    backbone="dinov2-base", aggregation="gem", hashing=False, rerank=False,
+)
+model = model.module.eval().to("cuda:0")
+```
+
+The upstream loader returns a DataParallel wrapper; unwrapping it lets the future
+adapter assign batches to a specific device. ONNX/TensorRT export remains separate
+work. Keep the source directory off the global PYTHONPATH because upstream uses
+a generic package name, `model`.
+
 One uv-created virtual environment is shared by all Python dependencies. The
 legacy TensorRT installation uses pip in that same environment. BuildKit caches
 package downloads. Native video extraction is built inside the geometry image.

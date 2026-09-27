@@ -259,6 +259,32 @@ The environment uses the NVIDIA runtime, all visible GPUs, privileged mode,
 host network/PID/IPC, and X11 mounts. It mounts source, configuration, data
 and cache individually. It does not mount the entire repository.
 
+
+The geometry image includes the pinned SelaVPR++ Torch Hub source at
+`/opt/third_party/SelaVPRplusplus` (`SELAVPR_ROOT`) and its FAISS import dependency.
+It does not need a pip package installation. Use local Hub loading so model code
+comes from the submodule; checkpoint weights download on first use into the
+persistent `TORCH_HOME` cache. No model is loaded during the Docker build.
+Standard tensor inference uses upstream's PyTorch attention fallback when
+xFormers is absent. This prepares the dependency only: loop retrieval and loop
+constraints are not yet wired into reconstruction.
+
+```python
+import os
+import torch
+
+model = torch.hub.load(
+    os.environ["SELAVPR_ROOT"], "SelaVPRplusplus", source="local",
+    backbone="dinov2-base", aggregation="gem", hashing=False, rerank=False,
+)
+model = model.module.eval().to("cuda:0")
+```
+
+The upstream loader returns a DataParallel wrapper; unwrapping it lets the future
+adapter assign batches to a specific device. ONNX/TensorRT export remains separate
+work. Keep the source directory off the global PYTHONPATH because upstream uses
+a generic package name, `model`.
+
 All Python packages share `/opt/stereoforge-venv`. Dependencies are installed with
 uv, except for the existing TensorRT pip installation, and constrained by
 `docker/constraints.txt`. There is no `uv sync` workflow or dependency lockfile.

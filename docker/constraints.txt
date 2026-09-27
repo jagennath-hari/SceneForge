@@ -8,3 +8,6 @@ opencv-python==4.11.0.86
 tensorrt-cu13==10.13.3.9
 # CUDA 13 CuPy compatible with the NumPy 1.x VGGT environment.
 cupy-cuda13x>=13.6,<14
+
+# SelaVPR++ import dependency; retain compatibility with our NumPy 1.26 stack.
+faiss-cpu==1.9.0.post1

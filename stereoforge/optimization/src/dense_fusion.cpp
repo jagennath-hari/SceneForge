@@ -6,6 +6,9 @@
 #include <limits>
 #include <stdexcept>
 namespace stereoforge::optimization {
+namespace {
+constexpr std::size_t kMaximumVoxelCount = 20'000'000;
+}
 DenseFusion::DenseFusion(double voxel_size) : voxel_size_(voxel_size) {
     if (!std::isfinite(voxel_size) || voxel_size <= 0) { throw std::invalid_argument("Invalid dense voxel size"); }
 }
@@ -26,8 +29,9 @@ void DenseFusion::Add(const float* points, const std::uint8_t* colors, std::size
         }
         if (!valid) { continue; }
         const Key key{index[0],index[1],index[2]};
-        if (!this->cells_.contains(key) && this->cells_.size() >= 5000000) {
-            throw std::runtime_error("Dense fusion exceeded five million voxels; increase dense voxel size");
+        if (!this->cells_.contains(key) && this->cells_.size() >= kMaximumVoxelCount) {
+            throw std::runtime_error("Dense fusion exceeded " + std::to_string(kMaximumVoxelCount) +
+                " voxels; increase --dense-voxel-fraction to reduce host memory use");
         }
         Cell& cell = this->cells_[key];
         cell.first_frame = cell.count == 0 ? frame : std::min(cell.first_frame,frame);

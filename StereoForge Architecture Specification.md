@@ -127,7 +127,7 @@ images. C++ voxel fusion exports `dense_point_cloud.ply`; `point_cloud.ply` and 
 main viewer show that same dense result, while `sparse_point_cloud.ply` preserves
 BA landmarks. The viewer caps displayed points at 240,000; PLY exports all fused
 voxels. `--dense-voxel-fraction` sets voxel width relative to median scene depth
-(default 0.01). Fusion stops explicitly at five million voxels rather than silently
+(default 0.01). Fusion stops explicitly at twenty million voxels rather than silently
 truncating output; increase this fraction to reduce memory. Status reports dense
 coverage, unanchored frames, voxel size and point count. Failed dense refinement
 preserves the sparse map. This stage uses PyTorch CUDA for dense projection/sampling,

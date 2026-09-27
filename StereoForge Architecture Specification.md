@@ -272,8 +272,14 @@ The geometry image includes the pinned SelaVPR++ Torch Hub source at
 It does not need a pip package installation. Use local Hub loading so model code
 comes from the submodule; checkpoint weights download on first use into the
 persistent `TORCH_HOME` cache. No model is loaded during the Docker build.
-Standard tensor inference uses upstream's PyTorch attention fallback when
-xFormers is absent. Reconstruction now uses DINOv2-base + GeM by default for
+The image builds pinned xFormers v0.0.34 source against the installed PyTorch
+and CUDA 13.2 toolkit, using `nproc` workers and local CUTLASS attention.
+Dependency resolution is disabled for that build to preserve our framework
+versions; optional Flash-Attention extensions are disabled. GPU targets are
+explicit (Ampere/Ada/Hopper plus PTX), so Docker builds need no GPU access.
+Descriptor cache identity includes the xFormers version and active attention
+backend. Source-build/runtime compatibility and performance must be validated
+on the target machine. Reconstruction now uses DINOv2-base + GeM by default for
 long-range loop candidate retrieval after temporal connection repair.
 
 ```python

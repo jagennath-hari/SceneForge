@@ -6,6 +6,7 @@ process. Its exit also releases all descriptor-model CUDA allocations.
 from __future__ import annotations
 
 import hashlib
+from importlib.metadata import PackageNotFoundError, version
 import json
 import os
 from pathlib import Path
@@ -41,6 +42,11 @@ class GlobalDescriptors:
                                   backbone='dinov2-base', aggregation='gem', hashing=False, rerank=False)
             model = model.module.eval()
             checkpoint = Path(torch.hub.get_dir()) / 'checkpoints/SelaVPRplusplus_base.pth'
+            try:
+                xformers_version = version('xformers')
+            except PackageNotFoundError:
+                xformers_version = None
+            attention = sys.modules.get('model.dinov2.attention')
             identity = {
                 'checkpoint_sha256': file_digest(checkpoint),
                 'source': {str(p.relative_to(self.root)): file_digest(p) for p in
@@ -48,6 +54,8 @@ class GlobalDescriptors:
                 'preprocessing': 'RGB/ToTensor/ImageNet-normalize/322-square-bilinear-antialias-v1',
                 'backbone': 'dinov2-base', 'aggregation': 'gem', 'hashing': False, 'rerank': False,
                 'torch': torch.__version__, 'torchvision': torchvision.__version__, 'dtype': 'float32',
+                'xformers': xformers_version,
+                'xformers_attention': bool(getattr(attention, 'XFORMERS_AVAILABLE', False)),
             }
             namespace = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
             folder = self.cache / namespace

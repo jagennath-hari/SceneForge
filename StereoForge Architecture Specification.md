@@ -60,17 +60,17 @@ poses and sparse landmarks. Focal lengths have a ten-pixel prior; principal poin
 have a conservative two-pixel prior per camera. The first camera remains fixed.
 There is no intermediate focal-only acceptance gate. All cameras must have identical
 processed dimensions; shared calibration assumes unchanged zoom/crop. A failed
-solve or boundary check preserves the accepted sparse map and stops before dense
+solve or invalid-geometry check preserves the accepted sparse map and stops before dense
 refinement. Status records `shared_calibration_complete` and the final intrinsics.
 Optional Jacobian diagnostics cover all 13 reprojection tangent coordinates.
-Final global BA still requires 80% held-out agreement within five pixels for every
-boundary. Individual frames below 80% produce a lower-confidence warning with
-before/after counts and median errors. For frames with at least five holdouts,
-reject a drop exceeding 20 percentage points or a median error exceeding both
-10 pixels and twice its pre-BA value; nonfinite medians also reject. Newly invalid
-held-out projections reject independently of sample count. Missing landmarks
-remain in the denominator and count as infinite error. Window-merge validation
-uses a 75% per-frame check while retaining the 80% boundary-wide check.
+Final global BA accepts a successful, geometrically valid solve even when held-out
+agreement decreases. Boundary-wide scores and per-frame regressions are advisory:
+warnings report before/after counts and median errors but do not veto the optimized
+map or stop dense refinement. Solver failures, newly invalid held-out projections,
+and missing cameras still reject. Missing landmarks remain in the diagnostic
+denominator and count as infinite error. Window-merge validation retains its
+75% per-frame and 80% boundary-wide acceptance checks. Acceptance is not a claim
+of ground-truth accuracy.
 
 Dense refinement is a separate, conservative geometric pass using the final map.
 Sparse observations calibrate each VGGT depth map to the map's arbitrary scale.

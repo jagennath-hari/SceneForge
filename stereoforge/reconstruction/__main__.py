@@ -55,6 +55,8 @@ def main() -> int:
     parser.add_argument('--diagnostics', action='store_true', help='Check native CUDA Jacobians (slower; no intermediate map dumps)')
     parser.add_argument('--rerun', action=argparse.BooleanOptionalAction, default=True,
                         help='Stream to Rerun and save pipeline.rrd (default); --no-rerun runs headless')
+    parser.add_argument('--loop-closure', action=argparse.BooleanOptionalAction, default=None,
+                        help='SelaVPR++ retrieval and verified loop tracks (default); --no-loop-closure for a temporal-only comparison')
     parser.add_argument('--debug', action='store_true', help='Show exception traceback')
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -64,7 +66,7 @@ def main() -> int:
         native_backend()
         if args.resume:
             if any(value is not None for value in (args.output, args.checkpoint, args.window_size,
-                    args.overlap, args.neighbors, args.device, args.keyframe_config)):
+                    args.overlap, args.neighbors, args.device, args.keyframe_config, args.loop_closure)):
                 raise ValueError('--resume keeps saved input/window settings; only the BA budget, dense voxel fraction and diagnostics may change')
             candidate = args.resume.expanduser().resolve()
             saved = json.loads((candidate / 'request.json').read_text())
@@ -92,6 +94,7 @@ def main() -> int:
                                     overlap=args.overlap if args.overlap is not None else 32,
                                     neighbors=args.neighbors if args.neighbors is not None else 4,
                                     device=args.device or 'cuda',
+                                    loop_closure=args.loop_closure if args.loop_closure is not None else True,
                                     lm_iterations=args.lm_iterations if args.lm_iterations is not None else 1000,
                                     dense_voxel_fraction=args.dense_voxel_fraction if args.dense_voxel_fraction is not None else 0.01)
             output = (args.output or ROOT / 'data/intermediate' / datetime.now(timezone.utc).strftime(
@@ -112,7 +115,7 @@ def main() -> int:
             reconstructor.native.builder.enable_rerun(str(recording))
             reconstructor.visualization = ReconstructionVisualization(reconstructor.native)
             logging.info('Rerun live viewer connected; recording also saved to %s', recording)
-        logging.info('Video → keyframes → VGGT windows → graph-ordered map → shared-calibration BA → dense refinement')
+        logging.info('Video → keyframes → verified feature tracks → VGGT windows → graph-ordered map → shared-calibration BA → dense refinement')
         if reconstructor.visualization is not None:
             reconstructor.visualization.event("Decoding / selecting keyframes: waiting for ordered candidate images")
         sampler = VideoFrameSampler(keyframe_config=config)

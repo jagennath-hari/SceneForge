@@ -18,8 +18,9 @@ from .inference import infer_clusters
 from .view_graph import Cluster
 from .connection_repair import ConnectionRepair
 from .window_recovery import WindowRecovery
+from .loop_closure import LoopClosure
 
-POLICY = 'native_graph_dense_cunls_v12'
+POLICY = 'native_graph_dense_cunls_v13'
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +31,7 @@ class WindowOptions:
     device: str = 'cuda'
     lm_iterations: int = 1000
     dense_voxel_fraction: float = 0.01
+    loop_closure: bool = True
 
     def __post_init__(self) -> None:
         if not 0.001 <= self.dense_voxel_fraction <= 0.1:
@@ -63,9 +65,12 @@ class WindowReconstructor(ReconstructionFrontend):
         self.current: SparseModel | None = None
         self.timestamps: tuple | None = None
         self.summary: dict = {}
+        self.loops: LoopClosure | None = None
 
     def publish(self, status: str, error: str | None = None) -> dict:
         model = self.current
+        if self.loops is not None and model is not None:
+            self.loops.measure(self.native.builder.map, 'retained_map')
         self.summary.update(native_stage_seconds=self.native.stage_seconds, status=status, registered_frames=len(model.cameras) if model else 0,
                             error=error, dense_depth_refined=bool(self.summary.get("dense_refinement")),
                             shared_calibration_complete=self.native.builder.shared_calibration_complete,
@@ -104,6 +109,12 @@ class WindowReconstructor(ReconstructionFrontend):
             paths, self.timestamps = ConnectionRepair(self).prepare(paths, timestamps)
             windows = self.options.windows(len(paths))
             self.summary.update(input_frames=len(paths), windows=len(windows))
+            if self.options.loop_closure:
+                self.loops = LoopClosure(self)
+                self.summary['loop_closure'] = self.loops.summary
+                self.loops.prepare(paths, self.timestamps)
+            else:
+                self.summary['loop_closure'] = {'enabled': False}
             tracks = self.output / 'global_tracks.jsonl'
             write_json(self.output / 'windows.json', {'windows': [window.document() for window in windows]})
             self.summary['stage'] = 'vggt'
@@ -119,9 +130,13 @@ class WindowReconstructor(ReconstructionFrontend):
             if not self.native.accepted_windows:
                 raise RuntimeError('No window could initialize a connected map; inspect unresolved_windows in status.json')
             self.summary['stage'] = 'global_ba'
+            if self.loops is not None:
+                self.loops.measure(self.native.builder.map, 'final_ba_input')
             with Progress('Final global bundle adjustment') as progress:
                 self.native.finalize(lambda stage: progress.status(stage))
             self.summary['global_ba_complete'] = True
+            if self.loops is not None:
+                self.loops.measure(self.native.builder.map, 'final_ba_output')
             self.current = self.native.export()
             if self.current is None or set(self.current.cameras) != set(range(len(paths))):
                 self.summary['stage'] = 'unresolved_windows'

@@ -76,7 +76,8 @@ class ReconstructionFrontend:
         return result
 
     def _match(self, count: int, reused: dict[tuple[int, int], dict] | None = None,
-               description: str = "Verifying temporal image pairs") -> list[Path]:
+               description: str = "Verifying temporal image pairs",
+               explicit_pairs: list[tuple[int, int]] | None = None) -> list[Path]:
         executable = shutil.which("stereoforge-match-pairs")
         if executable is None:
             raise RuntimeError("Rebuild Docker to install the pair matcher with global feature IDs")
@@ -85,7 +86,9 @@ class ReconstructionFrontend:
         models = None
         reused = reused or {}
         prior_targets: dict[int, list[int]] = {}
-        for a, b in reused:
+        for a, b in (explicit_pairs if explicit_pairs is not None else reused):
+            if not 0 <= a < b < count:
+                raise ValueError("Matching pairs must use ordered valid frame IDs")
             prior_targets.setdefault(a, []).append(b)
         result = []
         width, height = self.size_wh
@@ -93,10 +96,15 @@ class ReconstructionFrontend:
         plans = []
         for start in batches:
             pairs = sorted({(a, b) for a in range(start, min(start+64, count))
-                            for b in range(a+1, min(a+self.options.neighbors+1, count))}
+                            for b in range(a+1, min(a+self.options.neighbors+1, count))
+                            if explicit_pairs is None}
                            | {(a, b) for a in range(start, min(start+64, count))
                               for b in prior_targets.get(a, ())})
             destination = folder / f"{start:06d}.jsonl"
+            if destination.is_file():
+                cached = [json.loads(line) for line in destination.read_text().splitlines()]
+                if [(r["source"], r["target"]) for r in cached] != pairs:
+                    raise ValueError(f"Cached matching plan changed: {destination}; start a fresh run")
             missing = [] if destination.is_file() else [pair for pair in pairs if pair not in reused]
             plans.append((start, destination, pairs, missing))
         # Engine preparation has its own bar. Finish it before opening the

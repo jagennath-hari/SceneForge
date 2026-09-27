@@ -273,8 +273,8 @@ It does not need a pip package installation. Use local Hub loading so model code
 comes from the submodule; checkpoint weights download on first use into the
 persistent `TORCH_HOME` cache. No model is loaded during the Docker build.
 Standard tensor inference uses upstream's PyTorch attention fallback when
-xFormers is absent. This prepares the dependency only: loop retrieval and loop
-constraints are not yet wired into reconstruction.
+xFormers is absent. Reconstruction now uses DINOv2-base + GeM by default for
+long-range loop candidate retrieval after temporal connection repair.
 
 ```python
 import os
@@ -287,8 +287,8 @@ model = torch.hub.load(
 model = model.module.eval().to("cuda:0")
 ```
 
-The upstream loader returns a DataParallel wrapper; unwrapping it lets the future
-adapter assign batches to a specific device. ONNX/TensorRT export remains separate
+The adapter unwraps upstream DataParallel and runs in an isolated worker on the
+first selected GPU, releasing model memory before matching and VGGT. ONNX/TensorRT export remains separate
 work. Keep the source directory off the global PYTHONPATH because upstream uses
 a generic package name, `model`.
 
@@ -813,7 +813,7 @@ cameras still registered. Unregistered cameras are not silently reintroduced.
 
 GTSfM-equivalent pose/calibration priors, GNC-TLS and final prior release are not
 exposed/verified in this backend. Fixing the first camera does not establish metric
-scale. Temporal candidate selection does not provide distant loop retrieval. Sparse
+scale. SelaVPR++ proposes distant revisits; only geometrically verified matches enter tracks. Sparse
 optimization never updates the original dense depth tensors. These are explicit
 limitations rather than implicit claims of paper equivalence.
 
@@ -931,7 +931,7 @@ frames; no-progress runs publish partial coverage with missing IDs and nonzero e
 
 The result is a colored sparse map and camera trajectory, not dense geometry or a
 stereo video. The backend fixes only its first camera; metric scale and global drift
-correction are not guaranteed. No new long-range loop matching is implemented.
+correction are not guaranteed. Long-range loop matching is provided by SelaVPR++ retrieval followed by native geometric verification.
 
 
 ## Custom cuNLS optimization (standalone diagnostic CLIs removed)
@@ -1161,3 +1161,42 @@ from its original initialization, with unchanged geometric filtering and merge
 validation. Failure preserves the GNC result for normal component handling; no
 unvalidated bridge is inserted. Scheduling records exact unanchored camera IDs
 and waits for relevant map support before retrying that window.
+
+
+### Verified loop closures
+
+The normal `python -m stereoforge.reconstruction --video data/input/barn.mp4`
+command includes loop retrieval. Use `--no-loop-closure` for a temporal-only
+comparison. A fresh run is required after this track-policy change; decoded
+frames and keyframe caches remain reusable.
+
+SelaVPR++ uses the official local Torch Hub DINOv2-base/GeM model (no hashing or
+reranking), float32 inference, and normalized 2,048D descriptors. Separate RGB
+retrieval images follow upstream ToTensor → ImageNet normalization → 322×322
+bilinear/antialiased resize. Feature matching and VGGT retain their existing
+image grids and intrinsics. Content-addressed descriptors persist beside the
+Torch Hub cache and include image bytes, checkpoint hash, source hashes,
+preprocessing and library versions; inserted repair frames alone need new
+inference when the others are cached. Model weights download on first use.
+
+Retrieval selects up to three distant temporal regions per frame, excluding at
+least 64 keyframes (or the window size, if larger) and 10 seconds. Neighboring
+pairs are also proposed in both traversal directions. Native RaCo–ALIKED /
+LightGlue+ F/H RANSAC verifies candidates. Each admitted pair needs at least 40
+inliers, 30% inlier ratio, six occupied 4×4 grid cells in both images, and a
+verified neighboring pair with both endpoints changed. These initial policy
+settings reduce false revisits but cannot guarantee their absence.
+
+Temporal repair finishes **before** retrieval: long-range matches must not hide
+weak adjacent boundaries. Verified loop edges join temporal edges through the
+same stable-feature-ID/conflict-rejecting track builder. Tracks need three views;
+only observations surviving native initialization, map combination and BA affect
+the map. Existing cuNLS global BA optimizes those shared landmarks; this does not
+add a separate Sim(3) pose graph or guarantee recovery from large drift.
+
+`loop_closure/report.json` and `status.json` distinguish retrieved pairs,
+geometrically verified pairs, consistent loop tracks, and loop landmarks/pairs
+present at final BA input and output. `track_evidence.json` relates native track
+IDs to verified loop pairs. Zero final loop support is reported as zero, not as
+successful loop optimization. Rerun shows candidate matching and rebuilt tracks
+using the existing frontend visualization.

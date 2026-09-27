@@ -6,10 +6,12 @@ from dataclasses import dataclass
 import json
 import logging
 import math
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
+from PIL import Image
 
 from stereoforge.utils.artifacts import write_json
 from stereoforge.video.sampling import VideoFrameSampler
@@ -49,6 +51,8 @@ class ConnectionRepair:
             saved = json.loads(complete.read_text())
             paths = [Path(frame['path']) for frame in saved['frames']]
             self.frontend.images = {i: Path(path) for i, path in enumerate(saved['images'])}
+            with Image.open(self.frontend.images[0]) as image:
+                self.frontend.size_wh = image.size
             if any(not path.is_file() for path in [*paths, *self.frontend.images.values()]):
                 raise FileNotFoundError('Repaired frame inputs are missing; start a fresh --video run')
             if not (self.root / 'global_tracks.jsonl').is_file():
@@ -202,6 +206,7 @@ class ConnectionRepair:
             for track in graph.tracks:
                 stream.write(json.dumps({str(frame): uv.tolist() for frame, uv in track.items()}) + '\n')
         temporary.replace(self.root / 'global_tracks.jsonl')
+        shutil.copyfile(self.root / 'global_tracks.jsonl', self.directory / 'temporal_tracks.jsonl')
         write_json(self.root / 'graph.json', graph.summary)
         original_selection = json.loads((self.root / 'selection.json').read_text())
         write_json(self.root / 'selection.json', {

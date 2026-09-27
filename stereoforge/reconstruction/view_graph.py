@@ -27,12 +27,14 @@ class Cluster:
 
 
 class VerifiedGraph:
-    def __init__(self, count: int) -> None:
+    def __init__(self, count: int, retain_feature_tracks: bool = False) -> None:
         self.count = count
+        self.retain_feature_tracks = retain_feature_tracks
         self.neighbors: dict[int, set[int]] = {i: set() for i in range(count)}
         self.pixels: dict[Observation, np.ndarray] = {}
         self.tracks: list[dict[int, np.ndarray]] = []
         self.summary: dict = {}
+        self.observation_tracks: dict[Observation, int] = {}
 
     def read(self, files: list[Path], on_progress=None, on_tracks=None, on_orbit=None,
              description: str = "Building measured feature tracks") -> None:
@@ -144,6 +146,8 @@ class VerifiedGraph:
             if on_orbit is not None and group_index % 5000 == 0:
                 on_orbit(0.8 + 0.15 * group_index / max(1, len(members)))
             if len(group) >= 3:
+                if self.retain_feature_tracks:
+                    self.observation_tracks.update({node: len(self.tracks) for node in group.values()})
                 self.tracks.append({f: self.pixels[node] for f, node in sorted(group.items())})
                 if len(self.tracks) == 1 or len(self.tracks) % 20000 == 0:
                     show_track(group, f"{len(self.tracks):,} tracks built · {group_index+1:,}/{len(members):,} components processed")

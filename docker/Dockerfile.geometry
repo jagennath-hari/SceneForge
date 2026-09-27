@@ -54,6 +54,11 @@ COPY third_party/vggt-omega/ /opt/third_party/vggt-omega/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --no-build-isolation --no-deps /opt/third_party/vggt-omega
 
+# Direct application dependency: the gated VGGT checkpoint resolver imports
+# huggingface_hub; upstream VGGT requirements do not install it.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install 'huggingface-hub>=0.34,<2'
+
 # Local Torch Hub source: pinned by the submodule, no runtime GitHub code fetch.
 # The upstream aggregation module imports FAISS even for plain GeM inference.
 RUN --mount=type=cache,target=/root/.cache/uv \

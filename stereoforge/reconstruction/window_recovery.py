@@ -169,10 +169,12 @@ class WindowRecovery:
                     candidate.attempted_support.add(support)
                     references = {frame: self.owners[frame] for frame in support}
                     stage = ''
+                    bridge_recovery = False
 
                     def update(value: str) -> None:
-                        nonlocal stage
+                        nonlocal stage, bridge_recovery
                         stage = value
+                        bridge_recovery |= value.startswith('initialization bridge')
                         progress.status(f'window {candidate.key} | {candidate.kind} | {value}')
 
                     event = {'candidate': candidate.key, 'kind': candidate.kind,
@@ -183,9 +185,11 @@ class WindowRecovery:
                     except WindowRejected as error:
                         candidate.reason = str(error)
                         candidate.waiting_for = error.unanchored_frames
-                        # These computations depend only on this saved window,
-                        # not on unrelated accepted map growth. Never repeat them.
-                        candidate.blocked = (stage == 'initializing landmarks' or stage.startswith('local cuNLS BA:'))
+                        # A bridge chooses its reference component using shared
+                        # accepted cameras. Retry it only when that support changes.
+                        # Unrecovered local computations remain map-independent.
+                        candidate.blocked = (not bridge_recovery and
+                            (stage == 'initializing landmarks' or stage.startswith('local cuNLS BA:')))
                         event.update(status='rejected', stage=stage, reason=str(error))
                         self.events.append(event)
                         logging.warning('Deferred window %s: %s', candidate.key, error)

@@ -19,7 +19,7 @@ from .view_graph import Cluster
 from .connection_repair import ConnectionRepair
 from .window_recovery import WindowRecovery
 
-POLICY = 'native_graph_dense_cunls_v11'
+POLICY = 'native_graph_dense_cunls_v12'
 
 
 @dataclass(frozen=True, slots=True)

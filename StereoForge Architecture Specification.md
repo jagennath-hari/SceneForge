@@ -55,6 +55,24 @@ mandatory before a candidate replaces the accepted map. Priors remain those of
 the initialized solve; this is not an unanchored global optimizer or an exact
 GTSfM reproduction. Non-overlap child landmarks are preserved during reconciliation.
 
+
+If depth-based initialization disconnects a window, a bounded C++ recovery step
+runs before local BA. It keeps the best-connected component as a local reference
+and uses original measured tracks to associate its stable landmarks with pixels
+in the disconnected component. OpenCV PnP/RANSAC and pose refinement fit training
+correspondences; a deterministic 20% track split checks the proposed pose without
+using those pixels for fitting. At least 30 training inliers and 10 validation
+observations are required, with 80% validation agreement within five pixels.
+For multi-camera components, training depth ratios estimate scale, and at least
+two cameras must support the resulting Sim(3). An isolated camera can be recovered
+without estimating a component scale. Compatible measured observations are restored
+at three pixels; at least 30 crossing tracks and connected geometry must survive.
+At most four components and 16 PnP proposals are attempted per window. Proposals
+modify only the provisional window, then undergo normal local BA and map-merge
+checks. Original VGGT files remain unchanged. Unresolved components still use the
+saved-subset/smaller-window recovery path; completion is not guaranteed.
+The native backend API is 15; rebuild Docker before using this recovery policy.
+
 After merging, one global BA jointly optimizes shared `fx, fy, cx, cy`, camera
 poses and sparse landmarks. Focal lengths have a ten-pixel prior; principal points
 have a conservative two-pixel prior per camera. The first camera remains fixed.
@@ -63,6 +81,12 @@ processed dimensions; shared calibration assumes unchanged zoom/crop. A failed
 solve or invalid-geometry check preserves the accepted sparse map and stops before dense
 refinement. Status records `shared_calibration_complete` and the final intrinsics.
 Optional Jacobian diagnostics cover all 13 reprojection tangent coordinates.
+Reaching the joint BA iteration limit is a normal stop, including window merges,
+the local Huber retry, and final global BA. A finite, non-increasing-cost result
+proceeds through the existing support and geometry checks, with a warning that
+convergence was not established. Window candidates must still pass overlap
+validation before being committed. The iteration cap bounds runtime without
+by itself rejecting a candidate. Local GNC convergence requirements are unchanged.
 Final global BA accepts a successful, geometrically valid solve even when held-out
 agreement decreases. Boundary-wide scores and per-frame regressions are advisory:
 warnings report before/after counts and median errors but do not veto the optimized

@@ -77,8 +77,10 @@ public:
     [[nodiscard]] const std::vector<FrameId>& UnanchoredFrames() const { return this->unanchored_frames_; }
     [[nodiscard]] bool SharedCalibrationComplete() const { return this->shared_calibration_complete_; }
 private:
-    [[nodiscard]] SparseMap Initialize(const std::vector<DepthFrame>& frames) const;
-    void Optimize(SparseMap& model, bool local, bool shared_calibration = false) const;
+    [[nodiscard]] SparseMap Initialize(const std::vector<DepthFrame>& frames,
+        const std::function<void(const std::string&)>& progress) const;
+    void Optimize(SparseMap& model, bool local, bool shared_calibration = false,
+                  const std::function<void(const std::string&)>* progress = nullptr) const;
     [[nodiscard]] SparseMap Combine(const SparseMap& local) const;
     [[nodiscard]] Boundary Withhold(SparseMap& combined, const SparseMap& local,
                                     const std::function<void(const std::string&)>& progress) const;

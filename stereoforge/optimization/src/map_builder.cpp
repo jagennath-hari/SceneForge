@@ -1,4 +1,5 @@
 #include "stereoforge/optimization/map_builder.hpp"
+#include "stereoforge/optimization/map_bridge.hpp"
 #include <Eigen/Geometry>
 #include <Eigen/LU>
 #include <tuple>
@@ -74,6 +75,8 @@ void CheckSupport(const SparseMap& model, const std::string& stage,
         }
     }
 }
+} // namespace
+
 std::vector<SparseMap> ConnectedGroups(const SparseMap& model) {
     std::map<FrameId, std::vector<FrameId>> adjacency;
     for (const std::pair<const TrackId, Landmark>& point : model.landmarks) {
@@ -104,7 +107,6 @@ std::vector<SparseMap> ConnectedGroups(const SparseMap& model) {
     return groups;
 }
 
-}
 double Reprojection(const Camera& camera, const Eigen::Vector3d& point, const Eigen::Vector2d& pixel) {
     const Eigen::Vector3d local = camera.rotation.transpose()*(point-camera.center);
     if (!local.allFinite() || local.z() <= 0) { return std::numeric_limits<double>::infinity(); }
@@ -194,7 +196,8 @@ void MapBuilder::SetTracks(std::vector<Observations> tracks) {
 }
 const SparseMap& MapBuilder::Map() const { return this->map_; }
 std::size_t MapBuilder::AcceptedWindows() const { return this->accepted_windows_; }
-SparseMap MapBuilder::Initialize(const std::vector<DepthFrame>& frames) const {
+SparseMap MapBuilder::Initialize(const std::vector<DepthFrame>& frames,
+    const std::function<void(const std::string&)>& progress) const {
     SparseMap model;
     std::map<FrameId, const DepthFrame*> images;
     std::set<TrackId> candidates;
@@ -245,10 +248,12 @@ SparseMap MapBuilder::Initialize(const std::vector<DepthFrame>& frames) const {
         model.landmarks.emplace(id, std::move(point));
     }
     if (model.landmarks.size() < 60) { throw std::runtime_error("Window initialization has fewer than 60 landmarks"); }
+    RecoverInitializationBridges(model, this->tracks_, frames, this->map_, progress);
     CheckSupport(model, "VGGT landmark initialization", nullptr, nullptr, false);
     return model;
 }
-void MapBuilder::Optimize(SparseMap& model, bool local, bool shared_calibration) const {
+void MapBuilder::Optimize(SparseMap& model, bool local, bool shared_calibration,
+                          const std::function<void(const std::string&)>* progress) const {
     const std::string stage = local ? "local BA" : "joint BA";
     CheckSupport(model, stage + " input");
     const SupportCounts before = CountSupport(model);
@@ -295,7 +300,17 @@ void MapBuilder::Optimize(SparseMap& model, bool local, bool shared_calibration)
     }
     const BAResult result = this->solver_.Solve(input);
     if (!result.report.optimization_complete) {
-        throw std::runtime_error(local ? "Local BA did not converge" : "Joint BA exhausted its iteration budget; increase --lm-iterations");
+        // A capped joint solve is usable without claiming convergence. Solve()
+        // already rejects nonfinite parameters and increasing objective values;
+        // output support and geometry checks below still apply.
+        if (!local && result.report.lm_budget_exhausted) {
+            if (progress != nullptr) {
+                (*progress)(std::string("WARNING: ") + (shared_calibration ? "Final global BA" : "Joint BA") +
+                    " reached its iteration limit; continuing to geometry validation (convergence not established)");
+            }
+        } else {
+            throw std::runtime_error(local ? "Local BA did not converge" : "Joint BA did not produce a completed or budget-limited result");
+        }
     }
     for (std::size_t i = 0; i < camera_ids.size(); ++i) {
         Camera& camera = model.cameras.at(camera_ids[i]);
@@ -498,7 +513,7 @@ void MapBuilder::AddWindow(const std::vector<DepthFrame>& frames, const std::vec
                            const std::function<void(const std::string&)>& progress) {
     this->unanchored_frames_.clear();
     progress("initializing landmarks");
-    const SparseMap initialized = this->Initialize(frames);
+    const SparseMap initialized = this->Initialize(frames, progress);
     this->Record(initialized,0,progress,frames.empty() ? nullptr : &frames.front());
     std::vector<SparseMap> initial_groups = ConnectedGroups(initialized);
     if (this->accepted_windows_ == 0 && initial_groups.size() != 1) {
@@ -518,7 +533,7 @@ void MapBuilder::AddWindow(const std::vector<DepthFrame>& frames, const std::vec
             progress("local cuNLS BA: connected Huber retry");
             SparseMap retry = original;
             try {
-                this->Optimize(retry, false);
+                this->Optimize(retry, false, false, &progress);
                 // Optimize checks positive-depth/reprojection-filtered support
                 // and connectivity. Normal overlap validation still follows.
                 initial_groups[i] = std::move(retry);
@@ -572,7 +587,7 @@ void MapBuilder::AddWindow(const std::vector<DepthFrame>& frames, const std::vec
     progress("withholding overlap observations");
     const Boundary boundary = this->Withhold(candidate, local, progress);
     progress("joint cuNLS BA");
-    this->Optimize(candidate, false);
+    this->Optimize(candidate, false, false, &progress);
     progress("validating overlaps");
     this->Validate(candidate, boundary);
     for (const Boundary& previous : this->boundaries_) { this->Validate(candidate, previous); }
@@ -629,7 +644,7 @@ void MapBuilder::Finalize(const std::function<void(const std::string&)>& progres
     for (std::pair<const FrameId,Camera>& entry : candidate.cameras) { entry.second.intrinsics = intrinsics; }
     progress("global BA: joint shared fx/fy/cx/cy, poses and landmarks");
     if (this->recorder_) { this->RerunEvent("Global BA: optimizing shared intrinsics, poses and landmarks; frustums update after validation"); }
-    this->Optimize(candidate,false,true);
+    this->Optimize(candidate,false,true,&progress);
     progress("validating shared-intrinsics global BA");
     try {
         for (const Boundary& boundary : this->boundaries_) { this->Validate(candidate,boundary,&progress); }

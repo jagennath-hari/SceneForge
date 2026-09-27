@@ -30,7 +30,7 @@ so::DepthFrame ReadFrame(so::FrameId id, const Eigen::Matrix4d& pose, const Eige
 }
 }
 PYBIND11_MODULE(_stereoforge_map, module) {
-    module.attr("api_version") = 14;
+    module.attr("api_version") = 15;
     py::class_<so::DenseFusion>(module,"DenseFusion")
         .def(py::init<double>())
         .def("add",[](so::DenseFusion& fusion,

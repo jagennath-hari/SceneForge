@@ -35,8 +35,8 @@ class WindowOptions:
             raise ValueError('Dense voxel fraction must be between 0.001 and 0.1')
         if self.window_size < 8 or not 6 <= self.overlap < self.window_size:
             raise ValueError('Require window-size >= 8 and 6 <= overlap < window-size')
-        if not 1 <= self.neighbors <= 12 or not 1 <= self.lm_iterations <= 500:
-            raise ValueError('Require 1–12 matching neighbors and 1–500 joint BA iterations')
+        if not 1 <= self.neighbors <= 12 or not 1 <= self.lm_iterations <= 1000:
+            raise ValueError('Require 1–12 matching neighbors and 1–1000 joint BA iterations')
         if self.device != 'cuda' and not (self.device.startswith('cuda:') and self.device[5:].isdigit()):
             raise ValueError('Use --device cuda or cuda:N')
 

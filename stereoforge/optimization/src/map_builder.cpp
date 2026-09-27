@@ -113,7 +113,7 @@ double Reprojection(const Camera& camera, const Eigen::Vector3d& point, const Ei
 }
 MapBuilder::MapBuilder(int device, int iterations, bool check_jacobians)
     : solver_(device), iterations_(iterations), check_jacobians_(check_jacobians) {
-    if (iterations < 1 || iterations > 500) { throw std::invalid_argument("BA iterations must be 1..500"); }
+    if (iterations < 1 || iterations > 1000) { throw std::invalid_argument("BA iterations must be 1..1000"); }
 }
 void MapBuilder::RerunDense(const float* xyz, const std::uint8_t* rgb, std::size_t count) {
     if (!this->recorder_) { return; }

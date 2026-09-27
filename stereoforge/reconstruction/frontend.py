@@ -39,7 +39,8 @@ class ReconstructionFrontend:
         if capabilities.returncode or not json.loads(capabilities.stdout).get("stable_feature_ids"):
             raise RuntimeError("Pair matcher needs rebuilding: missing stable feature ID support")
 
-    def _prepare_images(self, paths: list[Path], reused: dict[Path, Path] | None = None) -> dict[int, Path]:
+    def _prepare_images(self, paths: list[Path], reused: dict[Path, Path] | None = None,
+                        description: str = "Preparing feature images") -> dict[int, Path]:
         from vggt_omega.utils.load_fn import load_and_preprocess_images
 
         folder = self.output / "processed"
@@ -48,7 +49,7 @@ class ReconstructionFrontend:
         sizes = set()
         if self.visualization is not None:
             self.visualization.activity('Preparing feature images — fixed overview', overview=True)
-        with tracked(enumerate(paths), "Preparing feature images", len(paths), "frame") as pending:
+        with tracked(enumerate(paths), description, len(paths), "frame") as pending:
             for index, path in pending:
                 destination = folder / f"{index:06d}.png"
                 if self.visualization is not None:
@@ -74,7 +75,8 @@ class ReconstructionFrontend:
         self.size_wh = next(iter(sizes))
         return result
 
-    def _match(self, count: int, reused: dict[tuple[int, int], dict] | None = None) -> list[Path]:
+    def _match(self, count: int, reused: dict[tuple[int, int], dict] | None = None,
+               description: str = "Verifying temporal image pairs") -> list[Path]:
         executable = shutil.which("stereoforge-match-pairs")
         if executable is None:
             raise RuntimeError("Rebuild Docker to install the pair matcher with global feature IDs")
@@ -88,35 +90,43 @@ class ReconstructionFrontend:
         result = []
         width, height = self.size_wh
         batches = range(0, max(count - 1, 0), 64)
-        with Progress("Verifying temporal image pairs", total=len(batches), unit="batch") as progress:
-            for start in batches:
-                destination = folder / f"{start:06d}.jsonl"
+        plans = []
+        for start in batches:
+            pairs = sorted({(a, b) for a in range(start, min(start+64, count))
+                            for b in range(a+1, min(a+self.options.neighbors+1, count))}
+                           | {(a, b) for a in range(start, min(start+64, count))
+                              for b in prior_targets.get(a, ())})
+            destination = folder / f"{start:06d}.jsonl"
+            missing = [] if destination.is_file() else [pair for pair in pairs if pair not in reused]
+            plans.append((start, destination, pairs, missing))
+        # Engine preparation has its own bar. Finish it before opening the
+        # matching bar, including when only a middle batch needs new inference.
+        if any(missing for _, _, _, missing in plans):
+            if self.visualization is not None:
+                self.visualization.event("Preparing RaCo–ALIKED + LightGlue+ for new image pairs")
+            models = VideoFrameSampler.model_arguments(self.keyframe_config)[1]
+        total_new = sum(len(missing) for _, _, _, missing in plans)
+        total_pairs = sum(len(pairs) for _, _, pairs, _ in plans)
+        completed_new = 0
+        with Progress(description, total=total_pairs, unit="pair") as progress:
+            for batch_index, (start, destination, pairs, missing) in enumerate(plans):
+                progress.status(f"batch {batch_index+1}/{len(plans)} · new {completed_new}/{total_new} · "
+                                f"{total_pairs-total_new} reusable")
                 if destination.is_file():
                     result.append(destination)
                     if self.visualization is not None:
                         self.visualization.matched_batch(destination)
-                    progress.status(f"reused batch · source frames {start}–{min(start+64, count-1)-1}")
-                    progress.advance()
+                    progress.advance(len(pairs))
                     continue
-                pairs = [(a, b) for a in range(start, min(start+64, count))
-                         for b in range(a+1, min(a+self.options.neighbors+1, count))]
-                pairs = sorted(set(pairs) | {(a, b) for a in range(start, min(start+64, count))
-                                                           for b in prior_targets.get(a, ())})
-                missing = [pair for pair in pairs if pair not in reused]
                 if not pairs:
                     continue
                 request = folder / f"{start:06d}.request.json"
                 write_json(request, {"pairs": [{"source": a, "target": b, "width": width, "height": height,
                              "source_path": str(self.images[a]), "target_path": str(self.images[b])} for a, b in missing]})
                 temporary = destination.with_suffix(".partial_" + uuid4().hex[:8])
-                if missing and models is None:
-                    if self.visualization is not None:
-                        self.visualization.event("Preparing RaCo–ALIKED + LightGlue+ for new image pairs")
-                    models = VideoFrameSampler.model_arguments(self.keyframe_config)[1]
                 command = [executable, str(request), str(self.keyframe_config), models or "", str(temporary)]
                 if self.device:
                     command.append(str(self.device))
-                progress.status(f"{len(missing)} new pairs · {len(pairs)-len(missing)} reused")
                 if self.visualization is not None:
                     sample = pairs[:16]
                     self.visualization.activity(
@@ -140,5 +150,6 @@ class ReconstructionFrontend:
                 result.append(destination)
                 if self.visualization is not None:
                     self.visualization.matched_batch(destination)
-                progress.advance()
+                completed_new += len(missing)
+                progress.advance(len(pairs))
         return result

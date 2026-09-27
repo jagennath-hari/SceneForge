@@ -34,8 +34,9 @@ class VerifiedGraph:
         self.tracks: list[dict[int, np.ndarray]] = []
         self.summary: dict = {}
 
-    def read(self, files: list[Path], on_progress=None, on_tracks=None, on_orbit=None) -> None:
-        with Progress("Building measured feature tracks", sum(path.stat().st_size for path in files), "B") as progress:
+    def read(self, files: list[Path], on_progress=None, on_tracks=None, on_orbit=None,
+             description: str = "Building measured feature tracks") -> None:
+        with Progress(description, sum(path.stat().st_size for path in files), "B") as progress:
             self._read(files, progress, on_progress, on_tracks, on_orbit)
 
     def _read(self, files: list[Path], progress: Progress, on_progress=None, on_tracks=None, on_orbit=None) -> None:

@@ -103,15 +103,19 @@ class ConnectionRepair:
                     raise ValueError('Repair round input identity changed; start a fresh --video run')
                 write_json(identity_path, identity)
                 self.frontend.output = folder
-                self.frontend.images = self.frontend._prepare_images(paths, previous_images)
+                prefix = f"Repair {round_index}/{self.policy.maximum_rounds}"
+                self.frontend.images = self.frontend._prepare_images(paths, previous_images,
+                    description=f"{prefix} · preparing images" if round_index else "Preparing feature images")
                 reused = self._remap_matches(previous_files, previous_paths, paths)
-                files = self.frontend._match(len(paths), reused)
+                files = self.frontend._match(len(paths), reused,
+                    description=f"{prefix} · matching pairs" if round_index else "Verifying temporal image pairs")
                 del reused
                 graph = VerifiedGraph(len(paths))
                 visualization = self.frontend.visualization
                 graph.read(files, on_progress=visualization.event if visualization else None,
                            on_tracks=visualization.tracks if visualization else None,
-                           on_orbit=visualization.orbit if visualization else None)
+                           on_orbit=visualization.orbit if visualization else None,
+                           description=f"{prefix} · rebuilding tracks" if round_index else "Building measured feature tracks")
                 counts = self._crossing_counts(graph)
                 weak = [i for i in range(1, len(frames)) if counts[i] < self.policy.minimum_crossing_tracks]
                 remaining = budget - (len(frames) - initial_count)

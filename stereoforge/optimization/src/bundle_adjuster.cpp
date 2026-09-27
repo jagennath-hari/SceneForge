@@ -207,7 +207,7 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
     }
     const int rounds = use_gnc ? options.gnc_rounds : 1;
     const int iterations = options.lm_iterations;
-    if (rounds < 1 || rounds > 128 || iterations < 1 || iterations > 500) {
+    if (rounds < 1 || rounds > 128 || iterations < 1 || iterations > 1000) {
         throw std::invalid_argument("Invalid GNC/LM iteration limits");
     }
     const std::vector<BACamera>& cameras = input.cameras;

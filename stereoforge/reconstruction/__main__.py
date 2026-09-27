@@ -49,7 +49,7 @@ def main() -> int:
     parser.add_argument('--overlap', type=int, help='Shared keyframes between windows (default 16)')
     parser.add_argument('--neighbors', type=int, help='Temporal feature matching neighbors (default 4)')
     parser.add_argument('--device', help='cuda: visible GPUs for VGGT, first GPU for BA; cuda:N: one GPU')
-    parser.add_argument('--lm-iterations', type=int, help='Joint BA iteration budget (default 500)')
+    parser.add_argument('--lm-iterations', type=int, help='Joint BA iteration budget (1–1000; default 500)')
     parser.add_argument('--dense-voxel-fraction', type=float, help='Voxel width / median scene depth (default 0.01; larger uses less memory)')
     parser.add_argument('--keyframe-config', type=Path)
     parser.add_argument('--diagnostics', action='store_true', help='Check native CUDA Jacobians (slower; no intermediate map dumps)')

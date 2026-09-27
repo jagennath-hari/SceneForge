@@ -4,7 +4,6 @@ FROM ${BASE_FROM} AS cunls
 
 # Build the checked-out submodule against the same CUDA toolkit as StereoForge.
 # No edits to upstream source, GPU access, examples, or tests are required here.
-ARG BUILD_JOBS=4
 COPY third_party/cuNLS/ /opt/third_party/cuNLS/
 RUN cmake -S /opt/third_party/cuNLS -B /tmp/cunls-build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
@@ -12,7 +11,7 @@ RUN cmake -S /opt/third_party/cuNLS -B /tmp/cunls-build -G Ninja \
         -DBUILD_SHARED_LIBS=ON \
         -DBUILD_PYTHON_BINDINGS=OFF \
         -DBUILD_TESTING=OFF && \
-    cmake --build /tmp/cunls-build --parallel "${BUILD_JOBS}" && \
+    cmake --build /tmp/cunls-build --parallel "$(nproc)" && \
     cmake --install /tmp/cunls-build && \
     cp -a /tmp/cunls-build/_deps/cudss-src /opt/cudss && \
     rm -rf /tmp/cunls-build
@@ -27,7 +26,7 @@ ENV CMAKE_PREFIX_PATH=/opt/cunls \
 # Its wheel statically builds cuNLS; the shared installation above is for C++.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install 'cupy-cuda13x>=13.6,<14' && \
-    CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS}" \
+    CMAKE_BUILD_PARALLEL_LEVEL="$(nproc)" \
         uv pip install --no-deps /opt/third_party/cuNLS/python && \
     rm -rf /opt/third_party/cuNLS/python/build
 
@@ -39,7 +38,7 @@ RUN --mount=type=cache,target=/root/.cache/uv uv pip install 'pybind11>=2.13,<3'
 COPY stereoforge/optimization/ /opt/stereoforge/optimization/
 RUN cmake -S /opt/stereoforge/optimization -B /tmp/stereoforge-optimization -G Ninja \
         -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DPython_EXECUTABLE=/opt/stereoforge-venv/bin/python && \
-    cmake --build /tmp/stereoforge-optimization --parallel "${BUILD_JOBS}" && \
+    cmake --build /tmp/stereoforge-optimization --parallel "$(nproc)" && \
     cmake --install /tmp/stereoforge-optimization && \
     rm -rf /tmp/stereoforge-optimization
 

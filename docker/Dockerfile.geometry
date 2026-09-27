@@ -43,7 +43,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY stereoforge/video/ /opt/stereoforge/video/
 RUN cmake -S /opt/stereoforge/video -B /opt/stereoforge/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local && \
-    cmake --build /opt/stereoforge/build --parallel 4 && \
+    cmake --build /opt/stereoforge/build --parallel "$(nproc)" && \
     cmake --install /opt/stereoforge/build && \
     rm -rf /opt/stereoforge/build
 

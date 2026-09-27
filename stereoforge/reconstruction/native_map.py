@@ -68,8 +68,13 @@ class NativeMap:
             self._frame_cache.popitem(last=False)
         return frames
 
-    def add_window(self, path: Path, images: list[Path], references: dict[int, Path], progress) -> None:
+    def add_window(self, path: Path, images: list[Path], references: dict[int, Path], progress,
+                   frame_ids: tuple[int, ...] | None = None) -> None:
         frames = self._load_frames(path, images)
+        if frame_ids is not None:
+            # Keep the saved prediction's coordinate system. Only the selected
+            # cameras enter initialization/BA; source ownership remains per frame.
+            frames = {frame: frames[frame] for frame in frame_ids}
         reference_frames = []
         for source in sorted(set(references.values())):
             saved = self._load_frames(source, images)

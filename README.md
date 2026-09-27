@@ -454,3 +454,25 @@ thumbnail inputs are skipped across repair rounds. Rust also skips identical
 thumbnail pixels and lets the SDK batch routine image/status events instead of
 forcing a flush per event. Map snapshots and the final recording flush remain.
 This reduces visualization traffic without changing reconstruction inputs.
+
+When a window blocks map growth, automatic window recovery first tries existing
+predictions. Overlapping subsets of a failed saved window can establish a
+validated bridge to a neighboring full window; these subsets do not rerun VGGT.
+If saved candidates cannot extend the map, the frontier window is re-predicted
+at roughly half its original size, with 50% overlap (at least six shared frames).
+For example, `[608,672)` becomes `[608,640)`, `[624,656)`, `[640,672)`.
+There is only one subdivision level per original window; children never split
+again. Windows of eight or fewer frames are not subdivided.
+
+All candidates use the same native local BA, alignment, joint BA and validation.
+A failed candidate leaves the accepted map unchanged. Already covered windows
+need not be accepted again; completion requires every selected frame to belong
+to an accepted candidate. The common-map bar counts unique accepted frames.
+Initialization/local-BA failures are not retried on identical predictions;
+map-dependent rejections can retry when their shared-camera support changes.
+Recovery attempts are recorded in the map attempt's `window_recovery.json`,
+and fresh predictions are cached under `recovery_vggt/window_NNNN/`.
+Per-frame depth ownership follows the candidate that actually added that frame,
+including saved subsets, so dense refinement uses the corresponding prediction.
+No new flags are required. Older runs predate this scheduling policy and require
+a fresh `--video` run; decoded frames and keyframe-selection caches remain reusable.

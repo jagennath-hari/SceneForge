@@ -9,16 +9,17 @@ import numpy as np
 
 from stereoforge.refinement.sparse_model import SparseModel
 from stereoforge.utils.artifacts import write_json
-from stereoforge.utils.progress import Progress, progress_group
+from stereoforge.utils.progress import Progress
 from stereoforge.utils.point_cloud import write_ply
-from .native_map import NativeMap, WindowRejected
+from .native_map import NativeMap
 from .dense import DenseRefiner, DenseOptions
 from .frontend import ReconstructionFrontend
 from .inference import infer_clusters
 from .view_graph import Cluster
 from .connection_repair import ConnectionRepair
+from .window_recovery import WindowRecovery
 
-POLICY = 'native_graph_dense_cunls_v10'
+POLICY = 'native_graph_dense_cunls_v11'
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,57 +115,7 @@ class WindowReconstructor(ReconstructionFrontend):
             infer_clusters(checkpoint, paths, windows, self.output / 'vggt', self.devices, on_complete=on_window)
             with Progress('Loading native feature tracks'):
                 self.native.load_tracks(tracks)
-            pending = {window.identifier: window for window in windows}
-            # Frame ownership supplies accepted raw depths in the appropriate
-            # gauge, independent of processing order. Tensors remain disk-cached.
-            owners: dict[int, Path] = {}
-            attempted_at: dict[int, int] = {}
-            reasons: dict[int, str] = {}
-            waiting_for: dict[int, frozenset[int]] = {}
-            self.summary['merge_order'] = []
-            self.summary['unresolved_windows'] = []
-            self.summary['global_ba_complete'] = False
-            with progress_group('Building common map', len(windows), 'window') as progress:
-                while pending:
-                    revision = self.native.accepted_windows
-                    eligible = [window for key, window in sorted(pending.items())
-                                if attempted_at.get(key) != revision
-                                and (key not in waiting_for or not waiting_for[key].isdisjoint(owners))]
-                    ranked = self.native.rank_windows([window.frames for window in eligible])
-                    if not ranked:
-                        break
-                    window = eligible[ranked[0]]
-                    index = window.identifier
-                    self.summary['stage'] = f'window_{index}'
-                    def update(stage: str) -> None:
-                        progress.status(f'window {index+1}/{len(windows)} | {stage}')
-                    references = {frame: owners[frame] for frame in window.frames if frame in owners}
-                    source = self.output / 'vggt' / f'{index}.pt'
-                    try:
-                        self.native.add_window(source, self.images, references, update)
-                    except WindowRejected as error:
-                        attempted_at[index] = revision
-                        reasons[index] = str(error)
-                        if error.unanchored_frames:
-                            waiting_for[index] = error.unanchored_frames
-                        else:
-                            waiting_for.pop(index, None)
-                        logging.warning('Deferred window %d at map revision %d: %s', index, revision, error)
-                        continue
-                    for frame in window.frames:
-                        owners.setdefault(frame, source)
-                    del pending[index]
-                    reasons.pop(index, None)
-                    waiting_for.pop(index, None)
-                    self.summary['merge_order'].append(index)
-                    self.summary['accepted_windows'] = self.native.accepted_windows
-                    progress.advance()
-                self.summary['unresolved_windows'] = [
-                    {'window': key, 'frames': window.frames,
-                     'reason': reasons.get(key, 'No shared camera with the accepted map'),
-                     'last_attempt_revision': attempted_at.get(key),
-                     'waiting_for_shared_cameras': sorted(waiting_for.get(key, ()))}
-                    for key, window in sorted(pending.items())]
+            owners = WindowRecovery(self, windows, paths, checkpoint).run()
             if not self.native.accepted_windows:
                 raise RuntimeError('No window could initialize a connected map; inspect unresolved_windows in status.json')
             self.summary['stage'] = 'global_ba'

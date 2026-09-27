@@ -32,6 +32,21 @@ provenance and per-round support counts are saved under `connection_repair/`;
 separate round caches and explicit ID remapping prevent stale image/match reuse.
 Unresolved weak cuts remain visible and all geometry checks still apply.
 
+When graph-ordered growth stalls, reuse saved overlapping predictions first.
+Validated half-window subsets may bridge from the accepted map to an existing
+neighboring prediction without inference. If that cannot extend the map, infer
+one level of smaller overlapping windows at the stalled frontier: approximately
+half-size, 50% overlap with a minimum of six shared frames, minimum window size
+eight. Never recursively subdivide recovery children. All candidates retain the
+same native initialization, local BA, Sim(3), joint BA and validation policy.
+Track acceptance and raw-depth ownership per frame; fully covered original
+windows need not be independently accepted. Count unique accepted frames in
+progress, and report unresolved frames rather than declaring success from the
+number of attempted windows. Failures in map-independent initialization/local
+BA block that candidate permanently; map-dependent failures can retry when
+shared-camera support changes. Keep recovery predictions and attempt records
+separate from original VGGT window caches.
+
 The map grows in graph-ranked window order. Each global keyframe has one camera, each fused
 track one sparse landmark. Local GNC-TLS filters initialization outliers; joint
 BA uses a three-pixel radial Huber loss in the custom CUDA pixel factor. Shared

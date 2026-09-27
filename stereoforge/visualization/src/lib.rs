@@ -223,6 +223,13 @@ pub extern "C" fn sf_rerun_image(handle: *mut std::ffi::c_void, rgb: *const u8,
         // SAFETY: C++ validates packed RGB length before passing this buffer.
         let session = unsafe { &mut *handle.cast::<Session>() };
         let bytes = unsafe { slice::from_raw_parts(rgb, count) }.to_vec();
+        if let Some(previous) = session.staging.images.get(&frame) {
+            if previous.width == width && previous.height == height && previous.rgb == bytes {
+                return Ok(());
+            }
+        }
+        // Routine images/status use SDK timed batching. Flushing every tiny
+        // event defeats batching and can flood the live viewer's ingestion queue.
         session.recording.set_time("reconstruction_step", TimeCell::from_sequence(session.step));
         if session.camera_root.is_some() {
             // Calibrated camera images were logged with their correctly scaled K
@@ -236,7 +243,6 @@ pub extern "C" fn sf_rerun_image(handle: *mut std::ffi::c_void, rgb: *const u8,
             session.recording.set_time("reconstruction_step", TimeCell::from_sequence(session.step));
             session.staging.keyframe(&session.recording, frame, staging::Thumbnail { rgb: bytes, width, height })?;
         }
-        session.recording.flush_async()?;
         Ok(())
     })
 }
@@ -256,7 +262,6 @@ pub extern "C" fn sf_rerun_status(handle: *mut std::ffi::c_void, message: *const
         if let Ok(payload) = serde_json::from_str::<serde_json::Value>(message) {
             if let Some(fraction) = payload["orbit_progress"].as_f64() {
                 layout::orbit(&session.recording,fraction as f32)?;
-                session.recording.flush_async()?;
                 // Eye-only event: preserve the currently displayed feature tracks.
                 return Ok(());
             }
@@ -288,7 +293,6 @@ pub extern "C" fn sf_rerun_status(handle: *mut std::ffi::c_void, message: *const
         }
         activity::log(&session.recording, message, &session.centers, &session.staging.images)?;
         session.recording.log("pipeline/stage", &TextLog::new(message))?;
-        session.recording.flush_async()?;
         Ok(())
     })
 }

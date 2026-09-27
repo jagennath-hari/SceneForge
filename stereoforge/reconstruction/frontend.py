@@ -67,6 +67,8 @@ class ReconstructionFrontend:
                 if self.visualization is not None:
                     self.visualization.keyframe(index, destination)
                     self.visualization.activity(f"Feature image ready: {index+1}/{len(paths)}", [index], ready=True)
+        if self.visualization is not None:
+            self.visualization.event(f"Feature images ready: {len(paths)}/{len(paths)}")
         if len(sizes) != 1:
             raise ValueError("Video input must use a uniform processed image size")
         self.size_wh = next(iter(sizes))

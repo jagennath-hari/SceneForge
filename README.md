@@ -366,7 +366,7 @@ Camera positions update at pipeline snapshots, without interpolated animation.
 Camera-to-world rotations and RDF optical axes (+X right, +Y down, +Z forward)
 are preserved. Intrinsics are scaled to image thumbnails, including the calibrated
 principal point. World RDF does not imply gravity alignment. Previews cap points
-at 50,000 per snapshot and images at 256 pixels per side.
+at 50,000 per snapshot and images at 128 pixels per side.
 
 Window merging requires 75% per-camera held-out agreement and 80% across the
 boundary; the 5-pixel residual cutoff, positive-depth checks and final global BA
@@ -448,3 +448,9 @@ components by assuming they share a coordinate system.
 Unanchored-component deferrals record their exact camera IDs in `status.json`.
 They become eligible again only when one of those cameras joins the accepted map,
 so unrelated accepted windows no longer trigger the same impossible retry.
+
+Routine frontend activity is sampled at five updates per second; unchanged
+thumbnail inputs are skipped across repair rounds. Rust also skips identical
+thumbnail pixels and lets the SDK batch routine image/status events instead of
+forcing a flush per event. Map snapshots and the final recording flush remain.
+This reduces visualization traffic without changing reconstruction inputs.

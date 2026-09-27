@@ -1082,7 +1082,7 @@ Display transforms stay inside Rust and never affect optimization or exports.
 Estimated cameras use camera-to-world transforms, calibrated pinhole intrinsics
 scaled to their thumbnail grid, and explicit RDF optical axes. Textures come from
 processed RGB before VGGT. Map textures persist as poses update. Previews are
-bounded to 50,000 points and 256-pixel thumbnails. Updates are discrete stage
+bounded to 50,000 points and 128-pixel thumbnails. Updates are discrete stage
 snapshots, not simulated trajectories. Stage flushes are asynchronous; recordings
 remain replayable. Dense stages highlight the active optimized camera, stream bounded validated
 sample previews every eight frames, and publish the final fused preview in the same

@@ -17,6 +17,9 @@ class ReconstructionVisualization:
         self.enabled = True
         self.last_selection = 0.0
         self.last_orbit = 0.0
+        self.last_activity = 0.0
+        self.last_tracks = 0.0
+        self.thumbnail_sources: dict[int, tuple[int, int, int, int]] = {}
         self.selected_previews: set[int] = set()
         self.image_sizes: dict[int, tuple[int, int]] = {}
         self.dense_samples: list[tuple[np.ndarray, np.ndarray]] = []
@@ -34,6 +37,12 @@ class ReconstructionVisualization:
 
     def activity(self, label: str, frames=(), pairs=(), *, ready: bool = False, follow_frame: int | None = None,
                  overview: bool = False, follow_start: bool = False, final_scene: bool = False) -> None:
+        now = monotonic()
+        # Presentation progress is sampled; stage transitions and explicit eye
+        # changes must still reach the viewer even after a cached fast loop.
+        if not (overview or follow_start or final_scene) and now-self.last_activity < 0.2:
+            return
+        self.last_activity = now
         self.event(json.dumps({"label": label, "frames": list(frames)[:64],
                                "pairs": list(pairs)[:16], "ready": ready,
                                "follow_frame": follow_frame, "overview": overview, "follow_start": follow_start, "final_scene": final_scene}))
@@ -48,6 +57,10 @@ class ReconstructionVisualization:
     def tracks(self, label: str, samples: list) -> None:
         if not self.enabled:
             return
+        now = monotonic()
+        if now-self.last_tracks < 0.2:
+            return
+        self.last_tracks = now
         tracks = []
         for identity, observations in samples[-4:]:
             pixels = []
@@ -102,12 +115,19 @@ class ReconstructionVisualization:
         if not self.enabled:
             return
         try:
+            stat = path.stat()
+            identity = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+            # Hard-linked processed images keep their identity across repair
+            # rounds. A shifted frame ID still receives its correct new image.
+            if self.thumbnail_sources.get(frame) == identity:
+                return
             with Image.open(path) as source:
                 self.image_sizes[frame] = source.size
                 image = source.convert('RGB')
-                image.thumbnail((256, 256), Image.Resampling.LANCZOS)
+                image.thumbnail((128, 128), Image.Resampling.LANCZOS)
                 pixels = np.array(image, dtype=np.uint8)
             self.native.builder.rerun_keyframe(frame, pixels)
+            self.thumbnail_sources[frame] = identity
         except Exception as error:
             self._disable(error)
 

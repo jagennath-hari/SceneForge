@@ -2,6 +2,10 @@
 ARG BASE_FROM=stereoforge/base:latest
 FROM ${BASE_FROM} AS geometry
 
+ARG USERNAME=appuser
+ARG USER_UID=1000
+ARG USER_GID=${USER_UID}
+
 # TensorRT 10.13.3.9 references the retired nvidia-cuda-runtime-cu13 package.
 # CUDA is supplied by our base image. Install all three TensorRT components
 # explicitly, without resolving that obsolete runtime dependency. Keep build

@@ -2,8 +2,10 @@
 ARG BASE_FROM=stereoforge/cunls:latest
 FROM ${BASE_FROM} AS rerun
 
+ARG USERNAME=appuser
 ARG USER_UID=1000
-ARG USER_GID=1000
+ARG USER_GID=${USER_UID}
+
 ARG RUST_TOOLCHAIN=stable
 
 # Rust build dependencies and native viewer support for X11/Wayland and Vulkan.

@@ -30,7 +30,7 @@ so::DepthFrame ReadFrame(so::FrameId id, const Eigen::Matrix4d& pose, const Eige
 }
 }
 PYBIND11_MODULE(_stereoforge_map, module) {
-    module.attr("api_version") = 15;
+    module.attr("api_version") = 16;
     py::class_<so::DenseFusion>(module,"DenseFusion")
         .def(py::init<double>())
         .def("add",[](so::DenseFusion& fusion,
@@ -96,6 +96,7 @@ PYBIND11_MODULE(_stereoforge_map, module) {
         .def("rank_windows",&so::MapBuilder::RankWindows,py::call_guard<py::gil_scoped_release>())
         .def("finalize",&so::MapBuilder::Finalize,py::call_guard<py::gil_scoped_release>())
         .def_property_readonly("shared_calibration_complete",&so::MapBuilder::SharedCalibrationComplete)
+        .def_property_readonly("supported_initialization_frames",&so::MapBuilder::SupportedInitializationFrames)
         .def_property_readonly("unanchored_frames",&so::MapBuilder::UnanchoredFrames)
         .def_property_readonly("accepted_windows",&so::MapBuilder::AcceptedWindows)
         .def_property_readonly("map",&so::MapBuilder::Map,py::return_value_policy::reference_internal);

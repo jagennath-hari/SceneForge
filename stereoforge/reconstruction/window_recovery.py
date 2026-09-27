@@ -30,6 +30,7 @@ class WindowCandidate:
     blocked: bool = False
     accepted: bool = False
     reason: str | None = None
+    supported_subset_proposed: bool = False
 
 
 class WindowRecovery:
@@ -38,7 +39,8 @@ class WindowRecovery:
     Saved subsets are not new predictions: they provide a possible bridge to a
     neighboring full prediction. Fresh smaller predictions are attempted only
     after available saved candidates cannot extend the accepted map. Recovery
-    children never spawn further children.
+    children never trigger another inference level. A failed initialization can
+    propose one supported subset per candidate, without recursively pruning it.
     """
 
     def __init__(self, reconstruction: WindowReconstructor, windows: list[Cluster],
@@ -74,6 +76,32 @@ class WindowRecovery:
                 and not set(candidate.frames).issubset(owned)
                 and (not candidate.waiting_for or not candidate.waiting_for.isdisjoint(owned))
                 and frozenset(set(candidate.frames) & owned) not in candidate.attempted_support]
+
+    def _propose_supported_subset(self, candidate: WindowCandidate, frames: tuple[int, ...]) -> dict | None:
+        if (not frames or candidate.kind == 'supported_subset' or
+                candidate.supported_subset_proposed):
+            return None
+        selected = set(frames)
+        original = set(candidate.frames)
+        excluded = sorted(original-selected)
+        # Match the native bound and reject malformed proposals rather than
+        # treating arbitrary frame omission as successful reconstruction.
+        if (len(selected) != len(frames) or not selected < original or len(selected) < 8 or
+                len(excluded) > min(8, len(original)//4)):
+            raise ValueError('Native supported-subset proposal violates recovery bounds')
+        candidate.supported_subset_proposed = True
+        if selected.issubset(self.owners):
+            return None
+        selected_frames = tuple(sorted(selected))
+        if any(other.source == candidate.source and other.frames == selected_frames for other in self.candidates):
+            return None
+        key = f'{candidate.key}/supported'
+        self.candidates.append(WindowCandidate(key, candidate.parent, selected_frames,
+                                               candidate.source, 'supported_subset'))
+        logging.info('Window %s recovery: proposing %d/%d supported cameras; omitted frames %s remain pending unless already registered',
+                     candidate.key, len(frames), len(original), excluded)
+        return {'candidate': key, 'frames': list(selected_frames), 'omitted_frames': excluded,
+                'pending_omitted_frames': sorted(set(excluded)-self.owners.keys())}
 
     def _frontiers(self) -> list[Cluster]:
         owned = self.owners.keys()
@@ -191,6 +219,9 @@ class WindowRecovery:
                         candidate.blocked = (not bridge_recovery and
                             (stage == 'initializing landmarks' or stage.startswith('local cuNLS BA:')))
                         event.update(status='rejected', stage=stage, reason=str(error))
+                        proposal = self._propose_supported_subset(candidate, error.supported_frames)
+                        if proposal is not None:
+                            event['supported_subset_proposal'] = proposal
                         self.events.append(event)
                         logging.warning('Deferred window %s: %s', candidate.key, error)
                         self._report()

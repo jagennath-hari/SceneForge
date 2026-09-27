@@ -197,7 +197,7 @@ void MapBuilder::SetTracks(std::vector<Observations> tracks) {
 const SparseMap& MapBuilder::Map() const { return this->map_; }
 std::size_t MapBuilder::AcceptedWindows() const { return this->accepted_windows_; }
 SparseMap MapBuilder::Initialize(const std::vector<DepthFrame>& frames,
-    const std::function<void(const std::string&)>& progress) const {
+    const std::function<void(const std::string&)>& progress) {
     SparseMap model;
     std::map<FrameId, const DepthFrame*> images;
     std::set<TrackId> candidates;
@@ -249,6 +249,20 @@ SparseMap MapBuilder::Initialize(const std::vector<DepthFrame>& frames,
     }
     if (model.landmarks.size() < 60) { throw std::runtime_error("Window initialization has fewer than 60 landmarks"); }
     RecoverInitializationBridges(model, this->tracks_, frames, this->map_, progress);
+    // Propose a smaller candidate only for isolated unsupported cameras. This
+    // is evidence for the scheduler, not an accepted or partially committed map.
+    // The candidate must be initialized again because removing a camera changes
+    // depth medians, observation counts and the surviving track graph.
+    const SupportCounts support = CountSupport(model);
+    std::vector<FrameId> supported;
+    for (const std::pair<const FrameId, Camera>& camera : model.cameras) {
+        if (SupportAt(support, camera.first) >= 6) { supported.push_back(camera.first); }
+    }
+    const std::size_t excluded = model.cameras.size()-supported.size();
+    const std::size_t maximum_excluded = std::min<std::size_t>(8, model.cameras.size()/4);
+    if (excluded > 0 && excluded <= maximum_excluded && supported.size() >= 8) {
+        this->supported_initialization_frames_ = std::move(supported);
+    }
     CheckSupport(model, "VGGT landmark initialization", nullptr, nullptr, false);
     return model;
 }
@@ -512,6 +526,7 @@ void MapBuilder::Validate(const SparseMap& model, const Boundary& boundary,
 void MapBuilder::AddWindow(const std::vector<DepthFrame>& frames, const std::vector<DepthFrame>& reference_frames,
                            const std::function<void(const std::string&)>& progress) {
     this->unanchored_frames_.clear();
+    this->supported_initialization_frames_.clear();
     progress("initializing landmarks");
     const SparseMap initialized = this->Initialize(frames, progress);
     this->Record(initialized,0,progress,frames.empty() ? nullptr : &frames.front());

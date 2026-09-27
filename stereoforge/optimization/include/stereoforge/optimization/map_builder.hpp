@@ -75,10 +75,11 @@ public:
     [[nodiscard]] const SparseMap& Map() const;
     [[nodiscard]] std::size_t AcceptedWindows() const;
     [[nodiscard]] const std::vector<FrameId>& UnanchoredFrames() const { return this->unanchored_frames_; }
+    [[nodiscard]] const std::vector<FrameId>& SupportedInitializationFrames() const { return this->supported_initialization_frames_; }
     [[nodiscard]] bool SharedCalibrationComplete() const { return this->shared_calibration_complete_; }
 private:
     [[nodiscard]] SparseMap Initialize(const std::vector<DepthFrame>& frames,
-        const std::function<void(const std::string&)>& progress) const;
+        const std::function<void(const std::string&)>& progress);
     void Optimize(SparseMap& model, bool local, bool shared_calibration = false,
                   const std::function<void(const std::string&)>* progress = nullptr) const;
     [[nodiscard]] SparseMap Combine(const SparseMap& local) const;
@@ -94,6 +95,7 @@ private:
     bool shared_calibration_complete_ = false;
     bool check_jacobians_;
     std::vector<FrameId> unanchored_frames_;
+    std::vector<FrameId> supported_initialization_frames_;
     std::vector<Observations> tracks_;
     std::map<FrameId, std::vector<TrackId>> frame_tracks_;
     SparseMap map_;

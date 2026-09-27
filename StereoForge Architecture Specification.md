@@ -71,7 +71,23 @@ At most four components and 16 PnP proposals are attempted per window. Proposals
 modify only the provisional window, then undergo normal local BA and map-merge
 checks. Original VGGT files remain unchanged. Unresolved components still use the
 saved-subset/smaller-window recovery path; completion is not guaranteed.
-The native backend API is 15; rebuild Docker before using this recovery policy.
+
+When initialization still leaves isolated cameras with fewer than six surviving
+landmark observations, C++ exposes a supported-frame proposal. The scheduler may
+queue one supported subset per failed original/saved-half/smaller-prediction
+candidate: at least eight cameras retained, at most eight omitted, and at most
+one quarter omitted. Supported subsets cannot recursively prune themselves.
+Duplicate proposals with the same prediction and frame IDs are suppressed.
+The subset is initialized afresh from its own selected observations and must pass
+normal local BA, Sim(3), joint BA and validation. No raw poses from different
+window gauges are spliced together. Only accepted subset cameras acquire map
+ownership; omitted cameras remain pending for another overlapping prediction.
+A run remains partial until every input frame is actually registered. Proposal
+and omitted-frame IDs are recorded in `window_recovery.json` and `status.json`.
+This handles isolated prediction failures; it does not guarantee recovery when
+all overlapping predictions or measured connections are unusable.
+
+The native backend API is 16; rebuild Docker before using this recovery policy.
 
 After merging, one global BA jointly optimizes shared `fx, fy, cx, cy`, camera
 poses and sparse landmarks. Focal lengths have a ten-pixel prior; principal points

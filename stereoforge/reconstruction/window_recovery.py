@@ -34,7 +34,7 @@ class WindowCandidate:
 
 
 class WindowRecovery:
-    """All candidates use the same transactional native BA and overlap checks.
+    """All candidates use the same transactional robust BA and graph-support checks.
 
     Saved subsets are not new predictions: they provide a possible bridge to a
     neighboring full prediction. Fresh smaller predictions are attempted only

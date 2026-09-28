@@ -20,7 +20,7 @@ from .connection_repair import ConnectionRepair
 from .window_recovery import WindowRecovery
 from .loop_closure import LoopClosure
 
-POLICY = 'native_graph_dense_cunls_v13'
+POLICY = 'native_graph_dense_cunls_v14'
 
 
 @dataclass(frozen=True, slots=True)

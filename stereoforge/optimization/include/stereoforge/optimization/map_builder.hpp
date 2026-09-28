@@ -43,17 +43,6 @@ struct Similarity {
     Eigen::Matrix3d rotation = Eigen::Matrix3d::Identity();
     Eigen::Vector3d translation = Eigen::Vector3d::Zero();
 };
-struct Holdout {
-    TrackId track;
-    FrameId frame;
-    Eigen::Vector2d pixel;
-    Observations training;
-};
-struct Boundary {
-    std::vector<Holdout> observations;
-    std::set<FrameId> shared;
-    std::set<FrameId> cameras;
-};
 [[nodiscard]] double Reprojection(const Camera& camera, const Eigen::Vector3d& point, const Eigen::Vector2d& pixel);
 [[nodiscard]] Similarity Align(const SparseMap& reference, const SparseMap& local,
                                const std::vector<DepthFrame>& previous, const std::vector<DepthFrame>& incoming,
@@ -83,10 +72,6 @@ private:
     void Optimize(SparseMap& model, bool local, bool shared_calibration = false,
                   const std::function<void(const std::string&)>* progress = nullptr) const;
     [[nodiscard]] SparseMap Combine(const SparseMap& local) const;
-    [[nodiscard]] Boundary Withhold(SparseMap& combined, const SparseMap& local,
-                                    const std::function<void(const std::string&)>& progress) const;
-    void Validate(const SparseMap& model, const Boundary& boundary,
-                  const std::function<void(const std::string&)>* global_progress = nullptr) const;
     void Record(const SparseMap& model, std::uint32_t stage,
                 const std::function<void(const std::string&)>& progress, const DepthFrame* image = nullptr);
     std::unique_ptr<RerunRecorder> recorder_;
@@ -99,7 +84,6 @@ private:
     std::vector<Observations> tracks_;
     std::map<FrameId, std::vector<TrackId>> frame_tracks_;
     SparseMap map_;
-    std::vector<Boundary> boundaries_;
     std::size_t accepted_windows_ = 0;
 };
 } // namespace stereoforge::optimization

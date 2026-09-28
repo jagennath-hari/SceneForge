@@ -47,13 +47,52 @@ settings use the CLI defaults above and can be overridden with flags. The obsole
 The final window may be shorter and retains every remaining keyframe. Overlap
 must be at least six and smaller than the window size. Each window is refined
 locally, then added to the current common map using shared cameras and measured
-track identities. Joint BA uses a three-pixel Huber loss; local BA uses GNC-TLS.
-The first window establishes the coordinate system. Shared keyframes have one
-camera pose, and shared tracks are fused into one landmark. Reconciliation keeps
-established landmark positions and observations, admitting new observations only
-within four pixels of their predicted position. A rejected extension cannot delete
-its established track. Joint BA then refines the map, subject to current and older
-overlap validation; its normal outlier filtering still applies.
+track identities. The first window establishes the coordinate system. Shared
+keyframes have one camera pose, and shared tracks become one landmark. All BA
+stages use the robust optimization policy below.
+
+### Common-map optimization policy
+
+Local, joint and final BA use the same radial Huber objective, with a three-pixel
+transition between quadratic and linear error growth:
+
+$$
+E(T,K,X)=\sum_{(i,j)\in\mathcal O}\rho_\delta(\|\pi(K_i,T_i,X_j)-u_{ij}\|^2)
+        + E_{\mathrm{pose\ prior}} + E_{\mathrm{calibration\ prior}} + E_{\mathrm{cheirality}},
+\qquad \delta=3\ \mathrm{pixels}.
+$$
+
+Here $\rho_\delta(s)=s$ for $s\le\delta^2$, otherwise
+$2\delta\sqrt{s}-\delta^2$. These are measured feature observations; VGGT depths
+and Sim(3) initialize the variables, rather than imposing a target geometry.
+Existing pose/calibration priors and the cheirality barrier remain in the solver.
+The first camera is fixed; translation priors regularize the scale gauge.
+This is regularized robust BA, not a claim of a globally optimal solution.
+
+The map builder no longer withholds overlap observations or uses per-frame or
+boundary-wide pass percentages. Finite positive-depth observations remain in BA
+regardless of pixel error: Huber reduces their influence continuously. The former
+14-pixel initialization, four-pixel extension and three-pixel post-BA cutoffs,
+60-landmark initialization gate, 20-shared-track gate and local GNC/Huber retry
+are removed. Existing landmark positions initialize shared tracks; compatible
+measured observations are united and optimized together.
+
+Numerical and structural safeguards remain: valid calibration and transforms,
+finite non-increasing solver objective (within floating-point tolerance), positive
+projection depth, at least three observations per retained landmark, at least six
+observations per camera, and connected map support. Counts and connectivity are
+necessary screening checks, not proof of geometric observability. Invalid-depth
+observations are removed; unsupported landmarks are discarded. A candidate is
+committed only after these checks, so a failed solve cannot overwrite the map.
+Bounded initialization/window recovery remains for missing support or an unusable
+connection; it does not restore overlap-percentage gates. Feature RANSAC, Sim(3)
+initialization and dense-fusion evidence checks are separate from this BA policy.
+
+All BA stages honor `--lm-iterations`. A finite, non-increasing, budget-limited
+result proceeds through structural checks with a convergence warning. The native
+backend API is **17**; rebuild Docker. Reconstruction policy changes invalidate
+old map state. This source change has not been compiled or run by the coding agent.
+
 
 
 If depth-based initialization disconnects a window, a bounded C++ recovery step
@@ -87,7 +126,7 @@ and omitted-frame IDs are recorded in `window_recovery.json` and `status.json`.
 This handles isolated prediction failures; it does not guarantee recovery when
 all overlapping predictions or measured connections are unusable.
 
-The native backend API is 16; rebuild Docker before using this recovery policy.
+The native backend API is 17; rebuild Docker before using this optimization policy.
 
 After merging, one global BA jointly optimizes shared `fx, fy, cx, cy`, camera
 poses and sparse landmarks. Focal lengths have a ten-pixel prior; principal points
@@ -97,20 +136,6 @@ processed dimensions; shared calibration assumes unchanged zoom/crop. A failed
 solve or invalid-geometry check preserves the accepted sparse map and stops before dense
 refinement. Status records `shared_calibration_complete` and the final intrinsics.
 Optional Jacobian diagnostics cover all 13 reprojection tangent coordinates.
-Reaching the joint BA iteration limit is a normal stop, including window merges,
-the local Huber retry, and final global BA. A finite, non-increasing-cost result
-proceeds through the existing support and geometry checks, with a warning that
-convergence was not established. Window candidates must still pass overlap
-validation before being committed. The iteration cap bounds runtime without
-by itself rejecting a candidate. Local GNC convergence requirements are unchanged.
-Final global BA accepts a successful, geometrically valid solve even when held-out
-agreement decreases. Boundary-wide scores and per-frame regressions are advisory:
-warnings report before/after counts and median errors but do not veto the optimized
-map or stop dense refinement. Solver failures, newly invalid held-out projections,
-and missing cameras still reject. Missing landmarks remain in the diagnostic
-denominator and count as infinite error. Window-merge validation retains its
-75% per-frame and 80% boundary-wide acceptance checks. Acceptance is not a claim
-of ground-truth accuracy.
 
 Dense refinement is a separate, conservative geometric pass using the final map.
 Sparse observations calibrate each VGGT depth map to the map's arbitrary scale.
@@ -145,8 +170,8 @@ When no candidate can advance the map, scheduling stops instead of retrying fore
 Accepted frame-to-window ownership selects depth priors for arbitrary merge order.
 Python keeps a two-window tensor cache and loads only the accepted source windows
 needed for the current overlap; it does not retain every dense window in RAM.
-A final global cuNLS BA pass optimizes the assembled map and validates all stored
-boundaries. Final status includes `merge_order`, `unresolved_windows` with reasons,
+A final global cuNLS BA pass optimizes the assembled map with the same robust
+objective and numerical/structural safeguards. Final status includes `merge_order`, `unresolved_windows` with reasons,
 and `global_ba_complete`. Completion requires every selected frame and successful
 final BA; incomplete coverage is published as partial. No disconnected component
 is placed into the map with an invented transform. A failed bridge in a chain may
@@ -167,21 +192,13 @@ map using its shared cameras. A single shared camera can anchor rotation and
 translation when shared-frame depth supplies scale. A group with no shared camera
 or usable scale evidence is rejected with its frame range and shared-camera count;
 it is not silently dropped. The seed must be connected, and combined-map
-connectivity, per-camera support and post-BA overlap checks remain mandatory.
+connectivity and per-camera support remain mandatory.
 
-Overlap validation requires at least 40 held-out observations overall. A shared
-camera with fewer than five holdouts is marked as insufficiently validated in a
-saved warning, rather than stopping BA. Its observations still count toward the
-80% overall agreement requirement. Per-camera 80% checks apply when at least five
-holdouts exist, including at later merges; camera preservation and connectivity
-checks remain mandatory.
-
-There is no PnP recovery branch or mandatory 60-landmark triangulation-angle gate.
-Measured feature tracks still connect the windows for robust joint BA. Rotation
-disagreement is reported as an alignment warning; absent scale evidence, invalid
-transforms, disconnected maps and failed post-BA overlap checks still reject a
-candidate. Warnings are retained in `status.json`. The established map is preserved
-on rejection. Depth/RGB caching is bounded; raw VGGT tensors remain on disk.
+Measured feature tracks connect windows for robust joint BA. Rotation disagreement
+is an initialization warning; absent scale evidence, invalid transforms and
+unsupported/disconnected maps can still reject a candidate. Warnings are retained
+in `status.json`. Rejection preserves the established map. Depth/RGB caching is
+bounded; raw VGGT tensors remain on disk.
 
 `--device cuda` uses visible GPUs for VGGT windows and the first visible GPU for
 BA. `--device cuda:0` selects one GPU. Single-GPU systems use the same pipeline.
@@ -440,9 +457,8 @@ are preserved. Intrinsics are scaled to image thumbnails, including the calibrat
 principal point. World RDF does not imply gravity alignment. Previews cap points
 at 50,000 per snapshot and images at 128 pixels per side.
 
-Window merging requires 75% per-camera held-out agreement and 80% across the
-boundary; the 5-pixel residual cutoff and positive-depth checks remain in place.
-Final global BA regression scores are advisory.
+Map acceptance uses the robust objective and structural safeguards described
+above. There are no per-camera or boundary-wide overlap-percentage gates.
 
 Logging can be disabled with `--no-rerun`, uses the official Rust SDK through a C ABI, and does not
 change reconstruction decisions. No Rerun source is modified. Visualization errors
@@ -512,11 +528,7 @@ Accepted-map cameras use 25% image opacity and approximately 45% frustum opacity
 so they obscure less of the cloud. Camera poses show the path without trajectory lines. Schematic and
 VGGT-window image planes remain opaque; opacity updates reuse cached RGB textures.
 
-If local GNC bundle adjustment splits a previously connected window, the native
-map builder retries once from its original VGGT initialization with Huber loss.
-The retry keeps the existing 3-pixel/positive-depth filtering, camera support,
-connectivity and subsequent overlap validation. It does not join disconnected
-components by assuming they share a coordinate system.
+Local BA uses Huber directly; there is no GNC/Huber retry branch.
 Unanchored-component deferrals record their exact camera IDs in `status.json`.
 They become eligible again only when one of those cameras joins the accepted map,
 so unrelated accepted windows no longer trigger the same impossible retry.

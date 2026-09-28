@@ -9,10 +9,90 @@
 #include <cmath>
 #include <Eigen/LU>
 #include <stdexcept>
+#include <cstring>
 
 namespace py = pybind11;
 namespace so = stereoforge::optimization;
 namespace {
+template <typename T>
+py::array_t<T> VectorArray(const std::vector<T>& values) {
+    py::array_t<T> result(values.size());
+    if (!values.empty()) { std::memcpy(result.mutable_data(), values.data(), values.size()*sizeof(T)); }
+    return result;
+}
+void StateArrays(py::dict& result, const std::vector<so::BACamera>& cameras,
+                 const std::vector<std::array<float, 3>>& points) {
+    const py::ssize_t n = cameras.size(), m = points.size();
+    py::array_t<float> poses(std::vector<py::ssize_t>{n,4,4}), intrinsics(std::vector<py::ssize_t>{n,4});
+    py::array_t<float> xyz(std::vector<py::ssize_t>{m,3});
+    for (py::ssize_t i = 0; i < n; ++i) {
+        std::copy(cameras[i].world_to_camera.begin(), cameras[i].world_to_camera.end(), poses.mutable_data()+16*i);
+        std::copy(cameras[i].intrinsics.begin(), cameras[i].intrinsics.end(), intrinsics.mutable_data()+4*i);
+    }
+    for (py::ssize_t i = 0; i < m; ++i) { std::copy(points[i].begin(), points[i].end(), xyz.mutable_data()+3*i); }
+    result["world_to_camera"] = poses; result["intrinsics"] = intrinsics; result["points"] = xyz;
+}
+py::dict Objective(const so::BAObjective& value) {
+    py::dict d;
+    d["robust_pixels"] = value.robust_pixels; d["cheirality"] = value.cheirality;
+    d["pose_prior_unweighted"] = value.pose_prior_unweighted; d["pose_prior_weighted"] = value.pose_prior_weighted;
+    d["focal_prior"] = value.focal_prior; d["principal_prior"] = value.principal_prior;
+    d["scale_anchor"] = value.scale_anchor;
+    return d;
+}
+py::dict CheckpointDocument(const std::string& name, const so::BAInput& input, const so::BAResult& output) {
+    py::dict d, meta, options;
+    meta["format_version"] = 1; meta["stage"] = name;
+    meta["normalization_origin"] = input.origin; meta["normalization_scale"] = input.normalization_scale;
+    meta["cost_convention"] = "unhalved squared residual sums";
+    meta["fixed_camera_index"] = 0;
+    meta["fixed_camera_id"] = input.camera_ids.front();
+    meta["scale_camera_id"] = input.camera_ids.at(input.options.scale_camera);
+    const so::BAOptions& o = input.options;
+    options["pose_prior_weight"] = o.pose_prior_weight; options["scale_camera"] = o.scale_camera;
+    options["scale_target"] = o.scale_target; options["scale_log_sigma"] = o.scale_log_sigma;
+    options["huber_delta_pixels"] = o.huber_delta_pixels; options["rotation_sigma_radians"] = o.rotation_sigma_radians;
+    options["translation_sigma"] = o.translation_sigma; options["focal_sigma_pixels"] = o.focal_sigma_pixels;
+    options["principal_sigma_pixels"] = o.principal_sigma_pixels; options["lm_iterations"] = o.lm_iterations;
+    options["shared_intrinsics"] = o.shared_intrinsics; options["optimize_principal"] = o.optimize_principal;
+    options["use_gnc"] = o.use_gnc; options["check_jacobians"] = o.check_jacobians;
+    options["threshold_pixels"] = o.threshold_pixels;
+    meta["options"] = options;
+    if (name == "input") {
+        StateArrays(d, input.cameras, input.points);
+        py::dict prior; StateArrays(prior, input.prior_cameras, {});
+        d["prior_world_to_camera"] = prior["world_to_camera"]; d["prior_intrinsics"] = prior["intrinsics"];
+        d["camera_ids"] = VectorArray(input.camera_ids); d["track_ids"] = VectorArray(input.track_ids);
+        const py::ssize_t n = input.observations.size();
+        py::array_t<std::int64_t> cameras(n), points(n);
+        py::array_t<float> pixels(std::vector<py::ssize_t>{n,2});
+        for (py::ssize_t i = 0; i < n; ++i) {
+            cameras.mutable_data()[i] = input.observations[i].camera;
+            points.mutable_data()[i] = input.observations[i].point;
+            pixels.mutable_data()[2*i] = input.observations[i].pixel[0];
+            pixels.mutable_data()[2*i+1] = input.observations[i].pixel[1];
+        }
+        d["observation_camera"] = cameras; d["observation_point"] = points; d["observation_pixel"] = pixels;
+    } else {
+        StateArrays(d, output.cameras, output.points);
+        d["squared_errors_before"] = VectorArray(output.squared_errors_before);
+        d["squared_errors_after"] = VectorArray(output.squared_errors_after);
+        const so::BAReport& r = output.report;
+        meta["objective_before"] = Objective(r.objective_before); meta["objective_after"] = Objective(r.objective_after);
+        meta["scale_distance_before"] = r.scale_distance_before; meta["scale_distance_after"] = r.scale_distance_after;
+        meta["optimization_complete"] = r.optimization_complete; meta["lm_budget_exhausted"] = r.lm_budget_exhausted;
+        meta["jacobian_maximum_tolerance_ratio"] = r.maximum_jacobian_tolerance_ratio;
+        py::list rounds;
+        for (const so::BARound& round : r.rounds) {
+            py::dict item; item["iterations"] = round.lm_iterations;
+            item["solver_cost_before"] = round.weighted_cost_before; item["solver_cost_after"] = round.weighted_cost_after;
+            rounds.append(item);
+        }
+        meta["rounds"] = rounds;
+    }
+    d["metadata"] = meta;
+    return d;
+}
 so::DepthFrame ReadFrame(so::FrameId id, const Eigen::Matrix4d& pose, const Eigen::Matrix3d& k,
                         const py::array_t<float, py::array::c_style | py::array::forcecast>& depth,
                         const py::array_t<std::uint8_t, py::array::c_style | py::array::forcecast>& rgb) {
@@ -30,7 +110,7 @@ so::DepthFrame ReadFrame(so::FrameId id, const Eigen::Matrix4d& pose, const Eige
 }
 }
 PYBIND11_MODULE(_stereoforge_map, module) {
-    module.attr("api_version") = 17;
+    module.attr("api_version") = 18;
     py::class_<so::DenseFusion>(module,"DenseFusion")
         .def(py::init<double>())
         .def("add",[](so::DenseFusion& fusion,
@@ -94,6 +174,14 @@ PYBIND11_MODULE(_stereoforge_map, module) {
         .def("set_tracks",&so::MapBuilder::SetTracks,py::call_guard<py::gil_scoped_release>())
         .def("add_window",&so::MapBuilder::AddWindow,py::call_guard<py::gil_scoped_release>())
         .def("rank_windows",&so::MapBuilder::RankWindows,py::call_guard<py::gil_scoped_release>())
+        .def("set_ba_checkpoint", [](so::MapBuilder& builder, py::object callback) {
+            if (callback.is_none()) { builder.SetBACheckpoint({}); return; }
+            const py::function function = callback.cast<py::function>();
+            builder.SetBACheckpoint([function](const std::string& name, const so::BAInput& input, const so::BAResult& output) {
+                py::gil_scoped_acquire acquire;
+                function(name, CheckpointDocument(name, input, output));
+            });
+        })
         .def("finalize",&so::MapBuilder::Finalize,py::call_guard<py::gil_scoped_release>())
         .def_property_readonly("shared_calibration_complete",&so::MapBuilder::SharedCalibrationComplete)
         .def_property_readonly("supported_initialization_frames",&so::MapBuilder::SupportedInitializationFrames)

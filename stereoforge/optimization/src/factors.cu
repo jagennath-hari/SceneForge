@@ -126,6 +126,39 @@ __global__ void ScalePosePriorKernel(float* residuals, float* jacobians,
     }
 }
 
+// One factor only: one active thread, no shared data or barriers required.
+__global__ void BaselineKernel(float* residuals, float* jacobians,
+                              float const* const* states, float target, float sigma) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) { return; }
+    float center[2][3];
+    for (int camera = 0; camera < 2; ++camera) {
+        const float* pose = states[camera];
+        for (int axis = 0; axis < 3; ++axis) {
+            center[camera][axis] = -(pose[axis]*pose[3] + pose[4+axis]*pose[7] + pose[8+axis]*pose[11]);
+        }
+    }
+    float difference[3];
+    float squared = 0;
+    for (int axis = 0; axis < 3; ++axis) {
+        difference[axis] = center[1][axis]-center[0][axis];
+        squared += difference[axis]*difference[axis];
+    }
+    const float distance = sqrtf(squared);
+    if (residuals != nullptr) { residuals[0] = logf(fmaxf(distance, 1e-8f)/target)/sigma; }
+    if (jacobians == nullptr) { return; }
+    for (int camera = 0; camera < 2; ++camera) {
+        float g[3];
+        for (int axis = 0; axis < 3; ++axis) {
+            g[axis] = distance > 1e-8f ? (camera == 0 ? -1.0f : 1.0f)*difference[axis]/(squared*sigma) : 0;
+            jacobians[6*camera+3+axis] = -g[axis];
+        }
+        // dC/dtheta=[C]x, dC/dtranslation=-I for T_world_to_camera * Exp(delta).
+        jacobians[6*camera] = g[1]*center[camera][2]-g[2]*center[camera][1];
+        jacobians[6*camera+1] = g[2]*center[camera][0]-g[0]*center[camera][2];
+        jacobians[6*camera+2] = g[0]*center[camera][1]-g[1]*center[camera][0];
+    }
+}
+
 __global__ void TlsKernel(const float* errors, float* weights, std::size_t count,
                           float threshold_squared, float mu) {
     const float lower = mu/(mu+1)*threshold_squared;
@@ -183,6 +216,13 @@ void EvaluatePixelErrors(const float* pixels, float const* const* states,
         nullptr, nullptr, errors, count, 0.0f);
     THROW_ON_CUDA_ERROR(cudaGetLastError());
 }
+bool BaselineFactors::Evaluate(float* residuals, float* jacobians,
+    float const* const* states, cudaStream_t stream) const {
+    BaselineKernel<<<1, 32, 0, stream>>>(residuals, jacobians, states, this->target_, this->sigma_);
+    THROW_ON_CUDA_ERROR(cudaGetLastError());
+    return true;
+}
+
 void UpdateTlsWeights(const float* errors, float* weights, std::size_t count, float c2,
     float mu, cudaStream_t stream) {
     if (count == 0) { return; }

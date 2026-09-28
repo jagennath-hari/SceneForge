@@ -11,6 +11,7 @@ import numpy as np
 from PIL import Image
 
 from stereoforge.geometry.storage import load_sequence
+from stereoforge.utils.artifacts import write_json
 from stereoforge.refinement.sparse_model import SparseCamera, SparseModel, SparsePoint
 
 
@@ -19,7 +20,7 @@ def native_backend():
         module = importlib.import_module('_stereoforge_map')
     except ImportError as error:
         raise RuntimeError('Rebuild Docker to install the native common-map builder (_stereoforge_map)') from error
-    if getattr(module, "api_version", None) != 17:
+    if getattr(module, "api_version", None) != 18:
         raise RuntimeError('Native common-map module is outdated. Stop the old container, rebuild Docker, and start a new container.')
     return module
 
@@ -89,8 +90,104 @@ class NativeMap:
     def rank_windows(self, windows: list[list[int]]) -> list[int]:
         return self.builder.rank_windows(windows)
 
-    def finalize(self, progress) -> None:
-        self._invoke(self.builder.finalize, progress)
+    def finalize(self, progress, directory: Path, loop_evidence: Path | None = None) -> None:
+        """Persist exact solver arrays and fixed targets before releasing pose priors."""
+        directory.mkdir(parents=True, exist_ok=True)
+        loop_mask: np.ndarray | None = None
+        observation_codes: np.ndarray | None = None
+        identity_stride = 0
+        manifest = {'format_version': 1, 'schedule': [1.0, 0.1, 0.01, 0.0],
+                    'status': 'running', 'completed_stages': [],
+                    'coordinate_convention': 'normalized world_to_camera; origin/scale in input.json',
+                    'stage_observations': 'Every stage uses input.npz observation indices and immutable prior targets'}
+        write_json(directory / 'manifest.json', manifest)
+
+        def checkpoint(name: str, document: dict) -> None:
+            nonlocal loop_mask, observation_codes, identity_stride
+            metadata = document.pop('metadata')
+            if name == 'input':
+                # Full native IDs are retained, not inferred from PLY point order.
+                model = self.builder.map
+                camera_ids = document['camera_ids'].tolist()
+                track_ids = document['track_ids'].tolist()
+                cameras, landmarks = model.cameras, model.landmarks
+                original_poses = np.repeat(np.eye(4)[None], len(camera_ids), axis=0)
+                for i, identifier in enumerate(camera_ids):
+                    original_poses[i, :3, :3] = cameras[identifier].rotation
+                    original_poses[i, :3, 3] = cameras[identifier].center
+                document['original_camera_to_world'] = original_poses
+                document['original_intrinsics'] = np.asarray([cameras[i].intrinsics for i in camera_ids])
+                document['image_sizes_hw'] = np.asarray([(cameras[i].height, cameras[i].width) for i in camera_ids], dtype=np.int32)
+                document['original_points'] = np.asarray([landmarks[i].position for i in track_ids])
+                document['colors'] = np.asarray([landmarks[i].color for i in track_ids], dtype=np.uint8)
+                obs_tracks = document['track_ids'][document['observation_point']]
+                obs_frames = document['camera_ids'][document['observation_camera']]
+                identity_stride = int(max(camera_ids)) + 1
+                observation_codes = obs_tracks*identity_stride+obs_frames
+                loop_mask = np.zeros(len(obs_tracks), dtype=bool)
+                if loop_evidence is not None and loop_evidence.exists():
+                    evidence = json.loads(loop_evidence.read_text())
+                    support: dict[int, set[int]] = {}
+                    for track, frame in zip(obs_tracks.tolist(), obs_frames.tolist()):
+                        support.setdefault(track, set()).add(frame)
+                    stride = identity_stride
+                    endpoints = set()
+                    for identifier, pairs in evidence.items():
+                        track = int(identifier)
+                        seen = support.get(track, set())
+                        for a, b in pairs:
+                            if a in seen and b in seen:
+                                endpoints.add(track*stride+a)
+                                endpoints.add(track*stride+b)
+                    loop_mask = np.isin(obs_tracks*stride+obs_frames, np.fromiter(sorted(endpoints), dtype=np.int64))
+                document['loop_observation_mask'] = loop_mask
+                metadata['loop_observations'] = int(loop_mask.sum())
+                metadata['loop_mask_definition'] = 'Unique BA observations at endpoints of verified loop pairs retained on the same native landmark'
+            else:
+                metadata['reprojection_before'] = self._error_summary(document['squared_errors_before'])
+                metadata['reprojection_after'] = self._error_summary(document['squared_errors_after'])
+                if loop_mask is not None:
+                    metadata['loop_reprojection_before'] = self._error_summary(document['squared_errors_before'][loop_mask])
+                    metadata['loop_reprojection_after'] = self._error_summary(document['squared_errors_after'][loop_mask])
+            temporary = directory / f'{name}.npz.tmp'
+            with temporary.open('wb') as stream:
+                np.savez(stream, **document)
+            temporary.replace(directory / f'{name}.npz')
+            write_json(directory / f'{name}.json', metadata)
+            if name != 'input':
+                manifest['completed_stages'].append(name)
+                write_json(directory / 'manifest.json', manifest)
+
+        self.builder.set_ba_checkpoint(checkpoint)
+        try:
+            self._invoke(self.builder.finalize, progress)
+            # Stage arrays are unfiltered solver outputs. Persist the exact
+            # membership that survived the native positive-depth/support pass.
+            landmarks = self.builder.map.landmarks
+            retained_codes = np.fromiter((track*identity_stride+frame
+                for track, point in landmarks.items() for frame in point.observations), dtype=np.int64)
+            with (directory / 'accepted.npz.tmp').open('wb') as stream:
+                np.savez(stream, retained_track_ids=np.asarray(list(landmarks), dtype=np.int64),
+                         retained_observation_mask=np.isin(observation_codes, retained_codes))
+            (directory / 'accepted.npz.tmp').replace(directory / 'accepted.npz')
+            manifest['status'] = 'complete'
+            manifest['accepted_state'] = 'stage_4.npz with accepted.npz membership and input.npz identities/normalization'
+        except BaseException as error:
+            manifest.update(status='failed', error=str(error) or type(error).__name__)
+            raise
+        finally:
+            self.builder.set_ba_checkpoint(None)
+            write_json(directory / 'manifest.json', manifest)
+
+    @staticmethod
+    def _error_summary(squared: np.ndarray) -> dict:
+        errors = np.sqrt(np.asarray(squared, dtype=np.float64))
+        finite = errors[np.isfinite(errors)]
+        return {'observations': len(errors), 'invalid': int(len(errors)-len(finite)),
+                'median_pixels': float(np.median(finite)) if finite.size else None,
+                'p90_pixels': float(np.percentile(finite, 90)) if finite.size else None,
+                'within_3px': int(np.count_nonzero(errors <= 3)),
+                'within_5px': int(np.count_nonzero(errors <= 5))}
 
     def _invoke(self, operation, progress) -> None:
         stage = None

@@ -308,19 +308,45 @@ void MapBuilder::Optimize(SparseMap& model, bool local, bool shared_calibration,
             input.observations.push_back({camera_index.at(o.first), index, {static_cast<float>(o.second.x()), static_cast<float>(o.second.y())}});
         }
     }
-    const BAResult result = this->solver_.Solve(input);
-    if (!result.report.optimization_complete) {
-        // A capped solve is usable without claiming convergence. Solve()
-        // already rejects nonfinite parameters and increasing objective values;
-        // output support and geometry checks below still apply.
-        if (result.report.lm_budget_exhausted) {
-            if (progress != nullptr) {
-                (*progress)(std::string("WARNING: ") + (shared_calibration ? "Final global BA" : (local ? "Local BA" : "Joint BA")) +
-                    " reached its iteration limit; continuing to geometry validation (convergence not established)");
-            }
-        } else {
-            throw std::runtime_error(stage + " did not produce a completed or budget-limited result");
+    input.camera_ids.assign(camera_ids.begin(), camera_ids.end());
+    input.track_ids.assign(point_ids.begin(), point_ids.end());
+    input.origin = {origin.x(), origin.y(), origin.z()};
+    input.normalization_scale = scale;
+    const std::vector<float> schedule = shared_calibration ? std::vector<float>{1, .1f, .01f, 0} : std::vector<float>{1};
+    if (shared_calibration) {
+        // Immutable targets and a single normalization for the entire continuation.
+        input.prior_cameras = input.cameras;
+        double longest = 0;
+        for (std::size_t i = 1; i < camera_ids.size(); ++i) {
+            const double distance = (model.cameras.at(camera_ids[i]).center-origin).norm()/scale;
+            if (distance > longest) { longest = distance; input.options.scale_camera = static_cast<int>(i); }
         }
+        if (!std::isfinite(longest) || longest <= 1e-8) { throw std::runtime_error("No baseline for global scale anchor"); }
+        input.options.scale_target = static_cast<float>(longest);
+        if (this->ba_checkpoint_) { this->ba_checkpoint_("input", input, BAResult{}); }
+    }
+    BAResult result;
+    for (std::size_t stage_index = 0; stage_index < schedule.size(); ++stage_index) {
+        input.options.pose_prior_weight = schedule[stage_index];
+        if (shared_calibration && progress != nullptr) {
+            (*progress)("global BA stage " + std::to_string(stage_index+1) + "/" + std::to_string(schedule.size()) +
+                ": pose-prior weight " + std::to_string(input.options.pose_prior_weight));
+        }
+        result = this->solver_.Solve(input);
+        if (shared_calibration && this->ba_checkpoint_) {
+            this->ba_checkpoint_("stage_" + std::to_string(stage_index+1), input, result);
+        }
+        if (!result.report.optimization_complete) {
+            if (!result.report.lm_budget_exhausted) { throw std::runtime_error(stage + " did not produce a usable result"); }
+            if (progress != nullptr) {
+                (*progress)(std::string("WARNING: ") + (shared_calibration ? "Global BA stage" : stage) +
+                    " reached its iteration limit; retaining finite non-increasing-cost result (convergence not established)");
+            }
+        }
+        // Camera order, point order and observations never change between stages.
+        // In particular, prior_cameras remains the original initialization.
+        input.cameras = result.cameras;
+        input.points = result.points;
     }
     for (std::size_t i = 0; i < camera_ids.size(); ++i) {
         Camera& camera = model.cameras.at(camera_ids[i]);
@@ -485,7 +511,7 @@ void MapBuilder::Finalize(const std::function<void(const std::string&)>& progres
     intrinsics(0,0) = Median(values[0]); intrinsics(1,1) = Median(values[1]);
     intrinsics(0,2) = Median(values[2]); intrinsics(1,2) = Median(values[3]);
     for (std::pair<const FrameId,Camera>& entry : candidate.cameras) { entry.second.intrinsics = intrinsics; }
-    progress("global BA: joint shared fx/fy/cx/cy, poses and landmarks");
+    progress("global BA: shared calibration and pose-prior continuation");
     if (this->recorder_) { this->RerunEvent("Global BA: optimizing shared intrinsics, poses and landmarks; frustums update after optimization"); }
     this->Optimize(candidate,false,true,&progress);
     // The same objective and numerical/support safeguards apply to global BA.

@@ -10,6 +10,7 @@
 #include <string>
 #include <stdexcept>
 #include <vector>
+#include <utility>
 #include "stereoforge/optimization/bundle_adjuster.hpp"
 
 namespace stereoforge::optimization {
@@ -60,6 +61,8 @@ public:
     void AddWindow(const std::vector<DepthFrame>& frames, const std::vector<DepthFrame>& reference_frames,
                    const std::function<void(const std::string&)>& progress);
     [[nodiscard]] std::vector<std::size_t> RankWindows(const std::vector<std::vector<FrameId>>& windows) const;
+    using BACheckpoint = std::function<void(const std::string&, const BAInput&, const BAResult&)>;
+    void SetBACheckpoint(BACheckpoint callback) { this->ba_checkpoint_ = std::move(callback); }
     void Finalize(const std::function<void(const std::string&)>& progress);
     [[nodiscard]] const SparseMap& Map() const;
     [[nodiscard]] std::size_t AcceptedWindows() const;
@@ -76,6 +79,7 @@ private:
                 const std::function<void(const std::string&)>& progress, const DepthFrame* image = nullptr);
     std::unique_ptr<RerunRecorder> recorder_;
     BundleAdjuster solver_;
+    BACheckpoint ba_checkpoint_;
     int iterations_;
     bool shared_calibration_complete_ = false;
     bool check_jacobians_;

@@ -66,7 +66,8 @@ Here $\rho_\delta(s)=s$ for $s\le\delta^2$, otherwise
 $2\delta\sqrt{s}-\delta^2$. These are measured feature observations; VGGT depths
 and Sim(3) initialize the variables, rather than imposing a target geometry.
 Existing pose/calibration priors and the cheirality barrier remain in the solver.
-The first camera is fixed; translation priors regularize the scale gauge.
+The first camera is fixed; window solves use translation priors for scale.
+Final global BA releases pose priors while retaining a separate scalar scale anchor.
 This is regularized robust BA, not a claim of a globally optimal solution.
 
 The map builder no longer withholds overlap observations or uses per-frame or
@@ -90,7 +91,7 @@ initialization and dense-fusion evidence checks are separate from this BA policy
 
 All BA stages honor `--lm-iterations`. A finite, non-increasing, budget-limited
 result proceeds through structural checks with a convergence warning. The native
-backend API is **17**; rebuild Docker. Reconstruction policy changes invalidate
+backend API is **18**; rebuild Docker. Reconstruction policy changes invalidate
 old map state. This source change has not been compiled or run by the coding agent.
 
 
@@ -126,9 +127,9 @@ and omitted-frame IDs are recorded in `window_recovery.json` and `status.json`.
 This handles isolated prediction failures; it does not guarantee recovery when
 all overlapping predictions or measured connections are unusable.
 
-The native backend API is 17; rebuild Docker before using this optimization policy.
+The native backend API is 18; rebuild Docker before using this optimization policy.
 
-After merging, one global BA jointly optimizes shared `fx, fy, cx, cy`, camera
+After merging, staged global BA jointly optimizes shared `fx, fy, cx, cy`, camera
 poses and sparse landmarks. Focal lengths have a ten-pixel prior; principal points
 have a conservative two-pixel prior per camera. The first camera remains fixed.
 There is no intermediate focal-only acceptance gate. All cameras must have identical
@@ -136,6 +137,62 @@ processed dimensions; shared calibration assumes unchanged zoom/crop. A failed
 solve or invalid-geometry check preserves the accepted sparse map and stops before dense
 refinement. Status records `shared_calibration_complete` and the final intrinsics.
 Optional Jacobian diagnostics cover all 13 reprojection tangent coordinates.
+
+### Staged global BA and retained optimization state
+
+Final global BA warm-starts four solves with pose-prior weights **1, 0.1, 0.01, 0**:
+
+$$E_\lambda = E_{\rm Huber\ pixels} + \lambda E_{\rm original\ pose\ prior}
+  + E_{\rm calibration} + E_{\rm cheirality} + E_{\rm scale}.$$
+
+Normalization, original pose/calibration targets, observation identities and the
+three-pixel Huber loss remain fixed across stages. Targets are never re-centered
+on a preceding stage's output. Each stage receives the same `--lm-iterations`
+budget. There are no overlap-percentage gates or automatic selection of a stage
+based on a residual threshold. Local/joint window solves retain their current
+policy; only final global BA uses continuation.
+
+The first camera pose is constant. The initially farthest camera supplies a
+well-separated baseline with that anchor; only its **distance**, not its pose or
+direction, is constrained. A custom CUDA scalar factor uses
+`log(current_distance / initial_distance) / 1e-4`. Its target is fixed through
+all stages, including weight zero. This is a numerical scale constraint, not an
+exact hard equality or a metric-scale measurement; the report records its actual
+distance and cost. `--check-jacobians` also checks its 12 SE3 tangent derivatives
+against an independent double-precision reference. Calibration priors remain
+active when pose priors are removed.
+
+Each map attempt saves `global_ba/` automatically:
+
+- `input.npz`: stable camera/track IDs, original full-precision map poses/points,
+  original intrinsics, image sizes and colors; exact normalized solver camera/
+  landmark arrays; immutable prior targets; observation-to-camera/landmark indices
+  and measured pixels; a mask of unique observations on surviving verified loops.
+- `input.json`: normalization origin/scale and all active solver options. World
+  points recover as `normalized_point * normalization_scale + origin`.
+- `stage_1.npz` through `stage_4.npz`: raw solver poses, intrinsics, landmarks and
+  squared pixel errors before/after the solve, in the original input ordering.
+  Negative-depth/nonfinite projections have infinite diagnostic error.
+- Matching stage JSON reports: separate unhalved squared-residual sums for robust
+  pixels, cheirality, raw/weighted pose priors, focal/principal priors and the scale
+  anchor; solver costs/iterations, baseline distance and all/loop reprojection
+  summaries. Raw pose-prior cost remains measured even at weight zero.
+- `accepted.npz`: exact retained track IDs and observation mask after the native
+  positive-depth/support pass. Together with stage 4 and the input identities,
+  this identifies the published map rather than guessing identities from PLY order.
+- `manifest.json`: stage schedule, completed checkpoints and completion/failure.
+
+NPZ files contain numerical arrays (no pickle); geometry stays in binary files,
+not per-point JSON. Intermediate stage outputs are diagnostic candidates. The
+accepted map is replaced only after the complete final solve and structural
+checks succeed; failure preserves the previous map and completed checkpoints.
+Large residuals and invalid projections remain in the per-stage diagnostic arrays
+rather than disappearing from their denominators. These artifacts enable a later
+controlled replay without feature extraction/VGGT; no new replay CLI is added.
+
+The native API is **18**. Rebuild Docker and run the usual reconstruction command.
+Existing PLY-only runs cannot supply the missing original observation membership.
+This implementation has not been compiled, tested or run by the coding agent.
 
 Dense refinement is a separate, conservative geometric pass using the final map.
 Sparse observations calibrate each VGGT depth map to the map's arbitrary scale.

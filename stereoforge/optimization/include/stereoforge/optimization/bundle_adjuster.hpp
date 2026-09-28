@@ -3,6 +3,7 @@
 #include <vector>
 #include <cstddef>
 #include <limits>
+#include <cstdint>
 
 namespace stereoforge::optimization {
 struct BACamera {
@@ -19,6 +20,11 @@ struct BAOptions {
     float focal_sigma_pixels = 10;
     float rotation_sigma_radians = 0.1f;
     float translation_sigma = 0.1f;
+    float pose_prior_weight = 1;
+    // One scalar log-baseline constraint; negative index disables it.
+    int scale_camera = -1;
+    float scale_target = 0;
+    float scale_log_sigma = 1e-4f;
     float huber_delta_pixels = 0;
     int gnc_rounds = 64;
     int lm_iterations = 50;
@@ -45,7 +51,21 @@ struct BARound {
     std::size_t frozen_landmarks;
     BAErrorStatistics errors;
 };
+struct BAObjective {
+    // Unhalved sums of squared residuals, evaluated by production factors.
+    double robust_pixels = 0;
+    double cheirality = 0;
+    double pose_prior_unweighted = 0;
+    double pose_prior_weighted = 0;
+    double focal_prior = 0;
+    double principal_prior = 0;
+    double scale_anchor = 0;
+};
 struct BAReport {
+    BAObjective objective_before;
+    BAObjective objective_after;
+    float scale_distance_before = 0;
+    float scale_distance_after = 0;
     BAErrorStatistics before;
     BAErrorStatistics after;
     std::vector<BARound> rounds;
@@ -58,12 +78,21 @@ struct BAReport {
     float maximum_jacobian_tolerance_ratio = 0;
 };
 struct BAInput {
+    // Stable identities and normalization retained for replay/audit.
+    std::vector<std::int64_t> camera_ids;
+    std::vector<std::int64_t> track_ids;
+    std::array<double, 3> origin = {0, 0, 0};
+    double normalization_scale = 1;
+    // Empty means use input cameras. Continuation supplies immutable targets.
+    std::vector<BACamera> prior_cameras;
     std::vector<BACamera> cameras;
     std::vector<std::array<float, 3>> points;
     std::vector<BAObservation> observations;
     BAOptions options;
 };
 struct BAResult {
+    std::vector<float> squared_errors_before;
+    std::vector<float> squared_errors_after;
     std::vector<BACamera> cameras;
     std::vector<std::array<float, 3>> points;
     BAReport report;

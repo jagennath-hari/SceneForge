@@ -20,7 +20,7 @@ from .connection_repair import ConnectionRepair
 from .window_recovery import WindowRecovery
 from .loop_closure import LoopClosure
 
-POLICY = 'native_graph_dense_cunls_v14'
+POLICY = 'native_graph_dense_cunls_v15'
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +133,9 @@ class WindowReconstructor(ReconstructionFrontend):
             if self.loops is not None:
                 self.loops.measure(self.native.builder.map, 'final_ba_input')
             with Progress('Final global bundle adjustment') as progress:
-                self.native.finalize(lambda stage: progress.status(stage))
+                self.summary['global_ba_checkpoints'] = str((self.attempt / 'global_ba').relative_to(self.output))
+                self.native.finalize(lambda stage: progress.status(stage), self.attempt / 'global_ba',
+                                     self.output / 'loop_closure/track_evidence.json' if self.loops is not None else None)
             self.summary['global_ba_complete'] = True
             if self.loops is not None:
                 self.loops.measure(self.native.builder.map, 'final_ba_output')

@@ -5,6 +5,7 @@
 #include <array>
 #include <cmath>
 #include <iostream>
+#include <functional>
 #include <limits>
 #include <numeric>
 #include <set>
@@ -173,6 +174,86 @@ float CheckPixelJacobian(const cunls::SE3Transform& pose, const cunls::Vector<3>
     return maximum;
 }
 
+std::array<double, 3> CameraCenter(const cunls::SE3Transform& pose) {
+    std::array<double, 3> center{};
+    for (int axis = 0; axis < 3; ++axis) {
+        center[axis] = -(static_cast<double>(pose[axis])*pose[3] +
+            static_cast<double>(pose[4+axis])*pose[7] + static_cast<double>(pose[8+axis])*pose[11]);
+    }
+    return center;
+}
+float BaselineDistance(const std::vector<cunls::SE3Transform>& poses, int camera) {
+    if (camera < 0) { return 0; }
+    const std::array<double, 3> a = CameraCenter(poses.front()), b = CameraCenter(poses.at(camera));
+    double squared = 0;
+    for (int axis = 0; axis < 3; ++axis) { squared += (a[axis]-b[axis])*(a[axis]-b[axis]); }
+    return static_cast<float>(std::sqrt(squared));
+}
+float CheckBaselineJacobian(const cunls::SE3Transform& a, const cunls::SE3Transform& b,
+                            float target, float sigma, cudaStream_t stream) {
+    cunls::dvector<cunls::SE3Transform> device(std::vector<cunls::SE3Transform>{a,b});
+    const float* base = reinterpret_cast<const float*>(device.data());
+    cunls::dvector<const float*> links(std::vector<const float*>{base,base+16});
+    cunls::dvector<float> residual(1), jacobian(12);
+    BaselineFactors factor(target, sigma);
+    if (!factor.Evaluate(residual.data(), jacobian.data(), links.data(), stream)) {
+        throw std::runtime_error("Scale-anchor factor evaluation failed during Jacobian check");
+    }
+    THROW_ON_CUDA_ERROR(cudaStreamSynchronize(stream));
+    std::vector<float> analytic(12); jacobian.CopyToHost(analytic.data(), analytic.size());
+    const std::array<std::array<double,3>,2> centers = {CameraCenter(a),CameraCenter(b)};
+    const std::function<double(int,double)> reference = [&](int column, double step) {
+        std::array<std::array<double,3>,2> moved = centers;
+        const int camera = column/6, axis = column%6;
+        if (axis < 3) {
+            // Right pose update gives C' = Exp(-delta_theta) C.
+            std::array<double,3> direction{}; direction[axis] = 1;
+            const std::array<double,3>& c = centers[camera];
+            const std::array<double,3> cross = {direction[1]*c[2]-direction[2]*c[1],
+                direction[2]*c[0]-direction[0]*c[2],direction[0]*c[1]-direction[1]*c[0]};
+            for (int i = 0; i < 3; ++i) {
+                moved[camera][i] = std::cos(step)*c[i]-std::sin(step)*cross[i]+(1-std::cos(step))*direction[i]*c[axis];
+            }
+        } else { moved[camera][axis-3] -= step; }
+        double squared = 0;
+        for (int i = 0; i < 3; ++i) { squared += (moved[1][i]-moved[0][i])*(moved[1][i]-moved[0][i]); }
+        return std::log(std::sqrt(squared)/target)/sigma;
+    };
+    float maximum = 0;
+    for (int column = 0; column < 12; ++column) {
+        const double derivative = (reference(column,1e-5)-reference(column,-1e-5))/2e-5;
+        const double ratio = std::abs(derivative-analytic[column])/(.05+.01*std::abs(derivative));
+        if (!std::isfinite(ratio) || ratio > 1) { throw std::runtime_error("Scale-anchor Jacobian failed FP64 reference check"); }
+        maximum = std::max(maximum,static_cast<float>(ratio));
+    }
+    return maximum;
+}
+
+// Read residuals from the same factor implementations used by cuNLS.
+template <typename Factor>
+std::vector<float> FactorResiduals(const Factor& factor, const std::vector<float*>& links,
+                                 std::size_t rows, cudaStream_t stream, bool require_jacobian = false) {
+    cunls::dvector<const float*> pointers(std::vector<const float*>(links.begin(), links.end()));
+    cunls::dvector<float> device(rows);
+    // cuNLS SE3PriorFactorBatch evaluates its Jacobian unconditionally.
+    // Supply scratch for that upstream factor rather than a null output pointer.
+    const std::vector<std::size_t> sizes = factor.StateBlockSizes();
+    const std::size_t columns = std::accumulate(sizes.begin(), sizes.end(), std::size_t{0});
+    cunls::dvector<float> jacobian(require_jacobian ? rows*columns : 0);
+    if (!factor.Evaluate(device.data(), require_jacobian ? jacobian.data() : nullptr, pointers.data(), stream)) {
+        throw std::runtime_error("Objective diagnostic factor evaluation failed");
+    }
+    THROW_ON_CUDA_ERROR(cudaStreamSynchronize(stream));
+    std::vector<float> values(rows);
+    device.CopyToHost(values.data(), values.size());
+    return values;
+}
+double SquaredSum(const std::vector<float>& values) {
+    double cost = 0;
+    for (const float value : values) { cost += static_cast<double>(value)*value; }
+    return cost;
+}
+
 BAErrorStatistics ErrorStatistics(const std::vector<float>& errors, float c2) {
     std::vector<float> finite;
     std::size_t inliers = 0;
@@ -201,6 +282,12 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
     const float rotation_sigma = PositiveOption(options.rotation_sigma_radians, "rotation_sigma_radians");
     const float translation_sigma = PositiveOption(options.translation_sigma, "translation_sigma");
     const bool use_gnc = options.use_gnc;
+    if (!std::isfinite(options.pose_prior_weight) || options.pose_prior_weight < 0) {
+        throw std::invalid_argument("Pose prior weight must be finite and nonnegative");
+    }
+    if (options.pose_prior_weight == 0 && options.scale_camera < 1) {
+        throw std::invalid_argument("Releasing pose priors requires an independent scale anchor");
+    }
     const float huber_delta = options.huber_delta_pixels;
     if (!std::isfinite(huber_delta) || huber_delta < 0 || (use_gnc && huber_delta > 0)) {
         throw std::invalid_argument("Huber delta must be nonnegative and used only without GNC");
@@ -217,7 +304,7 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
         throw std::invalid_argument("Need at least three cameras and three supported landmarks");
     }
     std::vector<cunls::SE3Transform> poses(cameras.size());
-    std::vector<float> focals, log_focals, centers;
+    std::vector<float> log_focals, centers;
     for (std::size_t i = 0; i < cameras.size(); ++i) {
         const std::vector<float> pose = std::vector<float>(cameras[i].world_to_camera.begin(), cameras[i].world_to_camera.end());
         ValidatePose(pose);
@@ -225,7 +312,6 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
         const std::vector<float> k = std::vector<float>(cameras[i].intrinsics.begin(), cameras[i].intrinsics.end());
         if (!std::all_of(k.begin(), k.end(), [](float v) { return std::isfinite(v); }) || k[0] <= 0 || k[1] <= 0) { throw std::invalid_argument("Intrinsics must be finite with positive focals"); }
         centers.insert(centers.end(), {k[2], k[3]});
-        focals.insert(focals.end(), {k[0], k[1]});
         log_focals.insert(log_focals.end(), {std::log(k[0]), std::log(k[1])});
     }
     if (options.optimize_principal && !options.shared_intrinsics) {
@@ -281,14 +367,36 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
     if (connected.size() != cameras.size() || *std::min_element(support.begin(), support.end()) < 6) {
         throw std::invalid_argument("Disconnected map or camera with fewer than six observations");
     }
+    const std::vector<BACamera>& targets = input.prior_cameras.empty() ? cameras : input.prior_cameras;
+    if (targets.size() != cameras.size()) { throw std::invalid_argument("Prior camera count mismatch"); }
+    std::vector<cunls::SE3Transform> target_poses(poses.size());
+    std::vector<float> target_focals, target_centers;
+    for (std::size_t i = 0; i < targets.size(); ++i) {
+        ValidatePose(std::vector<float>(targets[i].world_to_camera.begin(), targets[i].world_to_camera.end()));
+        std::copy(targets[i].world_to_camera.begin(), targets[i].world_to_camera.end(), target_poses[i].data());
+        for (const float value : targets[i].intrinsics) {
+            if (!std::isfinite(value)) { throw std::invalid_argument("Nonfinite calibration prior target"); }
+        }
+        PositiveOption(targets[i].intrinsics[0], "prior fx");
+        PositiveOption(targets[i].intrinsics[1], "prior fy");
+        target_focals.insert(target_focals.end(), {targets[i].intrinsics[0], targets[i].intrinsics[1]});
+        target_centers.insert(target_centers.end(), {targets[i].intrinsics[2], targets[i].intrinsics[3]});
+    }
+    if (options.scale_camera >= 0) {
+        if (options.scale_camera == 0 || static_cast<std::size_t>(options.scale_camera) >= poses.size()) {
+            throw std::invalid_argument("Invalid scale anchor camera");
+        }
+        PositiveOption(options.scale_target, "scale target");
+        PositiveOption(options.scale_log_sigma, "scale log sigma");
+    }
     // Device arrays own their storage until after the problem and factors die.
     cunls::CudaStream stream;
     cunls::cuBLASHandle blas;
-    cunls::dvector<cunls::SE3Transform> device_poses(poses), prior_poses(poses);
+    cunls::dvector<cunls::SE3Transform> device_poses(poses), prior_poses(target_poses);
     cunls::dvector<cunls::Vector<3>> device_points(positions);
-    cunls::dvector<float> device_focals(log_focals), prior_focals(focals);
+    cunls::dvector<float> device_focals(log_focals), prior_focals(target_focals);
     cunls::dvector<float> device_pixels(pixels);
-    cunls::dvector<float> device_centers(center_states_values), prior_centers(centers);
+    cunls::dvector<float> device_centers(center_states_values), prior_centers(target_centers);
     std::vector<int> fixed_centers(options.optimize_principal ? 0 : calibration_count);
     std::iota(fixed_centers.begin(),fixed_centers.end(),0);
     cunls::dvector<int> fixed_centers_device(fixed_centers);
@@ -301,7 +409,10 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
     cunls::VectorStateBatch<2> focal_states(device_focals.data(), calibration_count);
     cunls::VectorStateBatch<2> center_states(device_centers.data(), calibration_count, fixed_centers_device.data(), fixed_centers.size());
     PixelReprojectionFactors reprojection(device_pixels.data(), device_weights.data(), observations.size(), huber_delta);
-    PosePriorFactors pose_priors(prior_poses.data(), poses.size(), rotation_sigma, translation_sigma);
+    const float prior_multiplier = options.pose_prior_weight > 0 ? std::sqrt(options.pose_prior_weight) : 1;
+    PosePriorFactors pose_priors(prior_poses.data(), poses.size(), rotation_sigma/prior_multiplier, translation_sigma/prior_multiplier);
+    PosePriorFactors raw_pose_priors(prior_poses.data(), poses.size(), rotation_sigma, translation_sigma);
+    BaselineFactors scale_anchor(options.scale_target, options.scale_log_sigma);
     CalibrationPriorFactors focal_priors(prior_focals.data(), poses.size(), focal_sigma);
     CalibrationPriorFactors center_priors(prior_centers.data(), poses.size(),
         PositiveOption(options.principal_sigma_pixels,"principal_sigma_pixels"), false);
@@ -317,6 +428,28 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
         focal_links.push_back(focal_states.StateBlockDevicePtr(options.shared_intrinsics ? 0 : i));
         center_links.push_back(center_states.StateBlockDevicePtr(options.shared_intrinsics ? 0 : i));
     }
+    std::vector<float*> scale_links;
+    if (options.scale_camera >= 0) {
+        scale_links = {pose_states.StateBlockDevicePtr(0), pose_states.StateBlockDevicePtr(options.scale_camera)};
+    }
+    const std::function<BAObjective()> measure_objective = [&]() {
+        BAObjective costs;
+        if (options.scale_camera < 0) { return costs; } // Global audit only.
+        const std::vector<float> pixel_values = FactorResiduals(reprojection, links, observations.size()*3, stream.GetStream());
+        for (std::size_t i = 0; i < pixel_values.size(); ++i) {
+            const double value = pixel_values[i];
+            if (i%3 == 2) { costs.cheirality += value*value; }
+            else { costs.robust_pixels += value*value; }
+        }
+        costs.pose_prior_unweighted = SquaredSum(FactorResiduals(raw_pose_priors, pose_links, poses.size()*6, stream.GetStream(), true));
+        costs.pose_prior_weighted = options.pose_prior_weight*costs.pose_prior_unweighted;
+        costs.focal_prior = SquaredSum(FactorResiduals(focal_priors, focal_links, poses.size()*2, stream.GetStream()));
+        if (options.optimize_principal) {
+            costs.principal_prior = SquaredSum(FactorResiduals(center_priors, center_links, poses.size()*2, stream.GetStream()));
+        }
+        costs.scale_anchor = SquaredSum(FactorResiduals(scale_anchor, scale_links, 1, stream.GetStream()));
+        return costs;
+    };
     const std::vector<const float*> const_links(links.begin(), links.end());
     cunls::dvector<const float*> device_links(const_links);
     cunls::LevenbergMarquardtMinimizerOptions lm;
@@ -327,7 +460,10 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
                         device_errors.data(), observations.size(), stream.GetStream());
     THROW_ON_CUDA_ERROR(cudaStreamSynchronize(stream.GetStream()));
     device_errors.CopyToHost(errors.data(), errors.size());
-    if (!std::all_of(errors.begin(), errors.end(), [](float x) { return std::isfinite(x); })) {
+    // Continuation retains every factor between stages, including observations
+    // temporarily behind a camera. The cheirality barrier remains active; invalid
+    // depth is filtered only after the complete global solve.
+    if (options.scale_camera < 0 && !std::all_of(errors.begin(), errors.end(), [](float x) { return std::isfinite(x); })) {
         throw std::invalid_argument("Initial observations must have positive finite depth and projection");
     }
     const float c2 = threshold*threshold;
@@ -335,6 +471,8 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
     float mu = std::max(1e-6f, c2 / std::max(c2, 2*maximum-c2));
     BAReport report;
     report.before = ErrorStatistics(errors, c2);
+    report.objective_before = measure_objective();
+    report.scale_distance_before = BaselineDistance(poses, options.scale_camera);
     report.use_gnc = use_gnc;
     report.huber_delta_pixels = huber_delta;
     if (options.check_jacobians) {
@@ -356,9 +494,14 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
                     {principal[2*i], principal[2*i+1]}, stream.GetStream(), huber_delta));
             }
         }
+        if (options.scale_camera >= 0) {
+            maximum_error = std::max(maximum_error, CheckBaselineJacobian(poses.front(), poses.at(options.scale_camera),
+                options.scale_target, options.scale_log_sigma, stream.GetStream()));
+        }
         report.jacobian_samples = samples;
         report.maximum_jacobian_tolerance_ratio = maximum_error;
     }
+    const std::vector<float> initial_errors = options.scale_camera >= 0 ? errors : std::vector<float>{};
     double previous_tls = report.before.tls_cost;
     for (int round = 0; round < rounds; ++round) {
         if (use_gnc) {
@@ -383,7 +526,9 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
         cunls::Problem problem;
         problem.AddStateBatch(&pose_states); problem.AddStateBatch(&round_points); problem.AddStateBatch(&focal_states); problem.AddStateBatch(&center_states);
         problem.AddFactorBatch(&reprojection, links);
-        problem.AddFactorBatch(&pose_priors, pose_links); problem.AddFactorBatch(&focal_priors, focal_links);
+        if (options.pose_prior_weight > 0) { problem.AddFactorBatch(&pose_priors, pose_links); }
+        if (options.scale_camera >= 0) { problem.AddFactorBatch(&scale_anchor, scale_links); }
+        problem.AddFactorBatch(&focal_priors, focal_links);
         if (options.optimize_principal) { problem.AddFactorBatch(&center_priors, center_links); }
         if (!problem.CheckConsistency()) { throw std::runtime_error("cuNLS graph consistency failed"); }
         cunls::LevenbergMarquardtMinimizer minimizer(lm);
@@ -419,11 +564,14 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
         previous_tls = tls;
         mu = std::min(mu*1.6f, 1e6f);
     }
+    report.objective_after = measure_objective();
     device_poses.CopyToHost(poses.data(), poses.size());
+    report.scale_distance_after = BaselineDistance(poses, options.scale_camera);
     device_points.CopyToHost(positions.data(), positions.size());
     device_focals.CopyToHost(log_focals.data(), log_focals.size());
     device_centers.CopyToHost(center_states_values.data(),center_states_values.size());
     BAResult output;
+    if (options.scale_camera >= 0) { output.squared_errors_before = initial_errors; output.squared_errors_after = errors; }
     for (std::size_t i = 0; i < poses.size(); ++i) {
         const std::size_t calibration = options.shared_intrinsics ? 0 : i;
         const std::vector<float> pose(poses[i].begin(), poses[i].end());

@@ -51,6 +51,18 @@ private:
     float translation_sigma_;
 };
 
+// A single log(||C1-C0||/target)/sigma residual. SE3 states use right updates.
+class BaselineFactors final : public cunls::SizedFactorBatch<1, 6, 6> {
+public:
+    BaselineFactors(float target, float sigma) : target_(target), sigma_(sigma) {}
+    [[nodiscard]] bool Evaluate(float* residuals, float* jacobians,
+        float const* const* states, cudaStream_t stream) const override;
+    [[nodiscard]] std::size_t NumFactors() const override { return 1; }
+private:
+    float target_;
+    float sigma_;
+};
+
 // Unweighted errors are separate from the LM residual buffer. GNC weights stay
 // fixed during each LM solve, and update only between solves on the same stream.
 void EvaluatePixelErrors(const float* pixels,

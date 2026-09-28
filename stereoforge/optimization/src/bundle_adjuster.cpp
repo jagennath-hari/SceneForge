@@ -547,12 +547,14 @@ BAResult BundleAdjuster::Solve(const BAInput& input) const {
         const std::size_t soft = static_cast<std::size_t>(std::count_if(weights.begin(), weights.end(),
             [](float w) { return w > 0.01f && w < 0.99f; }));
         report.rounds.push_back({mu, summary.num_iterations, summary.initial_cost, summary.final_cost,
-                                 soft, frozen.size(), stats});
+                                 soft, frozen.size(), stats, summary.iteration_costs});
         if (!use_gnc) {
             // The joint solve uses fixed external weights; optional Huber
             // robustification is evaluated inside the pixel factor.
             // A budget-limited LM solve is retained, but not called complete.
-            report.optimization_complete = summary.num_iterations < static_cast<std::size_t>(iterations);
+            // Early exit alone does not establish convergence (cuNLS can stop
+            // after rejected steps). Retain the result but report conservatively.
+            report.optimization_complete = false;
             report.lm_budget_exhausted = summary.num_iterations >= static_cast<std::size_t>(iterations);
             break;
         }

@@ -19,6 +19,26 @@ Inside Docker:
 python -m stereoforge.reconstruction --video data/input/barn.mp4
 ```
 
+Video decoding and keyframe selection now run as one native streaming stage.
+One ordered FFmpeg/NVDEC decoder feeds a bounded queue (two candidates per feature
+worker). RaCo feature extraction can use multiple peer-accessible GPUs, while
+matching and decisions remain timestamp ordered against the last accepted keyframe.
+The last reliable candidate stays in memory for bridge selection. Only accepted
+keyframes are PNG-encoded; rejected frames keep timestamp/source-index metadata,
+not image files. Frame buffers are bounded; lightweight metadata grows with video
+length. The current decoder-to-inference handoff uses host RGB/BGR buffers, not
+zero-copy CUDA buffers.
+
+New selections cache under `data/input/.keyframes/`, keyed by video identity,
+selection settings, models and native executable. Existing `.frames/` caches are
+untouched; `--all-frames` and the directory-based native debug selector retain the
+old extraction path. The first streaming run creates a fresh cache. Connection
+repair seeks the original video with codec preroll and verifies exact saved display
+timestamps, saving only requested intermediate frames. Keep the original video
+available and unchanged. One combined progress bar and accepted-keyframe Rerun
+previews update during decoding/selection. Rebuild Docker before running the usual
+command. This source change has not been compiled or runtime-tested by the agent.
+
 Defaults are `--window-size 64 --overlap 32 --lm-iterations 1000`, with Rerun enabled.
 Window size and overlap count **selected keyframes**, not original video frames.
 The selection can now grow before VGGT: measured tracks identify temporal cuts
@@ -91,7 +111,7 @@ initialization and dense-fusion evidence checks are separate from this BA policy
 
 All BA stages honor `--lm-iterations`. A finite, non-increasing, budget-limited
 result proceeds through structural checks with a convergence warning. The native
-backend API is **18**; rebuild Docker. Reconstruction policy changes invalidate
+backend API is **19**; rebuild Docker. Reconstruction policy changes invalidate
 old map state. This source change has not been compiled or run by the coding agent.
 
 
@@ -127,7 +147,7 @@ and omitted-frame IDs are recorded in `window_recovery.json` and `status.json`.
 This handles isolated prediction failures; it does not guarantee recovery when
 all overlapping predictions or measured connections are unusable.
 
-The native backend API is 18; rebuild Docker before using this optimization policy.
+The native backend API is 19; rebuild Docker before using this optimization policy.
 
 After merging, staged global BA jointly optimizes shared `fx, fy, cx, cy`, camera
 poses and sparse landmarks. Focal lengths have a ten-pixel prior; principal points
@@ -188,9 +208,25 @@ accepted map is replaced only after the complete final solve and structural
 checks succeed; failure preserves the previous map and completed checkpoints.
 Large residuals and invalid projections remain in the per-stage diagnostic arrays
 rather than disappearing from their denominators. These artifacts enable a later
-controlled replay without feature extraction/VGGT; no new replay CLI is added.
+controlled replay without feature extraction/VGGT.
 
-The native API is **18**. Rebuild Docker and run the usual reconstruction command.
+Replay one stage in a dedicated process with cuNLS trial costs, predicted reduction,
+step squared norms, acceptance/rejection messages and termination messages:
+
+```bash
+python -m stereoforge.reconstruction.ba_replay \
+  --checkpoint data/intermediate/RUN/map_TIMESTAMP/global_ba \
+  --stage 1 --device 0
+```
+
+The replay preserves all saved solver settings, priors and observations. Stages
+2–4 start from the preceding saved stage. Results go into a fresh
+`global_ba/replay_stage_*/` directory (`solver.log`, `report.json`, `result.npz`).
+The accepted map is untouched. cuNLS's summary does not expose a termination
+reason; inspect its log. An early return or unchanged objective is not reported
+as proven convergence. Iteration cost histories are retained in new checkpoints.
+
+The native API is **19**. Rebuild Docker and run the usual reconstruction command.
 Existing PLY-only runs cannot supply the missing original observation membership.
 This implementation has not been compiled, tested or run by the coding agent.
 

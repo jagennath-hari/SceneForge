@@ -21,6 +21,26 @@ Continuous video → ordered keyframes → measured global feature tracks
     → one camera trajectory, colored cloud and viewer
 ```
 
+Video decoding and keyframe selection now run as one native streaming stage.
+One ordered FFmpeg/NVDEC decoder feeds a bounded queue (two candidates per feature
+worker). RaCo feature extraction can use multiple peer-accessible GPUs, while
+matching and decisions remain timestamp ordered against the last accepted keyframe.
+The last reliable candidate stays in memory for bridge selection. Only accepted
+keyframes are PNG-encoded; rejected frames keep timestamp/source-index metadata,
+not image files. Frame buffers are bounded; lightweight metadata grows with video
+length. The current decoder-to-inference handoff uses host RGB/BGR buffers, not
+zero-copy CUDA buffers.
+
+New selections cache under `data/input/.keyframes/`, keyed by video identity,
+selection settings, models and native executable. Existing `.frames/` caches are
+untouched; `--all-frames` and the directory-based native debug selector retain the
+old extraction path. The first streaming run creates a fresh cache. Connection
+repair seeks the original video with codec preroll and verifies exact saved display
+timestamps, saving only requested intermediate frames. Keep the original video
+available and unchanged. One combined progress bar and accepted-keyframe Rerun
+previews update during decoding/selection. Rebuild Docker before running the usual
+command. This source change has not been compiled or runtime-tested by the agent.
+
 Before VGGT, count consistent tracks with at least three observations crossing
 each temporal cut. Fewer than 60 tracks triggers extra measurements, not a relaxed
 acceptance threshold. Insert decoded midpoint frames in that gap and adjacent
@@ -91,7 +111,7 @@ initialization and dense-fusion evidence checks are separate from this BA policy
 
 All BA stages honor `--lm-iterations`. A finite, non-increasing, budget-limited
 result proceeds through structural checks with a convergence warning. The native
-backend API is **18**; rebuild Docker. Reconstruction policy changes invalidate
+backend API is **19**; rebuild Docker. Reconstruction policy changes invalidate
 old map state. This source change has not been compiled or run by the coding agent.
 
 
@@ -127,7 +147,7 @@ and omitted-frame IDs are recorded in `window_recovery.json` and `status.json`.
 This handles isolated prediction failures; it does not guarantee recovery when
 all overlapping predictions or measured connections are unusable.
 
-The native backend API is 18; rebuild Docker before using this optimization policy.
+The native backend API is 19; rebuild Docker before using this optimization policy.
 
 After merging, staged global BA jointly optimizes shared `fx, fy, cx, cy`, camera
 poses and sparse landmarks. Focal lengths have a ten-pixel prior; principal points
@@ -188,9 +208,9 @@ accepted map is replaced only after the complete final solve and structural
 checks succeed; failure preserves the previous map and completed checkpoints.
 Large residuals and invalid projections remain in the per-stage diagnostic arrays
 rather than disappearing from their denominators. These artifacts enable a later
-controlled replay without feature extraction/VGGT; no new replay CLI is added.
+controlled replay without feature extraction/VGGT. `python -m stereoforge.reconstruction.ba_replay --checkpoint PATH_TO_GLOBAL_BA --stage 1` replays the saved stage in a dedicated process with native trial-step logging. Geometry and prior targets stay unchanged on input; output is written to a fresh diagnostic directory. Early solver exit does not establish convergence.
 
-The native API is **18**. Rebuild Docker and run the usual reconstruction command.
+The native API is **19**. Rebuild Docker and run the usual reconstruction command.
 Existing PLY-only runs cannot supply the missing original observation membership.
 This implementation has not been compiled, tested or run by the coding agent.
 

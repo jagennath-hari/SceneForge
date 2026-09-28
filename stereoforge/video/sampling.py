@@ -58,6 +58,8 @@ class VideoFrameSampler:
             raise ValueError("max_edge must be zero or at least two")
 
     def sample(self, video: Path, destination: Path, on_progress=None) -> SampledFrames:
+        if self.keyframes:
+            return self._sample_stream(video, destination, on_progress)
         executable = shutil.which("stereoforge-extract-frames")
         if executable is None:
             raise RuntimeError("Native video extractor is missing. Rebuild the Docker environment with "
@@ -106,8 +108,7 @@ class VideoFrameSampler:
                 progress.bar.total = len(cached.paths)
                 progress.status("reusing saved frames" if progress.completed == 0 else "publishing saved frames")
                 progress.advance(len(cached.paths) - progress.completed)
-                document = (self._select(cache, progress, on_progress) if self.keyframes else
-                            json.loads((cache / "manifest.json").read_text(encoding="utf-8")))
+                document = json.loads((cache / "manifest.json").read_text(encoding="utf-8"))
                 document["decoded_cache"] = str(cache.resolve())
                 progress.status(f"publishing {len(document['frames'])} geometry frames")
                 for index, record in enumerate(document["frames"]):
@@ -120,52 +121,149 @@ class VideoFrameSampler:
                     shutil.copy2(cache / "parallel_diagnostic.json", destination / "parallel_diagnostic.json")
         return self._read_manifest(destination)
 
-    def _select(self, cache: Path, progress: Progress, on_progress=None) -> dict:
+    def _sample_stream(self, video: Path, destination: Path, on_progress=None) -> SampledFrames:
         executable = shutil.which("stereoforge-select-keyframes")
         if executable is None:
-            raise RuntimeError("Native keyframe selector is missing; stop the container and rebuild the Docker environment")
+            raise RuntimeError("Native keyframe selector is missing; rebuild Docker")
+        video = video.resolve(strict=True)
         config = Path(self.keyframe_config).read_bytes()
         model_args = self.model_arguments(Path(self.keyframe_config))
-        model_identity = ((Path(model_args[1]) / "manifest.json").read_bytes() if model_args else b"")
-        signature = hashlib.sha256(Path(executable).read_bytes() + config + model_identity).hexdigest()
-        output = cache / f"keyframes_{signature}.json"
-        progress.bar.set_description("Selecting keyframes")
-        progress.description = "Selecting keyframes"
-        candidates = json.loads((cache / "manifest.json").read_text(encoding="utf-8"))["frames"]
-        def notify(event: dict) -> None:
-            if on_progress is None:
-                return
-            index = (event['candidate_index'] if event.get('event') == 'accepted_keyframe' else
-                     min(max(event['saved']-1, 0), len(candidates)-1))
-            record = candidates[index]
-            on_progress({**event, 'timestamp_seconds': record['timestamp_seconds']}, cache / record['file'])
-        if not output.is_file():
-            self._run_process([executable, "--input", str(cache), "--output", str(output),
-                               "--config", str(self.keyframe_config), *model_args], progress, "Keyframe selection", notify if on_progress is not None else None)
-        document = json.loads(output.read_text(encoding="utf-8"))
-        status = document.get("keyframe_selection", {}).get("status")
-        if status != "complete":
-            raise RuntimeError(f"Keyframe selection: {status}. Inspect {output}; adjust configs/keyframes_raco.json or use --all-frames for diagnostics")
-        if document.get("candidate_frame_count") != len(candidates) or len(document["frames"]) < 3:
-            raise ValueError("Keyframe selection has inconsistent frame counts")
-        previous = -1
-        for record in document["frames"]:
-            index = record["candidate_index"]
-            if type(index) is not int or not previous < index < len(candidates):
-                raise ValueError("Keyframe selection contains invalid or unordered candidate indices")
-            if any(record[field] != candidates[index][field] for field in ("file", "timestamp_seconds", "bytes")):
-                raise ValueError("Keyframe selection does not match its decoded-frame cache")
-            if record["source_frame_index"] != candidates[index].get("source_frame_index", index):
-                raise ValueError("Keyframe selection changed a source frame index")
-            previous = index
-        document["keyframe_selection"]["settings"] = json.loads(config)
-        if model_identity:
-            document["keyframe_selection"]["model_manifest"] = json.loads(model_identity)
-        if on_progress is not None:
-            notify({'saved': len(candidates), 'total': len(candidates),
-                    'stage': f"Selection complete: {len(document['frames'])} keyframes (cache reused when available)"})
-        progress.status(f"reusing selection: {len(document['frames'])} keyframes")
-        return document
+        model_identity = (Path(model_args[1]) / "manifest.json").read_bytes()
+        identity = {
+            "version": 2, "mode": "streaming_keyframes", "source": self._source_identity(video),
+            "selector": hashlib.sha256(Path(executable).read_bytes()).hexdigest(),
+            "config": hashlib.sha256(config).hexdigest(),
+            "models": hashlib.sha256(model_identity).hexdigest(),
+            "start_seconds": self.start_seconds, "duration": self.duration,
+            "count": self.count, "max_edge": self.max_edge,
+        }
+        key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        root = video.parent / ".keyframes"
+        root.mkdir(exist_ok=True)
+        cache = root / key
+        destination.mkdir(parents=True, exist_ok=True)
+        if any(destination.iterdir()):
+            raise ValueError("Frame destination must be empty")
+        with Progress("Decoding and selecting keyframes", unit="frame") as progress:
+            with (root / f"{key}.lock").open("a") as lock:
+                progress.status("waiting for keyframe cache")
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                cached = self._valid_cache(cache, identity)
+                if cached is not None and not (cache / "candidates.json").is_file():
+                    cached = None
+                reused = cached is not None
+                if cached is None:
+                    if cache.exists():
+                        shutil.rmtree(cache)
+                    for abandoned in root.glob(f".{key}-*"):
+                        if abandoned.is_dir():
+                            shutil.rmtree(abandoned)
+                    temporary = Path(tempfile.mkdtemp(prefix=f".{key}-", dir=root))
+                    try:
+                        def notify(event: dict) -> None:
+                            if on_progress is not None:
+                                image = (temporary / f"frame_{event['keyframe_index']:06d}.png"
+                                         if event.get('event') == 'accepted_keyframe' else None)
+                                on_progress(event, image)
+                        command = [executable, "--video", str(video), "--output", str(temporary / "manifest.json"),
+                                   "--config", str(self.keyframe_config), "--start-seconds", str(self.start_seconds),
+                                   "--max-edge", str(self.max_edge), *model_args]
+                        if self.duration is not None:
+                            command.extend(("--duration", str(self.duration)))
+                        if self.count is not None:
+                            command.extend(("--frames", str(self.count)))
+                        self._run_process(command, progress, "Streaming keyframe selection", notify)
+                        document = json.loads((temporary / "manifest.json").read_text())
+                        if document.get('keyframe_selection', {}).get('status') != 'complete':
+                            raise ValueError("Streaming keyframe selection did not complete")
+                        document['source_video'] = identity['source']
+                        document['keyframe_selection']['settings'] = json.loads(config)
+                        document['keyframe_selection']['model_manifest'] = json.loads(model_identity)
+                        (temporary / "manifest.json").write_text(json.dumps(document, indent=2))
+                        cached = self._read_manifest(temporary)
+                        if self._source_identity(video) != identity['source']:
+                            raise RuntimeError("Source video changed during streaming; cache not published")
+                        (temporary / "cache.json").write_text(json.dumps(identity))
+                        temporary.rename(cache)
+                    finally:
+                        if temporary.exists():
+                            shutil.rmtree(temporary)
+                document = json.loads((cache / "manifest.json").read_text())
+                document['decoded_cache'] = str(cache.resolve())
+                total = document['candidate_frame_count']
+                progress.bar.total = total
+                progress.advance(total - progress.completed)
+                progress.status(f"{'reusing' if reused else 'publishing'} {len(document['frames'])} saved keyframes")
+                for index, record in enumerate(document['frames']):
+                    source = cache / record['file']
+                    self._link_or_copy(source, destination / record['file'])
+                    if reused and on_progress is not None:
+                        on_progress({'event': 'accepted_keyframe', 'candidate_index': record['candidate_index'],
+                                     'keyframe_index': index, 'timestamp_seconds': record['timestamp_seconds']}, source)
+                (destination / "manifest.json").write_text(json.dumps(document, indent=2))
+                if on_progress is not None:
+                    on_progress({'saved': total, 'total': total, 'stage': 'Keyframe selection complete'}, None)
+        return self._read_manifest(destination)
+
+    @staticmethod
+    def recover_candidates(manifest: dict, decoded: list[dict], indices: list[int], destination: Path) -> dict[int, dict]:
+        """Decode requested display timestamps, including codec preroll, saving only requested images."""
+        source_identity = manifest['source_video']
+        video = Path(source_identity['path'])
+        if VideoFrameSampler._source_identity(video) != source_identity:
+            raise ValueError('Original video changed; cannot recover intermediate frames')
+        executable = shutil.which('stereoforge-extract-frames')
+        if executable is None:
+            raise RuntimeError('Native frame extractor is missing; rebuild Docker')
+        destination.mkdir(parents=True, exist_ok=True)
+        result = {}
+        # Group nearby requests, so distant weak boundaries do not force a full
+        # decode of the intervening video. Every seek decodes codec preroll.
+        groups: list[list[int]] = []
+        for index in sorted(indices):
+            if not groups or decoded[index]['timestamp_seconds'] - decoded[groups[-1][-1]]['timestamp_seconds'] > 2:
+                groups.append([])
+            groups[-1].append(index)
+        with Progress('Recovering intermediate frames', total=len(indices), unit='frame') as progress:
+            for group in groups:
+                with tempfile.TemporaryDirectory(prefix='.recover-', dir=destination) as name:
+                    folder = Path(name)
+                    request = folder / 'request.json'
+                    request.write_text(json.dumps({'timestamp_origin': manifest['timestamp_origin'],
+                                                   'frames': [decoded[index] for index in group]}))
+                    output = folder / 'frames'
+                    command = [executable, '--input', str(video), '--output', str(output),
+                               '--max-edge', str(manifest['max_edge']), '--recover-manifest', str(request)]
+                    # Native progress is per group; the parent bar counts recovered frames.
+                    process = subprocess.Popen(command, stdout=subprocess.DEVNULL, start_new_session=True)
+                    try:
+                        if process.wait() != 0:
+                            raise RuntimeError('Exact intermediate-frame recovery failed')
+                    except BaseException:
+                        if process.poll() is None:
+                            process.terminate()
+                            try:
+                                process.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                process.kill()
+                                process.wait()
+                        raise
+                    recovered = json.loads((output / 'manifest.json').read_text())
+                    records = {record['timestamp_ticks']: record for record in recovered['frames']}
+                    for index in group:
+                        expected = decoded[index]
+                        record = records[expected['timestamp_ticks']]
+                        if any(record[key] != expected[key] for key in ('source_frame_index', 'timestamp_seconds')):
+                            raise ValueError('Recovered frame identity does not match original decode')
+                        retained = destination / f'{index:08d}.png'
+                        staged = retained.with_suffix('.partial')
+                        shutil.copyfile(output / record['file'], staged)
+                        staged.replace(retained)
+                        result[index] = {**expected, 'bytes': record['bytes'], 'path': str(retained)}
+                        progress.advance()
+        if VideoFrameSampler._source_identity(video) != source_identity:
+            raise ValueError('Original video changed during frame recovery')
+        return result
 
     @staticmethod
     def model_arguments(config: Path) -> list[str]:
@@ -252,6 +350,15 @@ class VideoFrameSampler:
             raise ValueError("Invalid native frame manifest")
         if document["max_edge"] != self.max_edge:
             raise ValueError("Frame cache resolution does not match the request")
+        if document.get('storage') == 'keyframes_only':
+            if document.get('keyframe_selection', {}).get('status') != 'complete' or len(document['frames']) < 3:
+                raise ValueError('Incomplete streaming keyframe cache')
+            previous_candidate = -1
+            for record in document['frames']:
+                candidate = record['candidate_index']
+                if type(candidate) is not int or not previous_candidate < candidate < document['candidate_frame_count']:
+                    raise ValueError('Invalid streaming candidate order')
+                previous_candidate = candidate
         paths, timestamps, source_indices = [], [], []
         for index, record in enumerate(document["frames"]):
             expected = f"frame_{index:06d}.png"

@@ -35,7 +35,7 @@ Json ReportJson(const BAReport& report) {
     for (const BARound& round : report.rounds) {
         result["rounds"].push_back({{"mu", round.mu}, {"lm_iterations", round.lm_iterations},
             {"weighted_cost_before", round.weighted_cost_before}, {"weighted_cost_after", round.weighted_cost_after},
-            {"soft_weights", round.soft_weights}, {"frozen_landmarks", round.frozen_landmarks}, {"errors", StatisticsJson(round.errors)}});
+            {"iteration_costs", round.iteration_costs}, {"soft_weights", round.soft_weights}, {"frozen_landmarks", round.frozen_landmarks}, {"errors", StatisticsJson(round.errors)}});
     }
     if (report.jacobian_samples) {
         result["jacobian_check"] = {{"observations", report.jacobian_samples},

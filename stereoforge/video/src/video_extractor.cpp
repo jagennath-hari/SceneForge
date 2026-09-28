@@ -52,6 +52,20 @@ VideoExtractor::VideoExtractor(ExtractionOptions options) : options_(std::move(o
         (this->options_.count && *this->options_.count == 0) || this->options_.max_edge < 0 ||
         (this->options_.max_edge > 0 && this->options_.max_edge < 2))
         throw std::invalid_argument("Invalid start, duration, frame count or maximum edge");
+    if (this->options_.timestamp_origin && !std::isfinite(*this->options_.timestamp_origin))
+        throw std::invalid_argument("Invalid timestamp origin");
+    if (!this->options_.requested_frames.empty() && (!this->options_.timestamp_origin ||
+        this->options_.count || this->options_.duration || this->options_.start_seconds != 0))
+        throw std::invalid_argument("Exact recovery requires timestamp origin and no temporal subsampling");
+}
+
+std::size_t VideoExtractor::stream(const FrameCallback& callback, const ProgressCallback& progress) const {
+    if (!callback) throw std::invalid_argument("Streaming requires a frame consumer");
+    if (!std::filesystem::is_regular_file(this->options_.input)) throw std::runtime_error("Input video does not exist");
+    std::filesystem::create_directories(this->options_.output);
+    // Do not restart after publishing frames to a stateful selector. Hardware
+    // context setup can fall back to CPU; mid-stream errors fail this cache attempt.
+    return this->extract_once(progress, this->options_.hardware, 0, nullptr, 0, callback);
 }
 
 std::size_t VideoExtractor::extract(const ProgressCallback& progress) const {
@@ -60,7 +74,7 @@ std::size_t VideoExtractor::extract(const ProgressCallback& progress) const {
     std::filesystem::create_directories(this->options_.output);
     if (!std::filesystem::is_empty(this->options_.output)) throw std::runtime_error("Output directory must be empty");
     if (this->options_.hardware && this->options_.start_seconds == 0 &&
-        !this->options_.duration && !this->options_.count) {
+        !this->options_.duration && !this->options_.count && this->options_.requested_frames.empty()) {
         const ParallelExtractor parallel(this->options_);
         const std::optional<std::size_t> count = parallel.extract(progress);
         if (count) return *count;
@@ -81,7 +95,7 @@ std::size_t VideoExtractor::extract_section(const ProgressCallback& progress, in
 }
 
 std::size_t VideoExtractor::extract_once(const ProgressCallback& progress, bool hardware,
-    int device_index, const detail::DecodeSection* section, unsigned worker_limit) const {
+    int device_index, const detail::DecodeSection* section, unsigned worker_limit, const FrameCallback& callback) const {
     using namespace detail;
     AVFormatContext* raw = nullptr;
     const int opened = avformat_open_input(&raw, this->options_.input.c_str(), nullptr, nullptr);
@@ -129,9 +143,15 @@ std::size_t VideoExtractor::extract_once(const ProgressCallback& progress, bool 
         check(av_seek_frame(input.get(), stream_index, section->seek_timestamp, AVSEEK_FLAG_BACKWARD), "Seek section preroll");
         avcodec_flush_buffers(decoder.get());
     }
+    if (!this->options_.requested_frames.empty()) {
+        check(av_seek_frame(input.get(), stream_index, this->options_.requested_frames.begin()->first,
+                            AVSEEK_FLAG_BACKWARD), "Seek repair preroll");
+        avcodec_flush_buffers(decoder.get());
+    }
     PacketPtr packet = require(PacketPtr{av_packet_alloc()});
     FramePtr frame = require(FramePtr{av_frame_alloc()});
-    FrameWriterPool writers(this->options_.max_edge, worker_limit);
+    std::unique_ptr<FrameWriterPool> writers;
+    if (!callback) writers = std::make_unique<FrameWriterPool>(this->options_.max_edge, worker_limit);
     CudaResizer resizer;
     std::deque<std::future<void>> pending;
     std::size_t saved = 0;
@@ -142,10 +162,12 @@ std::size_t VideoExtractor::extract_once(const ProgressCallback& progress, bool 
     std::optional<double> origin;
     if (stream->start_time != AV_NOPTS_VALUE) origin = stream->start_time * av_q2d(stream->time_base);
     if (section) origin = section->origin * av_q2d(stream->time_base);
+    if (this->options_.timestamp_origin) origin = this->options_.timestamp_origin;
     std::optional<double> previous;
     std::optional<std::size_t> total = this->options_.count;
     if (!section && !total && this->options_.start_seconds == 0 && !this->options_.duration && stream->nb_frames > 0)
         total = static_cast<std::size_t>(stream->nb_frames);
+    if (!this->options_.requested_frames.empty()) total = this->options_.requested_frames.size();
     if (progress) progress({0, 0, total});
     nlohmann::json records = nlohmann::json::array();
     const std::function<void()> complete_one = [&] {
@@ -157,8 +179,8 @@ std::size_t VideoExtractor::extract_once(const ProgressCallback& progress, bool 
         if (progress) progress({saved, records[saved - 1]["timestamp_seconds"].get<double>(), total});
     };
     bool finished = false;
-    // Decode from the beginning even for a diagnostic selection: stable timestamp
-    // origin and no seek/keyframe ambiguity. Full-video extraction is the default.
+    // Normal selection decodes from the beginning for stable frame identities.
+    // Exact recovery seeks with codec preroll and matches saved display timestamps.
     const std::function<void()> receive = [&, this] {
         while (!finished) {
             if (section && section->cancelled->load()) throw std::runtime_error("Parallel extraction cancelled");
@@ -167,7 +189,7 @@ std::size_t VideoExtractor::extract_once(const ProgressCallback& progress, bool 
             decode_check(result, hardware_enabled, "Decode frame");
             if (frame->flags & AV_FRAME_FLAG_CORRUPT) throw std::runtime_error("Corrupt video frame");
             if (frame->best_effort_timestamp == AV_NOPTS_VALUE) throw std::runtime_error("Frame has no timestamp");
-            const std::size_t source_index = decoded_frames++;
+            std::size_t source_index = decoded_frames++;
             const double absolute = frame->best_effort_timestamp * av_q2d(stream->time_base);
             if (!origin) origin = absolute;
             const double timestamp = absolute - *origin;
@@ -180,11 +202,16 @@ std::size_t VideoExtractor::extract_once(const ProgressCallback& progress, bool 
             if (section) selected = frame->best_effort_timestamp >= section->begin;
             if (this->options_.count && this->options_.duration)
                 selected = selected && timestamp >= this->options_.start_seconds + records.size() * *this->options_.duration / *this->options_.count;
+            if (!this->options_.requested_frames.empty()) {
+                if (frame->best_effort_timestamp > this->options_.requested_frames.rbegin()->first) { finished = true; break; }
+                selected = this->options_.requested_frames.contains(frame->best_effort_timestamp);
+                if (selected) source_index = this->options_.requested_frames.at(frame->best_effort_timestamp);
+            }
             if (selected) {
                 if (source_width == 0) { source_width = frame->width; source_height = frame->height; }
                 if (frame->width != source_width || frame->height != source_height)
                     throw std::runtime_error("Video changes dimensions within the recording");
-                if (pending.size() >= writers.capacity()) complete_one();
+                if (writers && pending.size() >= writers->capacity()) complete_one();
                 FramePtr output;
                 if (frame->format == AV_PIX_FMT_CUDA) {
                     const FrameSize size = working_size(frame->width, frame->height, this->options_.max_edge);
@@ -194,9 +221,13 @@ std::size_t VideoExtractor::extract_once(const ProgressCallback& progress, bool 
                 } else output = require(FramePtr{av_frame_clone(frame.get())});
                 std::ostringstream name;
                 name << "frame_" << std::setfill('0') << std::setw(6) << records.size() << ".png";
-                pending.push_back(writers.submit(std::move(output), this->options_.output / name.str(), records.size()));
+                const bool keep_decoding = !callback || callback(*output, records.size(), timestamp,
+                    frame->best_effort_timestamp, source_index);
+                if (writers) pending.push_back(writers->submit(std::move(output), this->options_.output / name.str(), records.size()));
                 records.push_back({{"file", name.str()}, {"timestamp_seconds", timestamp},
                                    {"timestamp_ticks", frame->best_effort_timestamp}, {"source_frame_index", source_index}});
+                if (callback) records.back().erase("file");
+                if (!keep_decoding) finished = true;
                 while (!pending.empty() && pending.front().wait_for(std::chrono::seconds(0)) == std::future_status::ready)
                     complete_one();
                 if (this->options_.count && records.size() == *this->options_.count) finished = true;
@@ -220,17 +251,20 @@ std::size_t VideoExtractor::extract_once(const ProgressCallback& progress, bool 
     }
     if (records.empty() || (this->options_.count && records.size() != *this->options_.count))
         throw std::runtime_error("Video does not contain the requested frames");
+    if (!this->options_.requested_frames.empty() && records.size() != this->options_.requested_frames.size())
+        throw std::runtime_error("Repair timestamps could not all be decoded exactly");
     while (!pending.empty()) complete_one();
     const FrameSize size = working_size(source_width, source_height, this->options_.max_edge);
-    const std::filesystem::path temporary = this->options_.output / "manifest.json.tmp";
+    const std::string manifest_name = callback ? "candidates.json" : "manifest.json";
+    const std::filesystem::path temporary = this->options_.output / (manifest_name + ".tmp");
     std::ofstream manifest(temporary);
     manifest.exceptions(std::ios::badbit | std::ios::failbit);
     manifest << nlohmann::json{{"format_version", 1}, {"frames", records},
         {"source_width", source_width}, {"source_height", source_height},
         {"width", size.width}, {"height", size.height}, {"decoder", used_cuda ? "cuda" : "cpu"},
-        {"max_edge", this->options_.max_edge}}.dump(2) << '\n';
+        {"max_edge", this->options_.max_edge}, {"timestamp_origin", *origin}, {"storage", callback ? "metadata_only" : "images"}}.dump(2) << '\n';
     manifest.close();
-    std::filesystem::rename(temporary, this->options_.output / "manifest.json");
+    std::filesystem::rename(temporary, this->options_.output / manifest_name);
     return records.size();
 }
 }  // namespace stereoforge::video

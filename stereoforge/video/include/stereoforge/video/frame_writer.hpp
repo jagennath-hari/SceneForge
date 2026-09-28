@@ -26,28 +26,16 @@ struct FrameSize final { int width; int height; };
             std::max(2, static_cast<int>(height * factor) / 2 * 2)};
 }
 
-class PngWriter final {
+// Same color conversion for streaming inference and lossless image export.
+class RgbConverter final {
 public:
-    PngWriter(const AVFrame& source, int max_edge) :
-        rgb_(require(FramePtr{av_frame_alloc()})), packet_(require(PacketPtr{av_packet_alloc()})) {
-        const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_PNG);
-        if (!codec) throw std::runtime_error("FFmpeg PNG encoder is unavailable");
-        this->encoder_ = require(CodecPtr{avcodec_alloc_context3(codec)});
-        const FrameSize size = working_size(source.width, source.height, max_edge);
-        this->encoder_->width = size.width;
-        this->encoder_->height = size.height;
-        this->encoder_->thread_count = 1;
-        this->encoder_->pix_fmt = AV_PIX_FMT_RGB24;
-        this->encoder_->time_base = AVRational{1, 1};
-        this->encoder_->compression_level = 1;  // Lossless; favor extraction speed over file size.
-        check(avcodec_open2(this->encoder_.get(), codec, nullptr), "Open PNG encoder");
-        this->rgb_->width = this->encoder_->width;
-        this->rgb_->height = this->encoder_->height;
+    RgbConverter(const AVFrame& source, int max_edge) : rgb_(require(FramePtr{av_frame_alloc()})) {
+        const FrameSize size = working_size(source.width,source.height,max_edge);
+        this->rgb_->width = size.width; this->rgb_->height = size.height;
         this->rgb_->format = AV_PIX_FMT_RGB24;
-        check(av_frame_get_buffer(this->rgb_.get(), 32), "Allocate RGB frame");
+        check(av_frame_get_buffer(this->rgb_.get(),32), "Allocate RGB frame");
     }
-
-    void write(const AVFrame& source, const std::filesystem::path& path, std::size_t index) {
+    [[nodiscard]] AVFrame& convert(const AVFrame& source) {
         check(av_frame_make_writable(this->rgb_.get()), "Make RGB buffer writable");
         // FFmpeg may change pixel format between frames. Recreate as necessary.
         if (!this->scale_ || source.format != this->format_ || source.width != this->width_ || source.height != this->height_) {
@@ -66,25 +54,47 @@ public:
         if (sws_scale(this->scale_.get(), source.data, source.linesize, 0, source.height,
                       this->rgb_->data, this->rgb_->linesize) != this->rgb_->height)
             throw std::runtime_error("Incomplete RGB conversion");
-        this->rgb_->pts = static_cast<std::int64_t>(index);
-        check(avcodec_send_frame(this->encoder_.get(), this->rgb_.get()), "Encode PNG");
-        // PNG is an intra-frame encoder with no delayed frames: one packet per image.
-        check(avcodec_receive_packet(this->encoder_.get(), this->packet_.get()), "Receive PNG");
-        std::ofstream output(path, std::ios::binary);
-        output.exceptions(std::ios::badbit | std::ios::failbit);
-        output.write(reinterpret_cast<const char*>(this->packet_->data), this->packet_->size);
-        output.close();
-        av_packet_unref(this->packet_.get());
+        return *this->rgb_;
     }
 
 private:
-    CodecPtr encoder_;
     FramePtr rgb_;
-    PacketPtr packet_;
     ScalePtr scale_;
     int format_{-1};
     int width_{};
     int height_{};
+};
+
+class PngWriter final {
+public:
+    PngWriter(const AVFrame& source, int max_edge) :
+        converter_(source,max_edge), packet_(require(PacketPtr{av_packet_alloc()})) {
+        const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_PNG);
+        if (!codec) throw std::runtime_error("FFmpeg PNG encoder is unavailable");
+        this->encoder_ = require(CodecPtr{avcodec_alloc_context3(codec)});
+        const FrameSize size = working_size(source.width,source.height,max_edge);
+        this->encoder_->width = size.width; this->encoder_->height = size.height;
+        this->encoder_->thread_count = 1;
+        this->encoder_->pix_fmt = AV_PIX_FMT_RGB24;
+        this->encoder_->time_base = AVRational{1,1};
+        this->encoder_->compression_level = 1;
+        check(avcodec_open2(this->encoder_.get(),codec,nullptr), "Open PNG encoder");
+    }
+    void write(const AVFrame& source, const std::filesystem::path& path, std::size_t index) {
+        AVFrame& rgb = this->converter_.convert(source);
+        rgb.pts = static_cast<std::int64_t>(index);
+        check(avcodec_send_frame(this->encoder_.get(),&rgb), "Encode PNG");
+        check(avcodec_receive_packet(this->encoder_.get(),this->packet_.get()), "Receive PNG");
+        std::ofstream output(path,std::ios::binary);
+        output.exceptions(std::ios::badbit | std::ios::failbit);
+        output.write(reinterpret_cast<const char*>(this->packet_->data),this->packet_->size);
+        output.close();
+        av_packet_unref(this->packet_.get());
+    }
+private:
+    RgbConverter converter_;
+    CodecPtr encoder_;
+    PacketPtr packet_;
 };
 
 // Each worker owns its encoder and RGB buffers. The caller bounds outstanding

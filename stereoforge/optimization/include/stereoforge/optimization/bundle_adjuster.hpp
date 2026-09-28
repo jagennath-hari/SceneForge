@@ -50,6 +50,7 @@ struct BARound {
     std::size_t soft_weights;
     std::size_t frozen_landmarks;
     BAErrorStatistics errors;
+    std::vector<float> iteration_costs;
 };
 struct BAObjective {
     // Unhalved sums of squared residuals, evaluated by production factors.

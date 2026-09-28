@@ -336,12 +336,12 @@ void MapBuilder::Optimize(SparseMap& model, bool local, bool shared_calibration,
         if (shared_calibration && this->ba_checkpoint_) {
             this->ba_checkpoint_("stage_" + std::to_string(stage_index+1), input, result);
         }
-        if (!result.report.optimization_complete) {
-            if (!result.report.lm_budget_exhausted) { throw std::runtime_error(stage + " did not produce a usable result"); }
-            if (progress != nullptr) {
-                (*progress)(std::string("WARNING: ") + (shared_calibration ? "Global BA stage" : stage) +
-                    " reached its iteration limit; retaining finite non-increasing-cost result (convergence not established)");
-            }
+        if (progress != nullptr && result.report.lm_budget_exhausted) {
+            (*progress)("WARNING: " + stage + " reached its iteration limit; retaining finite non-increasing-cost result (convergence not established)");
+        }
+        if (progress != nullptr && !result.report.rounds.empty() &&
+            result.report.rounds.back().weighted_cost_after == result.report.rounds.front().weighted_cost_before) {
+            (*progress)("WARNING: " + stage + " returned unchanged objective; convergence not established");
         }
         // Camera order, point order and observations never change between stages.
         // In particular, prior_cameras remains the original initialization.

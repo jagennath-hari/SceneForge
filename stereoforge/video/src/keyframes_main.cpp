@@ -15,18 +15,32 @@ int main(int argc, char** argv) {
     try {
         std::filesystem::path input, output, config, models;
         bool debug_view = false;
+        stereoforge::video::ExtractionOptions extraction;
+        bool streaming = false;
         for (int index = 1; index < argc; ++index) {
             const std::string key = argv[index];
             if (key == "--debug-view") { debug_view = true; continue; }
             if (++index == argc) throw std::invalid_argument("Missing value for " + key);
-            if (key == "--input") input = argv[index];
+            if (key == "--video") { extraction.input = argv[index]; streaming = true; }
+            else if (key == "--start-seconds") extraction.start_seconds = std::stod(argv[index]);
+            else if (key == "--duration") extraction.duration = std::stod(argv[index]);
+            else if (key == "--frames") extraction.count = std::stoull(argv[index]);
+            else if (key == "--max-edge") extraction.max_edge = std::stoi(argv[index]);
+            else if (key == "--input") input = argv[index];
             else if (key == "--output") output = argv[index];
             else if (key == "--models") models = argv[index];
             else if (key == "--config") config = argv[index];
             else throw std::invalid_argument("Unknown option: " + key);
         }
-        if (input.empty() || output.empty() || config.empty())
+        if ((!streaming && input.empty()) || output.empty() || config.empty())
             throw std::invalid_argument("Required: --input FRAME_DIRECTORY --output JSON --config JSON");
+        if (streaming) {
+            if (!input.empty() || debug_view) throw std::invalid_argument("Streaming --video cannot be combined with --input or --debug-view");
+            extraction.output = output.parent_path();
+            if (extraction.output.empty()) extraction.output = ".";
+            std::filesystem::create_directories(extraction.output);
+            if (!std::filesystem::is_empty(extraction.output)) throw std::invalid_argument("Streaming output directory must be empty");
+        }
         std::ifstream settings(config);
         settings.exceptions(std::ios::failbit | std::ios::badbit);
         nlohmann::json document;
@@ -102,13 +116,16 @@ int main(int argc, char** argv) {
             };
         }
         const std::string frontend_label = stereoforge::video::keyframe_label;
-        const bool success = selector.run(input, output, [&frontend_label](std::size_t processed, std::size_t total, std::size_t selected) {
-            std::cout << nlohmann::json{{"saved", processed}, {"total", total}, {"timestamp_seconds", nullptr},
+        const stereoforge::video::KeyframeSelector::ProgressCallback progress = [&frontend_label](std::size_t processed, std::size_t total, std::size_t selected) {
+            std::cout << nlohmann::json{{"saved", processed}, {"total", total ? nlohmann::json(total) : nlohmann::json(nullptr)}, {"timestamp_seconds", nullptr},
                 {"stage", frontend_label + " | " + std::to_string(selected) + " keyframes"}}.dump() << std::endl;
-        }, debug, [](std::size_t candidate, std::size_t keyframe) {
+        };
+        const stereoforge::video::KeyframeSelector::AcceptanceCallback accepted = [streaming](std::size_t candidate, std::size_t keyframe, double timestamp) {
             std::cout << nlohmann::json{{"event", "accepted_keyframe"}, {"candidate_index", candidate},
-                {"keyframe_index", keyframe}}.dump() << std::endl;
-        });
+                {"keyframe_index", keyframe}, {"timestamp_seconds",timestamp}, {"streaming",streaming}}.dump() << std::endl;
+        };
+        const bool success = streaming ? selector.run_video(extraction,output,progress,accepted) :
+            selector.run(input,output,progress,debug,accepted);
         if (debug_view) {
             std::cerr << "Debug session saved. Inspect keyframe_selection.status in " << output << '\n';
             return 0;  // Partial/interrupted diagnostics are valid debug results, never a production cache.

@@ -10,6 +10,7 @@
 #include <Eigen/LU>
 #include <stdexcept>
 #include <cstring>
+#include <cunls/common/log.h>
 
 namespace py = pybind11;
 namespace so = stereoforge::optimization;
@@ -80,11 +81,14 @@ py::dict CheckpointDocument(const std::string& name, const so::BAInput& input, c
         const so::BAReport& r = output.report;
         meta["objective_before"] = Objective(r.objective_before); meta["objective_after"] = Objective(r.objective_after);
         meta["scale_distance_before"] = r.scale_distance_before; meta["scale_distance_after"] = r.scale_distance_after;
+        meta["termination_reason"] = "not exposed by cuNLS summary; inspect solver log";
+        meta["objective_decreased"] = !r.rounds.empty() && r.rounds.back().weighted_cost_after < r.rounds.front().weighted_cost_before;
         meta["optimization_complete"] = r.optimization_complete; meta["lm_budget_exhausted"] = r.lm_budget_exhausted;
         meta["jacobian_maximum_tolerance_ratio"] = r.maximum_jacobian_tolerance_ratio;
         py::list rounds;
         for (const so::BARound& round : r.rounds) {
             py::dict item; item["iterations"] = round.lm_iterations;
+            item["iteration_costs"] = round.iteration_costs;
             item["solver_cost_before"] = round.weighted_cost_before; item["solver_cost_after"] = round.weighted_cost_after;
             rounds.append(item);
         }
@@ -92,6 +96,90 @@ py::dict CheckpointDocument(const std::string& name, const so::BAInput& input, c
     }
     d["metadata"] = meta;
     return d;
+}
+// Replay uses the same native solver and binary checkpoint arrays as production.
+// Called in a dedicated diagnostic process because cuNLS logging is process-global.
+template <typename T>
+py::array_t<T, py::array::c_style | py::array::forcecast> ReplayArray(
+    const py::dict& data, const char* key, const std::vector<py::ssize_t>& shape) {
+    py::array_t<T, py::array::c_style | py::array::forcecast> value =
+        py::array_t<T, py::array::c_style | py::array::forcecast>::ensure(data[key]);
+    if (!value || value.ndim() != static_cast<py::ssize_t>(shape.size())) {
+        throw std::invalid_argument(std::string("Invalid checkpoint array: ")+key);
+    }
+    for (py::ssize_t i = 0; i < value.ndim(); ++i) {
+        if (shape[i] >= 0 && value.shape(i) != shape[i]) {
+            throw std::invalid_argument(std::string("Invalid checkpoint shape: ")+key);
+        }
+    }
+    return value;
+}
+py::dict ReplayBA(const py::dict& data, const py::dict& metadata,
+                  int device, const std::string& log_path) {
+    if (py::cast<int>(metadata["format_version"]) != 1) {
+        throw std::invalid_argument("Unsupported BA checkpoint version");
+    }
+    so::BAInput input;
+    input.origin = py::cast<std::array<double,3>>(metadata["normalization_origin"]);
+    input.normalization_scale = py::cast<double>(metadata["normalization_scale"]);
+    const py::dict options = py::cast<py::dict>(metadata["options"]);
+    input.options.pose_prior_weight = py::cast<float>(options["pose_prior_weight"]);
+    input.options.scale_camera = py::cast<int>(options["scale_camera"]);
+    input.options.scale_target = py::cast<float>(options["scale_target"]);
+    input.options.scale_log_sigma = py::cast<float>(options["scale_log_sigma"]);
+    input.options.huber_delta_pixels = py::cast<float>(options["huber_delta_pixels"]);
+    input.options.rotation_sigma_radians = py::cast<float>(options["rotation_sigma_radians"]);
+    input.options.translation_sigma = py::cast<float>(options["translation_sigma"]);
+    input.options.focal_sigma_pixels = py::cast<float>(options["focal_sigma_pixels"]);
+    input.options.principal_sigma_pixels = py::cast<float>(options["principal_sigma_pixels"]);
+    input.options.lm_iterations = py::cast<int>(options["lm_iterations"]);
+    input.options.shared_intrinsics = py::cast<bool>(options["shared_intrinsics"]);
+    input.options.optimize_principal = py::cast<bool>(options["optimize_principal"]);
+    input.options.use_gnc = py::cast<bool>(options["use_gnc"]);
+    input.options.check_jacobians = py::cast<bool>(options["check_jacobians"]);
+    input.options.threshold_pixels = py::cast<float>(options["threshold_pixels"]);
+    const py::array_t<float> poses = ReplayArray<float>(data,"world_to_camera",{-1,4,4});
+    const py::ssize_t n = poses.shape(0);
+    if (n < 2) { throw std::invalid_argument("Replay requires at least two cameras"); }
+    const py::array_t<float> k = ReplayArray<float>(data,"intrinsics",{n,4});
+    const py::array_t<float> prior = ReplayArray<float>(data,"prior_world_to_camera",{n,4,4});
+    const py::array_t<float> prior_k = ReplayArray<float>(data,"prior_intrinsics",{n,4});
+    const py::array_t<std::int64_t> ids = ReplayArray<std::int64_t>(data,"camera_ids",{n});
+    input.camera_ids.assign(ids.data(),ids.data()+n);
+    for (py::ssize_t i = 0; i < n; ++i) {
+        so::BACamera camera, target;
+        std::copy_n(poses.data()+16*i,16,camera.world_to_camera.begin());
+        std::copy_n(k.data()+4*i,4,camera.intrinsics.begin());
+        std::copy_n(prior.data()+16*i,16,target.world_to_camera.begin());
+        std::copy_n(prior_k.data()+4*i,4,target.intrinsics.begin());
+        input.cameras.push_back(camera); input.prior_cameras.push_back(target);
+    }
+    const py::array_t<float> points = ReplayArray<float>(data,"points",{-1,3});
+    const py::ssize_t m = points.shape(0);
+    const py::array_t<std::int64_t> tracks = ReplayArray<std::int64_t>(data,"track_ids",{m});
+    input.track_ids.assign(tracks.data(),tracks.data()+m);
+    for (py::ssize_t i = 0; i < m; ++i) {
+        input.points.push_back({points.data()[3*i],points.data()[3*i+1],points.data()[3*i+2]});
+    }
+    const py::array_t<float> pixels = ReplayArray<float>(data,"observation_pixel",{-1,2});
+    const py::ssize_t count = pixels.shape(0);
+    const py::array_t<std::int64_t> cameras = ReplayArray<std::int64_t>(data,"observation_camera",{count});
+    const py::array_t<std::int64_t> landmarks = ReplayArray<std::int64_t>(data,"observation_point",{count});
+    for (py::ssize_t i = 0; i < count; ++i) {
+        const std::int64_t camera = cameras.data()[i], point = landmarks.data()[i];
+        if (camera < 0 || camera >= n || point < 0 || point >= m) {
+            throw std::invalid_argument("Checkpoint observation index outside state arrays");
+        }
+        input.observations.push_back({static_cast<std::size_t>(camera),static_cast<std::size_t>(point),
+                                     {pixels.data()[2*i],pixels.data()[2*i+1]}});
+    }
+    so::BAResult result;
+    {
+        py::gil_scoped_release release;
+        cunls::SetLoggerOptions(cunls::Verbosity::Message,cunls::Sink::File,log_path);
+        result = so::BundleAdjuster(device).Solve(input);
+    }
+    return CheckpointDocument("replay",input,result);
 }
 so::DepthFrame ReadFrame(so::FrameId id, const Eigen::Matrix4d& pose, const Eigen::Matrix3d& k,
                         const py::array_t<float, py::array::c_style | py::array::forcecast>& depth,
@@ -110,7 +198,8 @@ so::DepthFrame ReadFrame(so::FrameId id, const Eigen::Matrix4d& pose, const Eige
 }
 }
 PYBIND11_MODULE(_stereoforge_map, module) {
-    module.attr("api_version") = 18;
+    module.attr("api_version") = 19;
+    module.def("replay_ba", &ReplayBA, py::arg("arrays"), py::arg("metadata"), py::arg("device"), py::arg("log_path"));
     py::class_<so::DenseFusion>(module,"DenseFusion")
         .def(py::init<double>())
         .def("add",[](so::DenseFusion& fusion,

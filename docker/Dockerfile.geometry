@@ -60,3 +60,22 @@ COPY third_party/SelaVPRplusplus/hubconf.py /opt/third_party/SelaVPRplusplus/hub
 COPY third_party/SelaVPRplusplus/model/ /opt/third_party/SelaVPRplusplus/model/
 ENV SELAVPR_ROOT=/opt/third_party/SelaVPRplusplus
 RUN --mount=type=cache,target=/root/.cache/uv uv pip install 'faiss-cpu==1.8.0.post1'
+
+# v0.0.34 retains the xformers.ops API used by SelaVPR++'s DINOv2.
+# Build CUTLASS attention (including FP32 retrieval) against our installed torch.
+# Explicit architectures enable CUDA compilation without a GPU during docker build.
+ARG XFORMERS_COMMIT=3da0fc922521aaecebc35e3938b5110bd5cb7195
+ARG XFORMERS_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0+PTX"
+RUN --mount=type=cache,target=/root/.cache/uv \
+    git init /tmp/xformers && \
+    git -C /tmp/xformers remote add origin https://github.com/facebookresearch/xformers.git && \
+    git -C /tmp/xformers fetch --depth 1 origin "${XFORMERS_COMMIT}" && \
+    git -C /tmp/xformers checkout --detach FETCH_HEAD && \
+    git -C /tmp/xformers submodule update --init --recursive --depth 1 \
+        --jobs "$(nproc)" -- third_party/cutlass && \
+    MAX_JOBS="$(nproc)" \
+    TORCH_CUDA_ARCH_LIST="${XFORMERS_CUDA_ARCH_LIST}" \
+    FORCE_CUDA=1 XFORMERS_BUILD_TYPE=Release \
+    XFORMERS_PT_CUTLASS_ATTN=0 XFORMERS_DISABLE_FLASH_ATTN=1 \
+        uv pip install --verbose --no-build-isolation --no-deps /tmp/xformers && \
+    rm -rf /tmp/xformers

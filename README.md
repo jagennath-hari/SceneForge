@@ -29,6 +29,15 @@ CUDA 13.2.1, the pinned PyTorch CUDA 13.2 wheels and TensorRT 10.13.3.9. Our nat
 backend links directly to cuNLS; the Python cuNLS package is not needed. The launch
 script supplies NVIDIA runtime, host IPC/network/PID, privileged mode and X11 access.
 
+The geometry image builds xFormers v0.0.34 from pinned source against the installed
+PyTorch/CUDA stack, using Ninja and `MAX_JOBS=$(nproc)`. It builds CUTLASS attention
+for SelaVPR++ (including FP32); the separate Flash Attention build is disabled.
+`XFORMERS_CUDA_ARCH_LIST` in `docker/Dockerfile.geometry` includes the RTX A6000's
+SM 8.6 and other supported targets, so Docker builds do not require a visible GPU.
+After rebuilding, inspect the available operators inside the container with
+`python -m xformers.info`. Source-build compatibility still needs verification
+with the actual image build.
+
 Request access to VGGT-Ω on Hugging Face, then place your authorized read token
 in `.secrets/hf_token` before starting the container. This ignored file is mounted
 read-only at runtime; credentials are not baked into an image. Model weights and

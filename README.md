@@ -54,9 +54,8 @@ host before starting. Run these commands from the host terminal.
    bash scripts/build_and_start.sh "/path/to/your/video.mp4"
    ```
 
-   The script validates the video, builds the Docker environment, and starts
-   reconstruction with live Rerun visualization. Results are saved under
-   `data/output/`.
+   Builds the Docker environment and runs reconstruction with live Rerun
+   visualization. Results are saved under `data/output/`.
 
 > Use a continuous video without cuts. Replace the example path with any local
 > video file; it does not need to be inside the repository. Quote paths containing spaces.

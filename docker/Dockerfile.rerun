@@ -65,3 +65,6 @@ RUN --mount=type=cache,target=/opt/cargo/registry \
 
 # Let the host-matched development user manage the installed toolchains.
 RUN chown -R "${USER_UID}:${USER_GID}" /opt
+
+# Selected by docker run; prepare missing GPU engines, then execute reconstruction.
+COPY --chmod=0755 scripts/entrypoint.sh /usr/local/bin/sceneforge-entrypoint

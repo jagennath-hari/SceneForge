@@ -143,6 +143,7 @@ echo "Reconstructing '${VIDEO_PATH}' (outputs: ${REPO_ROOT}/data/output)..."
 exec docker run "${TERMINAL_ARGS[@]}" --rm \
     --name "${RUN_CONTAINER}" \
     --init \
+    --entrypoint /usr/local/bin/sceneforge-entrypoint \
     "${HF_SECRET_ARGS[@]}" \
     --runtime=nvidia \
     --gpus all \

@@ -23,14 +23,17 @@ Python is used only for export/build. Frame extraction and matching run in C++.
 from __future__ import annotations
 
 import argparse
+import ast
 from dataclasses import asdict, dataclass
 import fcntl
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
 import shutil
 import tempfile
+import textwrap
 import warnings
 
 import torch
@@ -39,6 +42,25 @@ from torch import nn
 from sceneforge.utils.progress import Progress
 
 UPSTREAM_REVISION = "d12b4ba1632f558234e3f084e1f3d8bdf9147890"
+
+# Recognized pre-fingerprint cache revisions differ only in branding/license comments.
+# The semantic guard prevents adopting these engines after actual model/build changes.
+LEGACY_CODE_IDENTITY = (
+    "ef800e194ded22f106c363beeea54e2dedab8e47197fc45f4652631e1837c065",
+    "d085ecdcf1820a89be191a542b6561f440db6ca10194101d4c2ffac2e9799959",
+)
+LEGACY_FILE_IDENTITIES = (
+    "a2df8c67a07a2c7ce0ab5a750dc78dd36b648bd6b6548facc6ff6df873eefecd",
+    "6456d5fc4931ab256fa7122356b92610f7662c92ac213c1234b57f7c08b066fc",
+    "e55c0a79c4ab41ccce6ffc163e58cd7722b36c00981c0197bcb8b4fd4792f723",
+)
+
+
+def _code_identity(*objects: object) -> str:
+    """Fingerprint relevant code, excluding comments, formatting and orchestration."""
+    trees = [ast.dump(ast.parse(textwrap.dedent(inspect.getsource(value))),
+                      include_attributes=False) for value in objects]
+    return hashlib.sha256(json.dumps(trees).encode()).hexdigest()
 
 
 class RaCoALIKEDExport(nn.Module):
@@ -155,7 +177,7 @@ class LearnedModelCache:
                             "memory": properties.total_memory, "uuid": str(properties.uuid)})
         driver_file = Path("/proc/driver/nvidia/version")
         driver = driver_file.read_text() if driver_file.is_file() else "unavailable"
-        identity = {"upstream": UPSTREAM_REVISION, "driver": driver, "adapter": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        identity = {"upstream": UPSTREAM_REVISION, "driver": driver, "adapter": _code_identity(BuildMemoryBudget, self._serialize_engine, self._build),
                     "torch": torch.__version__, "tensorrt": trt.__version__, "devices": devices,
                     "features": self.features, "width": self.width, "height": self.height,
                     "precision": self.precision, "onnx": self._onnx_identity(),
@@ -169,9 +191,14 @@ class LearnedModelCache:
         with (root / f"{key}.lock").open("a") as lock, Progress("Preparing RaCo–ALIKED + LightGlue+") as progress:
             progress.status("checking model cache")
             fcntl.flock(lock, fcntl.LOCK_EX)
-            onnx_directory = self.prepare_onnx(progress)
             if self._valid(destination, identity):
+                progress.status("reusing cached TensorRT engines")
                 return destination
+            if self._adopt_legacy_cache(root, destination, identity):
+                progress.status("reusing compatible engines from the previous cache")
+                return destination
+            # ONNX export and weight downloads are unnecessary on an engine cache hit.
+            onnx_directory = self.prepare_onnx(progress)
             temporary = Path(tempfile.mkdtemp(prefix=f".{key}-", dir=root))
             try:
                 for index in range(len(devices)):
@@ -195,10 +222,43 @@ class LearnedModelCache:
                         torch.cuda.empty_cache()
         return destination
 
+    def _adopt_legacy_cache(self, root: Path, destination: Path, identity: dict) -> bool:
+        """Reuse known equivalent engines without relaxing hardware/runtime checks."""
+        if (identity["adapter"], identity["onnx"]["exporter"]) != LEGACY_CODE_IDENTITY:
+            return False
+        for revision in LEGACY_FILE_IDENTITIES:
+            previous = {**identity, "adapter": revision,
+                        "onnx": {**identity["onnx"], "exporter": revision}}
+            key = hashlib.sha256(json.dumps(previous, sort_keys=True).encode()).hexdigest()
+            directory = root / key
+            if not self._valid(directory, previous):
+                continue
+            manifest = json.loads((directory / "manifest.json").read_text())
+            temporary = Path(tempfile.mkdtemp(prefix=f".{destination.name}-", dir=root))
+            try:
+                # Both directories are on the persistent cache filesystem. Retain
+                # the old cache too; it may still be used by an older container.
+                for name in manifest["sha256"]:
+                    os.link(directory / name, temporary / name)
+                    for suffix in (".io.json", ".build.json"):
+                        metadata = (directory / name).with_suffix(suffix)
+                        if metadata.is_file():
+                            shutil.copyfile(metadata, temporary / metadata.name)
+                manifest["identity"] = identity
+                (temporary / "manifest.json").write_text(json.dumps(manifest, indent=2))
+                if destination.exists():
+                    shutil.rmtree(destination)
+                temporary.rename(destination)
+            finally:
+                if temporary.exists():
+                    shutil.rmtree(temporary)
+            return True
+        return False
+
     def _onnx_identity(self) -> dict:
         # Precision, TensorRT, driver and GPU identities deliberately do not affect ONNX.
         return {"upstream": UPSTREAM_REVISION, "contract": "raco_aliked_dense_portable_dynamo_v1",
-                "exporter": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                "exporter": _code_identity(RaCoALIKEDExport, LightGlueExport, self._export, self._prepare_tensorrt_onnx),
                 "torch": torch.__version__, "features": self.features,
                 "width": self.width, "height": self.height}
 

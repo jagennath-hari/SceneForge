@@ -9,3 +9,7 @@
 	path = third_party/cuNLS
 	url = https://github.com/nvidia-isaac/cuNLS.git
 	branch = main
+[submodule "third_party/third_party/SelaVPRplusplus"]
+	path = third_party/third_party/SelaVPRplusplus
+	url = https://github.com/Lu-Feng/SelaVPRplusplus.git
+	branch = main

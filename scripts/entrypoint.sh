@@ -23,6 +23,23 @@ if [[ $# -eq 0 ]]; then
     exit 2
 fi
 
+# Cache weights before engine preparation; reconstruction uses these same paths.
+python - <<'PYTHON'
+import sys
+
+from sceneforge.geometry.checkpoint import resolve_checkpoint
+from sceneforge.reconstruction.retrieval import GlobalDescriptors
+
+try:
+    print("Preparing VGGT-Ω weights (reusing cache when present)...", flush=True)
+    resolve_checkpoint()
+    print("Preparing SelaVPR++ weights (reusing cache when present)...", flush=True)
+    GlobalDescriptors.prepare_checkpoint(progress=True)
+except Exception as exc:
+    sys.exit(f"ERROR: Model weight preparation failed: {exc}")
+print("Model weights ready.", flush=True)
+PYTHON
+
 # Runtime preparation sees the actual GPUs and the host-mounted persistent cache.
 # The same config/cache is used by streaming keyframes and later pair matching.
 python -m sceneforge.video.learned_models \

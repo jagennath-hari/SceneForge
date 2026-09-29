@@ -57,17 +57,7 @@ class GlobalDescriptors:
         self.root = Path(os.environ.get('SELAVPR_ROOT', '/opt/third_party/SelaVPRplusplus'))
         if not (self.root / 'hubconf.py').is_file():
             raise FileNotFoundError('SelaVPR++ is missing. Rebuild Docker with third_party/SelaVPRplusplus')
-        checkpoint = Path(torch.hub.get_dir()) / 'checkpoints' / self.checkpoint_name
-        checkpoint.parent.mkdir(parents=True, exist_ok=True)
-        with checkpoint.with_suffix('.lock').open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            if not checkpoint.is_file():
-                temporary = checkpoint.with_name(checkpoint.name + '.partial_' + uuid4().hex)
-                try:
-                    torch.hub.download_url_to_file(self.checkpoint_url, str(temporary), progress=False)
-                    temporary.replace(checkpoint)
-                finally:
-                    temporary.unlink(missing_ok=True)
+        checkpoint = self.prepare_checkpoint()
         with checkpoint.open('rb') as stream:
             checkpoint_hash = hashlib.file_digest(stream, 'sha256').hexdigest()
         code = hashlib.sha256()
@@ -91,6 +81,24 @@ class GlobalDescriptors:
         fingerprint = hashlib.sha256(json.dumps(self.identity, sort_keys=True).encode()).hexdigest()
         self.cache = Path(os.environ.get('XDG_CACHE_HOME', str(Path.home() / '.cache'))) / 'sceneforge/retrieval' / fingerprint
         self.cache.mkdir(parents=True, exist_ok=True)
+
+    @classmethod
+    def prepare_checkpoint(cls, *, progress: bool = False) -> Path:
+        """Cache the full retrieval checkpoint without constructing the model."""
+        checkpoint = Path(torch.hub.get_dir()) / 'checkpoints' / cls.checkpoint_name
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        with checkpoint.with_suffix('.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if not checkpoint.is_file() or checkpoint.stat().st_size == 0:
+                temporary = checkpoint.with_name(checkpoint.name + '.partial_' + uuid4().hex)
+                try:
+                    torch.hub.download_url_to_file(cls.checkpoint_url, str(temporary), progress=progress)
+                    if temporary.stat().st_size == 0:
+                        raise RuntimeError('SelaVPR++ checkpoint download was empty')
+                    temporary.replace(checkpoint)
+                finally:
+                    temporary.unlink(missing_ok=True)
+        return checkpoint
 
     def lookup(self, image_bytes: bytes) -> tuple[str, np.ndarray | None]:
         key = hashlib.sha256(image_bytes).hexdigest()

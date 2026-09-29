@@ -11,7 +11,8 @@ The active pipeline is:
 ```text
 Video
   → streaming decode and keyframe selection
-  → feature-image preparation and temporal pair verification
+  → joint feature-image/global-descriptor preparation
+  → unified temporal and loop pair verification
   → measured feature tracks and bounded connection repair
   → overlapping VGGT-Ω windows
   → local bundle adjustment and Sim(3) registration into a common map
@@ -19,9 +20,9 @@ Video
   → dense depth calibration, refinement and voxel fusion
 ```
 
-This specification describes the current implementation. VPR retrieval and loop
-closure remain future work. Stereo pair generation and video encoding are outside
-scope. The pipeline uses Sim(3), not projective SL(4) deformation.
+This specification describes the current implementation. Loop closure adds
+verified long-range landmark observations to BA. Stereo pair generation and video
+encoding are outside scope. The pipeline uses Sim(3), not projective SL(4) deformation.
 
 ## Code ownership
 
@@ -29,7 +30,7 @@ scope. The pipeline uses Sim(3), not projective SL(4) deformation.
 | --- | --- |
 | `stereoforge/video` | FFmpeg/NVDEC decoding, RaCo–ALIKED/LightGlue+ TensorRT inference, CUDA preprocessing/RANSAC, keyframe and model caches |
 | `stereoforge/geometry` | VGGT-Ω adapter, checkpoint resolution, tensor contracts and per-window storage |
-| `stereoforge/reconstruction` | Python orchestration, temporal graph/tracks, connection repair, window scheduling, output snapshots and dense refinement |
+| `stereoforge/reconstruction` | Python orchestration, global retrieval, temporal/loop tracks, connection repair, window scheduling, output snapshots and dense refinement |
 | `stereoforge/optimization` | C++/Eigen map operations, custom CUDA factors, cuNLS BA and pybind11 interface |
 | `stereoforge/visualization` | Rust Rerun SDK adapter behind a C ABI |
 | `stereoforge/utils` | Progress reporting, validation, camera conversion and artifact export |
@@ -70,20 +71,54 @@ Feature images use VGGT-Ω's balanced preprocessing at resolution 512. Pixel
 coordinates, intrinsics and feature tracks must refer to that processed grid.
 All input frames must have uniform processed dimensions.
 
-The frontend verifies each frame against its next four neighbors by default.
-RaCo–ALIKED/LightGlue+ supplies feature matches; native RANSAC marks geometric
-inliers. Feature indices remain stable across pairs for the same image.
+Feature preparation reads each source RGB once, using a bounded two-worker CPU
+queue. The pinned VGGT-Ω crop/shape helpers preserve the existing geometry grid.
+A separate retrieval branch applies SelaVPR++'s RGB normalization and bilinear
+322×322 hard resize. Geometry pixels and intrinsics never use this retrieval grid.
 
-`VerifiedGraph` joins consistent match edges into tracks. A track contains at
-most one feature observation per frame. Conflicting edges are rejected without
-discarding the entire previously consistent track. Tracks with at least three
-views supply reconstruction measurements.
+The local SelaVPR++ Hub implementation supplies DINOv2-base + GeM with hashing and
+reranking disabled. Eight-image GPU batches produce normalized 2,048-dimensional
+float descriptors. Cache identity includes image contents, checkpoint hash, model
+source and preprocessing/runtime settings. The model is unloaded before matching;
+a repair round infers descriptors only for missing images.
 
-Before VGGT-Ω inference, bounded connection repair checks track support across
-temporal boundaries. It can insert real intermediate frames, prepare their images
-and reverify affected pairs. Existing measurements are remapped and reused. Repair
-records the revised chronological frame mapping and any unresolved weak cuts.
-Image-graph connectivity alone does not guarantee observable 3D geometry.
+Cosine retrieval runs in bounded GPU blocks. For each frame, at most three
+candidates are chosen outside both the 32-keyframe exclusion neighborhood and a
+ten-second time separation. Candidate regions are spaced by five seconds. Ranking
+uses frame IDs to resolve equal scores. This bounds candidate count but does not
+promise bitwise reproducibility across GPU/software versions.
+
+The frontend combines deduplicated retrieval candidates with each frame's next
+four temporal neighbors. One verification queue uses native RaCo–ALIKED/LightGlue+
+and RANSAC. Native feature buffers use bounded LRU reuse within each batch. Cached
+pair results are checked against the current pair plan, and repair rounds remap
+measurements by immutable source identity.
+
+Loop pairs must satisfy geometric support and spatial coverage, then be
+corroborated by another independently verified nearby pair. The current defaults
+are 30 inliers, 25% inlier ratio, four occupied cells of a 4×4 grid in each image,
+and a neighboring pair within two frames at both endpoints. Compact cross-batch
+decisions avoid rewriting the full match files. Candidate, geometry-verified and
+corroborated counts are recorded separately.
+
+`VerifiedGraph` joins consistent temporal and accepted loop edges into measured
+tracks, with at most one feature observation per frame. Conflicting edges are
+rejected without discarding already consistent observations. Tracks with at least
+three views supply reconstruction measurements. Loop provenance is retained by
+track ID and endpoint frame pair.
+
+An independent temporal-only track forest is built from the same parsed matches.
+Connection repair uses its crossing-track counts, so distant loops cannot hide
+weak local boundaries. Repair may insert real intermediate frames, reuse old
+descriptors/measurements and match new pairs. Remaining weak cuts and chronological
+frame mappings are reported. Image-graph connectivity alone does not guarantee
+observable 3D geometry.
+
+Verified loops constrain optimization only when their endpoints survive as
+observations of the same native landmark. Final reporting counts those retained
+landmarks, loop pairs and observations separately from frontend track counts.
+This implementation does not add a separate pose graph or change the map's
+alignment/BA acceptance policy. `--no-loop-closure` disables retrieval for comparison.
 
 ## 3. VGGT-Ω windows
 

@@ -115,7 +115,7 @@ class ReconstructionVisualization:
                 if inliers >= 30 and inliers >= 0.25 * len(matches):
                     verified.append((pair['source'], pair['target']))
         sample = verified[:16]
-        self.activity(f"Verified {len(verified)}/{attempted} pairs — sampled schematic connections",
+        self.activity(f"RANSAC support: {len(verified)}/{attempted} pairs — sampled candidate connections",
                       sorted({f for pair in sample for f in pair}), sample, ready=True)
 
     def keyframe(self, frame: int, path: Path) -> None:

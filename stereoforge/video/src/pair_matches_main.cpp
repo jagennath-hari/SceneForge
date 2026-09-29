@@ -1,6 +1,7 @@
 // Diagnostic export of existing TensorRT matches; no keyframe selection or GUI.
 #include "stereoforge/video/learned_features.hpp"
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <iostream>
@@ -54,6 +55,8 @@ int main(int argc, char** argv) {
         stereoforge::video::RaCoALIKEDExtractor extractor(learned, device);
         stereoforge::video::LightGlueMatcher matcher(learned, selection, device);
         std::map<std::size_t, stereoforge::video::FrameFeatures> cache;
+        std::map<std::size_t, std::size_t> last_used;
+        std::size_t access = 0;
         for (const nlohmann::json& pair : request.at("pairs")) {
             const std::size_t source_index = pair.at("source").get<std::size_t>();
             const std::size_t target_index = pair.at("target").get<std::size_t>();
@@ -62,6 +65,8 @@ int main(int argc, char** argv) {
             if (width <= 0 || height <= 0) throw std::invalid_argument("Invalid image size");
             if (!cache.contains(source_index)) cache.emplace(source_index, extractor.extract(pair.at("source_path").get<std::string>(), source_index, 0));
             if (!cache.contains(target_index)) cache.emplace(target_index, extractor.extract(pair.at("target_path").get<std::string>(), target_index, 0));
+            last_used[source_index] = ++access;
+            last_used[target_index] = ++access;
             const stereoforge::video::FrameFeatures& a = cache.at(source_index);
             const stereoforge::video::FrameFeatures& b = cache.at(target_index);
             const stereoforge::video::MatchQuality quality = matcher.match(a, b);
@@ -85,7 +90,16 @@ int main(int argc, char** argv) {
             output.flush();
             std::cout << "Matched " << source_index << " -> " << target_index << ": "
                       << quality.matches << " matches, " << quality.inliers << " RANSAC inliers\n";
-            while (cache.size() > 32) cache.erase(cache.begin());
+            // Distant loop targets break frame-order eviction. Keep recently used
+            // source/target features so all pairs for one source reuse extraction.
+            while (cache.size() > 32) {
+                const std::map<std::size_t, std::size_t>::const_iterator oldest = std::min_element(
+                    last_used.cbegin(), last_used.cend(),
+                    [](const std::pair<const std::size_t, std::size_t>& left,
+                       const std::pair<const std::size_t, std::size_t>& right) { return left.second < right.second; });
+                cache.erase(oldest->first);
+                last_used.erase(oldest);
+            }
         }
         return 0;
     } catch (const std::exception& error) {

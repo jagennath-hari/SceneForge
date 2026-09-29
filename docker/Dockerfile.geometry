@@ -53,3 +53,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY third_party/vggt-omega/ /opt/third_party/vggt-omega/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --no-build-isolation --no-deps /opt/third_party/vggt-omega
+
+# Pinned local Hub implementation; inference weights download into the runtime cache.
+# Upstream imports faiss in its aggregation module, even when using GeM only.
+COPY third_party/SelaVPRplusplus/hubconf.py /opt/third_party/SelaVPRplusplus/hubconf.py
+COPY third_party/SelaVPRplusplus/model/ /opt/third_party/SelaVPRplusplus/model/
+ENV SELAVPR_ROOT=/opt/third_party/SelaVPRplusplus
+RUN --mount=type=cache,target=/root/.cache/uv uv pip install 'faiss-cpu==1.8.0.post1'

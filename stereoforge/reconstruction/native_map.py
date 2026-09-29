@@ -40,12 +40,20 @@ class NativeMap:
         self.last_stage: str | None = None
         self.alignment_warnings: list[str] = []
         self._frame_cache: OrderedDict[Path, dict] = OrderedDict()
+        self._loop_links: dict[int, list[list[int]]] = {}
+        self._loop_report: dict = {}
 
     def load_tracks(self, path: Path) -> None:
         with path.open() as stream:
             tracks = [{int(frame): np.asarray(uv, dtype=np.float64)
                        for frame, uv in json.loads(line).items()} for line in stream]
         self.builder.set_tracks(tracks)
+        self._loop_links = {int(track): pairs for track, pairs in
+                            json.loads((path.parent / 'loop_tracks.json').read_text()).items()}
+        self._loop_report = json.loads((path.parent / 'graph.json').read_text())['loop_closure']
+
+    def loop_statistics(self) -> dict:
+        return dict(self._loop_report)
 
     def _load_frames(self, path: Path, images: list[Path]) -> dict:
         if path in self._frame_cache:
@@ -129,6 +137,19 @@ class NativeMap:
             pose[:3, :3] = camera.rotation
             pose[:3, 3] = camera.center
             cameras[frame] = SparseCamera(pose, camera.intrinsics, (camera.height, camera.width))
-        points = tuple(SparsePoint(point.position, np.asarray(point.color, dtype=np.uint8), point.observations)
-                       for point in model.landmarks.values())
-        return SparseModel(cameras, points)
+        points = []
+        loop_landmarks = 0
+        represented_pairs = set()
+        loop_observations = 0
+        for track, point in model.landmarks.items():
+            observations = point.observations
+            points.append(SparsePoint(point.position, np.asarray(point.color, dtype=np.uint8), observations))
+            surviving = {(a, b) for a, b in self._loop_links.get(track, ()) if a in observations and b in observations}
+            if surviving:
+                loop_landmarks += 1
+                represented_pairs.update(surviving)
+                loop_observations += len({frame for pair in surviving for frame in pair})
+        self._loop_report.update(retained_loop_landmarks=loop_landmarks,
+                                 retained_loop_pairs=len(represented_pairs),
+                                 retained_loop_observations=loop_observations)
+        return SparseModel(cameras, tuple(points))

@@ -44,7 +44,7 @@ python -m stereoforge.reconstruction --video data/input/barn.mp4
 ```
 
 Defaults: 64 keyframes per VGGT-Ω window, 32 shared keyframes, 1,000 joint BA
-iterations and Rerun enabled. Window dimensions count selected keyframes, not
+iterations, loop retrieval and Rerun enabled. Window dimensions count selected keyframes, not
 video frames. To override them:
 
 ```bash
@@ -103,8 +103,43 @@ be reused. Existing saved runs are never relocated by a new invocation.
 - `stereoforge/utils/`: shared progress, validation and export helpers.
 - `docker/`, `scripts/`, `configs/`: environment and active keyframe configuration.
 
-The current pipeline verifies temporal image pairs. VPR retrieval and loop closure
-are not integrated yet. Stereo synthesis is outside the current scope.
+## Global descriptors and loop closure
+
+During **Preparing feature images**, two CPU workers prepare geometry images and
+SelaVPR++ inputs from the same decoded RGB. GPU batches compute DINOv2-base/GeM
+2,048-dimensional descriptors (`hashing=False`, `rerank=False`). Retrieval uses
+upstream's normalized 322×322 input; geometry retains its existing VGGT-Ω grid.
+The local submodule supplies model code, and weights download into the mounted
+Torch cache on first use. Descriptor caches include image contents, checkpoint,
+model implementation and preprocessing identity.
+
+Each keyframe proposes up to three distant candidates, excluding frames within
+32 keyframes or less than ten seconds. Candidates for one query are spread across
+temporal regions at least five seconds apart. The deduplicated proposals join
+temporal pairs in **Verifying image pairs**. RaCo–ALIKED/LightGlue+ and RANSAC run
+once per requested pair; local features are reused within each native batch.
+
+Loop pairs require at least 30 RANSAC inliers, 25% inlier ratio, coverage of four
+cells in each image's 4×4 grid, and a second verified pair within two keyframes on
+both sides. Consistent loop observations enter the same measured feature tracks
+and landmark-based BA as temporal observations. This is not a separate pose graph.
+Connection repair counts temporal-only tracks so loops cannot hide a weak local
+boundary. Repair frames reuse descriptors and measurements wherever possible.
+
+`status.json` reports candidates, geometric verification, corroborated pairs,
+consistent loop tracks, and loop landmarks/pairs/observations retained in the final
+map. These counts differ: retrieval does not guarantee usable BA constraints.
+`graph.json`, `loop_tracks.json`, and the repair round's `matching/loop_verification.json`
+retain the evidence. A geometry-verified pair without neighboring support is not
+added to the tracks.
+
+Rebuild Docker to include SelaVPR++ and its FAISS import dependency, then use the
+same command. `--no-loop-closure` provides a temporal-only comparison. Start a fresh
+`--video` run after this change; older reconstruction policies cannot resume, but
+video/model caches remain usable. Descriptor inference and extra verification add
+computation even though no separate image-preprocessing stage is introduced.
+
+Stereo synthesis is outside the current scope.
 Reconstruction units are not established meters, and a complete run does not
 establish geometric accuracy. Unresolved regions are reported as partial output.
 

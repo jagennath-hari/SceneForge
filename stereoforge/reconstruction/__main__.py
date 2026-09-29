@@ -45,6 +45,8 @@ def main() -> int:
     source.add_argument('--resume', type=Path, help='Reuse inputs/VGGT-Ω windows from this pipeline; recompute map in a fresh attempt')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--checkpoint', type=Path)
+    parser.add_argument('--loop-closure', action=argparse.BooleanOptionalAction, default=None,
+                        help='Retrieve and verify distant image pairs (default); --no-loop-closure uses temporal pairs only')
     parser.add_argument('--window-size', type=int, help='Keyframes per VGGT-Ω window (default 64)')
     parser.add_argument('--overlap', type=int, help='Shared keyframes between windows (default 32)')
     parser.add_argument('--neighbors', type=int, help='Temporal feature matching neighbors (default 4)')
@@ -64,7 +66,7 @@ def main() -> int:
         native_backend()
         if args.resume:
             if any(value is not None for value in (args.output, args.checkpoint, args.window_size,
-                    args.overlap, args.neighbors, args.device, args.keyframe_config)):
+                    args.overlap, args.neighbors, args.device, args.keyframe_config, args.loop_closure)):
                 raise ValueError('--resume keeps saved input/window settings; only the BA budget, dense voxel fraction and diagnostics may change')
             candidate = args.resume.expanduser().resolve()
             saved = json.loads((candidate / 'request.json').read_text())
@@ -92,6 +94,7 @@ def main() -> int:
                                     overlap=args.overlap if args.overlap is not None else 32,
                                     neighbors=args.neighbors if args.neighbors is not None else 4,
                                     device=args.device or 'cuda',
+                                    loop_closure=args.loop_closure if args.loop_closure is not None else True,
                                     lm_iterations=args.lm_iterations if args.lm_iterations is not None else 1000,
                                     dense_voxel_fraction=args.dense_voxel_fraction if args.dense_voxel_fraction is not None else 0.01)
             output = (args.output or ROOT / 'data/output' / datetime.now(timezone.utc).strftime(
@@ -112,7 +115,8 @@ def main() -> int:
             reconstructor.native.builder.enable_rerun(str(recording))
             reconstructor.visualization = ReconstructionVisualization(reconstructor.native)
             logging.info('Rerun live viewer connected; recording also saved to %s', recording)
-        logging.info('Video → keyframes → VGGT-Ω windows → graph-ordered map → shared-calibration BA → dense refinement')
+        logging.info('Video → keyframes → %s → VGGT-Ω windows → common map + BA → dense refinement',
+                     'temporal and loop tracks' if options.loop_closure else 'temporal tracks')
         if reconstructor.visualization is not None:
             reconstructor.visualization.event("Decoding / selecting keyframes: waiting for ordered candidate images")
         sampler = VideoFrameSampler(keyframe_config=config)
@@ -135,6 +139,10 @@ def main() -> int:
         result = reconstructor.run(list(sampled.paths), checkpoint, sampled.timestamps_seconds)
         logging.info('%s: %d/%d keyframes. Artifacts: %s', result['status'], result['registered_frames'],
                      result['input_frames'], output)
+        if options.loop_closure:
+            loops = result.get('loop_closure', {})
+            logging.info('Optimized map retains %d loop landmarks across %d verified pairs',
+                         loops.get('retained_loop_landmarks', 0), loops.get('retained_loop_pairs', 0))
         if args.rerun:
             logging.info('Rerun recording: %s', recording)
         return 0 if result['status'] == 'complete' else 1

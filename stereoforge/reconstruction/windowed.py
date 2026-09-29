@@ -19,7 +19,7 @@ from .view_graph import Cluster
 from .connection_repair import ConnectionRepair
 from .window_recovery import WindowRecovery
 
-POLICY = 'native_graph_dense_cunls_v12'
+POLICY = 'native_graph_dense_cunls_v13_loops'
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +28,7 @@ class WindowOptions:
     overlap: int = 32
     neighbors: int = 4
     device: str = 'cuda'
+    loop_closure: bool = True
     lm_iterations: int = 1000
     dense_voxel_fraction: float = 0.01
 
@@ -70,6 +71,7 @@ class WindowReconstructor(ReconstructionFrontend):
                             error=error, dense_depth_refined=bool(self.summary.get("dense_refinement")),
                             shared_calibration_complete=self.native.builder.shared_calibration_complete,
                             native_stage=self.native.last_stage,
+                            loop_closure={'enabled': self.options.loop_closure, **self.native.loop_statistics()},
                             alignment_warnings=self.native.alignment_warnings,
                             alignment_confidence_warning=bool(self.native.alignment_warnings),
                             reconstruction_name='StereoForge · VGGT-Ω windows + cuNLS',

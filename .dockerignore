@@ -9,6 +9,10 @@
 !third_party/cuNLS/**
 !third_party/lightglue-onnx/
 !third_party/lightglue-onnx/**
+!third_party/SelaVPRplusplus/
+!third_party/SelaVPRplusplus/hubconf.py
+!third_party/SelaVPRplusplus/model/
+!third_party/SelaVPRplusplus/model/**
 !stereoforge/
 !stereoforge/**
 !configs/

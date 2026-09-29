@@ -107,18 +107,20 @@ class ConnectionRepair:
                 self.frontend.output = folder
                 prefix = f"Repair {round_index}/{self.policy.maximum_rounds}"
                 self.frontend.images = self.frontend._prepare_images(paths, previous_images,
-                    description=f"{prefix} · preparing images" if round_index else "Preparing feature images")
+                    description=f"{prefix} · preparing images" if round_index else "Preparing feature images",
+                    timestamps=tuple(frame['timestamp_seconds'] for frame in frames))
                 reused = self._remap_matches(previous_files, previous_paths, paths)
                 files = self.frontend._match(len(paths), reused,
-                    description=f"{prefix} · matching pairs" if round_index else "Verifying temporal image pairs")
+                    description=f"{prefix} · matching pairs" if round_index else "Verifying image pairs")
                 del reused
                 graph = VerifiedGraph(len(paths))
                 visualization = self.frontend.visualization
                 graph.read(files, on_progress=visualization.event if visualization else None,
                            on_tracks=visualization.tracks if visualization else None,
                            on_orbit=visualization.orbit if visualization else None,
-                           description=f"{prefix} · rebuilding tracks" if round_index else "Building measured feature tracks")
-                counts = self._crossing_counts(graph)
+                           description=f"{prefix} · rebuilding tracks" if round_index else "Building measured feature tracks",
+                           verified_loops=self.frontend.verified_loops)
+                counts = graph.temporal_crossing_counts
                 weak = [i for i in range(1, len(frames)) if counts[i] < self.policy.minimum_crossing_tracks]
                 remaining = budget - (len(frames) - initial_count)
                 additions = (self._candidates(frames, weak, counts, remaining)
@@ -166,15 +168,6 @@ class ConnectionRepair:
         raise RuntimeError('Connection repair did not publish a final selection')
 
     @staticmethod
-    def _crossing_counts(graph: VerifiedGraph) -> np.ndarray:
-        # A measured track contributes once to every temporal cut it crosses.
-        delta = np.zeros(graph.count + 1, dtype=np.int64)
-        for track in graph.tracks:
-            delta[min(track) + 1] += 1
-            delta[max(track) + 1] -= 1
-        return np.cumsum(delta)[:graph.count]
-
-    @staticmethod
     def _candidates(frames: list[dict], weak: list[int], counts: np.ndarray, budget: int) -> list[int]:
         selected: set[int] = set()
         # Start at the weakest cut, then fill its immediate neighboring gaps to
@@ -210,6 +203,11 @@ class ConnectionRepair:
                 stream.write(json.dumps({str(frame): uv.tolist() for frame, uv in track.items()}) + '\n')
         temporary.replace(self.root / 'global_tracks.jsonl')
         write_json(self.root / 'graph.json', graph.summary)
+        write_json(self.root / 'loop_tracks.json', {str(track): sorted(pairs) for track, pairs in graph.loop_links.items()})
+        loops = graph.summary['loop_closure']
+        logging.info('Loop closure: %d candidates, %d geometrically verified, %d corroborated pairs, %d consistent tracks',
+                     loops['candidate_pairs'], loops['geometrically_verified_pairs'],
+                     loops['corroborated_pairs'], loops['consistent_loop_tracks'])
         original_selection = json.loads((self.root / 'selection.json').read_text())
         write_json(self.root / 'selection.json', {
             'frames': len(frames), 'initial_keyframes': initial_count,

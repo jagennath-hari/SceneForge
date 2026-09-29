@@ -1,4 +1,4 @@
-"""Verified temporal image graph and globally identified feature tracks."""
+"""Verified temporal/loop image graph and globally identified feature tracks."""
 
 from dataclasses import dataclass
 import json
@@ -30,17 +30,21 @@ class VerifiedGraph:
         self.pixels: dict[Observation, np.ndarray] = {}
         self.tracks: list[dict[int, np.ndarray]] = []
         self.summary: dict = {}
+        self.temporal_crossing_counts = np.zeros(count, dtype=np.int64)
+        self.loop_links: dict[int, set[tuple[int, int]]] = {}
 
     def read(self, files: list[Path], on_progress=None, on_tracks=None, on_orbit=None,
-             description: str = "Building measured feature tracks") -> None:
+             description: str = "Building measured feature tracks",
+             verified_loops: set[tuple[int, int]] | None = None) -> None:
         if on_progress is not None:
             # Stage events clear Rerun's transient matching links. Send this
             # before orbit updates, which intentionally preserve active tracks.
             on_progress(f"{description}: reading verified matches")
         with Progress(description, sum(path.stat().st_size for path in files), "B") as progress:
-            self._read(files, progress, on_progress, on_tracks, on_orbit)
+            self._read(files, progress, verified_loops or set(), on_progress, on_tracks, on_orbit)
 
-    def _read(self, files: list[Path], progress: Progress, on_progress=None, on_tracks=None, on_orbit=None) -> None:
+    def _read(self, files: list[Path], progress: Progress, verified_loops: set[tuple[int, int]],
+              on_progress=None, on_tracks=None, on_orbit=None) -> None:
         progress.status("reading verified matches")
         edges = []
         total_bytes = max(1, sum(path.stat().st_size for path in files))
@@ -48,6 +52,7 @@ class VerifiedGraph:
         if on_orbit is not None:
             on_orbit(0.0)
         verified_pairs = 0
+        loop_candidates = loop_geometry = corroborated_loops = 0
         for path in files:
             with path.open('rb') as stream:
                 for line in stream:
@@ -59,10 +64,17 @@ class VerifiedGraph:
                     a, b = pair["source"], pair["target"]
                     if a not in self.neighbors or b not in self.neighbors or a == b:
                         raise ValueError("Matcher returned invalid global frame IDs")
+                    is_loop = pair.get('pair_kind', 'temporal') == 'loop'
+                    if is_loop:
+                        loop_candidates += 1
+                        loop_geometry += bool(pair.get('loop_geometry', {}).get('accepted', False))
+                        if (a, b) not in verified_loops:
+                            continue
                     matches = [m for m in pair["matches"] if m["inlier"]]
                     if len(matches) < 30 or len(matches) < 0.25 * len(pair["matches"]):
                         continue
                     verified_pairs += 1
+                    corroborated_loops += is_loop
                     self.neighbors[a].add(b)
                     self.neighbors[b].add(a)
                     for match in matches:
@@ -81,13 +93,17 @@ class VerifiedGraph:
                         confidence = float(match["confidence"])
                         if not np.isfinite(confidence):
                             raise ValueError("Invalid feature confidence")
-                        edges.append((confidence, *nodes))
+                        edges.append((confidence, *nodes, is_loop))
         # Merge strongest edges first. Reject only conflicting edges, not the
         # entire existing component and its otherwise valid observations.
         parent: dict[Observation, Observation] = {}
         members: dict[Observation, dict[int, Observation]] = {}
 
-        def root(node: Observation) -> Observation:
+        temporal_parent: dict[Observation, Observation] = {}
+        temporal_members: dict[Observation, dict[int, Observation]] = {}
+        loop_edges: list[tuple[Observation, Observation]] = []
+
+        def root(node: Observation, parent=parent, members=members) -> Observation:
             if node not in parent:
                 parent[node] = node
                 members[node] = {node.frame: node}
@@ -114,11 +130,23 @@ class VerifiedGraph:
             del track_samples[:-4]
             on_tracks(label, track_samples)
 
-        for edge_index, (_, a, b) in enumerate(edges):
+        for edge_index, (_, a, b, is_loop) in enumerate(edges):
+            # A separate temporal forest prevents loops from hiding a weak local
+            # boundary. Both forests share the same parsed matches and ordering.
+            if not is_loop:
+                tx = root(a, temporal_parent, temporal_members)
+                ty = root(b, temporal_parent, temporal_members)
+                if tx != ty and not (temporal_members[tx].keys() & temporal_members[ty].keys()):
+                    if len(temporal_members[tx]) < len(temporal_members[ty]):
+                        tx, ty = ty, tx
+                    temporal_parent[ty] = tx
+                    temporal_members[tx].update(temporal_members.pop(ty))
             if on_orbit is not None and edge_index % 10000 == 0:
                 on_orbit(0.3 + 0.5 * edge_index / max(1, len(edges)))
             x, y = root(a), root(b)
             if x == y:
+                if is_loop:
+                    loop_edges.append((a, b))
                 progress.advance()
                 continue
             if members[x].keys() & members[y].keys():
@@ -130,6 +158,8 @@ class VerifiedGraph:
             parent[y] = x
             members[x].update(members.pop(y))
             joined += 1
+            if is_loop:
+                loop_edges.append((a, b))
             if joined == 1 or joined % 20000 == 0:
                 show_track(members[x], f"Joining measured tracks: {edge_index+1:,}/{len(edges):,} edges — schematic pixel links")
             progress.advance()
@@ -137,14 +167,29 @@ class VerifiedGraph:
             on_progress(f"Building tracks: {len(members):,} components; collecting tracks with at least three views")
         progress.reset(len(members), "track", "collecting tracks with at least three views")
         self.tracks = []
+        track_indices = {}
         for group_index, group in enumerate(members.values()):
             if on_orbit is not None and group_index % 5000 == 0:
                 on_orbit(0.8 + 0.15 * group_index / max(1, len(members)))
             if len(group) >= 3:
+                track_indices[root(next(iter(group.values())))] = len(self.tracks)
                 self.tracks.append({f: self.pixels[node] for f, node in sorted(group.items())})
                 if len(self.tracks) == 1 or len(self.tracks) % 20000 == 0:
                     show_track(group, f"{len(self.tracks):,} tracks built · {group_index+1:,}/{len(members):,} components processed")
             progress.advance()
+        self.loop_links = {}
+        for a, b in loop_edges:
+            identifier = track_indices.get(root(a))
+            if identifier is not None:
+                self.loop_links.setdefault(identifier, set()).add((a.frame, b.frame))
+        delta = np.zeros(self.count + 1, dtype=np.int64)
+        temporal_tracks = 0
+        for group in temporal_members.values():
+            if len(group) >= 3:
+                temporal_tracks += 1
+                delta[min(group) + 1] += 1
+                delta[max(group) + 1] -= 1
+        self.temporal_crossing_counts = np.cumsum(delta)[:self.count]
         progress.reset(self.count, "frame", "checking image connectivity")
         components, pending = [], set(self.neighbors)
         while pending:
@@ -161,4 +206,9 @@ class VerifiedGraph:
             on_orbit(1.0)
         self.summary = {"verified_pairs": verified_pairs, "match_edges": len(edges),
                         "conflicting_edges_rejected": rejected, "tracks": len(self.tracks),
+                        "temporal_tracks": temporal_tracks,
+                        "loop_closure": {"candidate_pairs": loop_candidates,
+                            "geometrically_verified_pairs": loop_geometry,
+                            "corroborated_pairs": corroborated_loops,
+                            "consistent_loop_tracks": len(self.loop_links)},
                         "components": components, "frontend": "RaCo-ALIKED/LightGlue+; native F/H RANSAC"}

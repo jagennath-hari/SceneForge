@@ -6,3 +6,5 @@ numpy==1.26.4
 opencv-python==4.11.0.86
 # Retain the working TensorRT version for the native RaCo/LightGlue frontend.
 tensorrt-cu13==10.13.3.9
+# SelaVPR++ imports FAISS; retain compatibility with NumPy 1.26.
+faiss-cpu==1.8.0.post1

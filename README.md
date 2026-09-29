@@ -139,8 +139,7 @@ separately using the optimized map.
 
 Python orchestrates the pipeline and model inference. C++/CUDA handles video
 processing, local feature matching, map operations and cuNLS optimization; the
-Rust adapter streams progress to Rerun. See the
-[architecture specification](SceneForge%20Architecture%20Specification.md) for details.
+Rust adapter streams progress to Rerun.
 
 ## 📖 Citation
 

@@ -1,8 +1,25 @@
-# SceneForge
+# SceneForge: GPU-Accelerated 3D Reconstruction from Monocular Video
 
-SceneForge reconstructs a continuous video into an optimized camera trajectory,
-colored sparse landmarks and a refined dense point cloud, with live visualization
-in Rerun.
+SceneForge reconstructs continuous monocular video into a shared 3D map by combining
+learned keyframe selection, VGGT-Ω geometry priors, and GPU-accelerated bundle
+adjustment. The system aligns overlapping reconstructions, jointly refines camera
+poses, calibration, and landmarks using temporal and verified loop correspondences,
+and fuses refined depth into a colored dense point cloud. Live Rerun visualization
+reveals the reconstruction as it develops, from selected keyframes to the final map.
+
+## 🖥️ Tested Configuration
+
+SceneForge has been tested on:
+
+- 🐧 **Ubuntu:** 24.04
+- 🧠 **GPUs:** 2 × NVIDIA RTX A6000, with 48 GB VRAM per GPU
+- ⚙️ **CUDA (host):** 13.3
+- 🧊 **Environment:** Docker with NVIDIA Container Toolkit and GPU support
+
+> This is the tested reference configuration. Memory requirements depend on image
+> resolution and the number of keyframes per VGGT-Ω window.
+
+## Pipeline
 
 ```text
 Video → streaming keyframe selection → measured feature tracks

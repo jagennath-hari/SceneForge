@@ -1,4 +1,4 @@
-"""Typed inference adapter for the pinned VGGT-Omega package."""
+"""Typed inference adapter for the pinned VGGT-Ω package."""
 
 from __future__ import annotations
 
@@ -73,19 +73,19 @@ class VGGTOmegaGeometryEstimator:
         except (OSError, EOFError, pickle.UnpicklingError, RuntimeError) as exc:
             raise ValueError(
                 f"Cannot read checkpoint {self.checkpoint.name}; check that the download is "
-                "complete and that this is an official VGGT-Omega state dict."
+                "complete and that this is an official VGGT-Ω state dict."
             ) from exc
         if not isinstance(state, Mapping) or not all(
             isinstance(key, str) and isinstance(value, torch.Tensor) for key, value in state.items()
         ):
-            raise ValueError("Expected an official VGGT-Omega state-dict checkpoint")
+            raise ValueError("Expected an official VGGT-Ω state-dict checkpoint")
         # Preserve upstream's working mixed-precision policy for its aggregator.
         model = VGGTOmega(autocast=self.device.type == "cuda")
         try:
             model.load_state_dict(state, strict=True)
         except RuntimeError as exc:
             raise ValueError(
-                "Checkpoint does not match VGGTOmega. Use a non-text-aligned checkpoint "
+                "Checkpoint does not match VGGT-Ω. Use a non-text-aligned checkpoint "
                 "and its corresponding resolution."
             ) from exc
         del state
@@ -152,7 +152,7 @@ class VGGTOmegaGeometryEstimator:
             self._validate_predictions(predictions, expected_shapes)
             extrinsics, intrinsics = encoding_to_camera(predictions["pose_enc"], (h, w))
             if extrinsics.shape != (1, n, 3, 4) or intrinsics.shape != (1, n, 3, 3):
-                raise ValueError("Unexpected decoded camera shapes from VGGT-Omega")
+                raise ValueError("Unexpected decoded camera shapes from VGGT-Ω")
             poses = invert_world_to_camera(extrinsics[0])
             depth = predictions["depth"][0, ..., 0].float().cpu()
             confidence = predictions["depth_conf"][0].float().cpu()
@@ -182,8 +182,8 @@ class VGGTOmegaGeometryEstimator:
         predictions: Mapping[str, torch.Tensor], expected_shapes: Mapping[str, tuple[int, ...]],
     ) -> None:
         if not isinstance(predictions, Mapping):
-            raise ValueError("VGGT-Omega must return a prediction mapping")
+            raise ValueError("VGGT-Ω must return a prediction mapping")
         for key, shape in expected_shapes.items():
             value = predictions.get(key)
             if not isinstance(value, torch.Tensor) or value.shape != shape:
-                raise ValueError(f"VGGT-Omega output {key!r} must have shape {shape}")
+                raise ValueError(f"VGGT-Ω output {key!r} must have shape {shape}")

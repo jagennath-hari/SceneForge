@@ -1,1 +1,1 @@
-"""Video keyframes, overlapping VGGT windows and a common cuNLS-refined map."""
+"""Video keyframes, overlapping VGGT-Ω windows and a common cuNLS-refined map."""

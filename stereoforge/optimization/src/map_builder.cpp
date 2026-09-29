@@ -142,7 +142,7 @@ void MapBuilder::PreviewWindow(const std::vector<DepthFrame>& frames) {
                 frame.depth.size() != static_cast<std::size_t>(frame.camera.width)*frame.camera.height ||
                 frame.rgb.size() != 3*frame.depth.size() || !frame.camera.intrinsics.allFinite() ||
                 frame.camera.intrinsics(0,0) <= 0 || frame.camera.intrinsics(1,1) <= 0) {
-                throw std::runtime_error("Invalid VGGT preview frame dimensions/calibration");
+                throw std::runtime_error("Invalid VGGT-Ω preview frame dimensions/calibration");
             }
             preview.cameras.emplace(frame.id,frame.camera);
             const std::size_t stride = std::max<std::size_t>(1,(frame.depth.size()+1999)/2000);
@@ -206,7 +206,7 @@ SparseMap MapBuilder::Initialize(const std::vector<DepthFrame>& frames,
         if (frame.camera.width <= 0 || frame.camera.height <= 0 || frame.depth.size() != pixels || frame.rgb.size() != 3*pixels ||
             !frame.camera.rotation.allFinite() || !frame.camera.center.allFinite() || !frame.camera.intrinsics.allFinite() ||
             frame.camera.intrinsics(0,0) <= 0 || frame.camera.intrinsics(1,1) <= 0 ||
-            !model.cameras.emplace(frame.id, frame.camera).second) { throw std::invalid_argument("Invalid VGGT frame"); }
+            !model.cameras.emplace(frame.id, frame.camera).second) { throw std::invalid_argument("Invalid VGGT-Ω frame"); }
         images.emplace(frame.id, &frame);
         if (this->frame_tracks_.contains(frame.id)) {
             const std::vector<TrackId>& tracks = this->frame_tracks_.at(frame.id);
@@ -249,7 +249,7 @@ SparseMap MapBuilder::Initialize(const std::vector<DepthFrame>& frames,
     }
     if (model.landmarks.size() < 60) { throw std::runtime_error("Window initialization has fewer than 60 landmarks"); }
     RecoverInitializationBridges(model, this->tracks_, frames, this->map_, progress);
-    CheckSupport(model, "VGGT landmark initialization", nullptr, nullptr, false);
+    CheckSupport(model, "VGGT-Ω landmark initialization", nullptr, nullptr, false);
     return model;
 }
 void MapBuilder::Optimize(SparseMap& model, bool local, bool shared_calibration,
@@ -528,7 +528,7 @@ void MapBuilder::AddWindow(const std::vector<DepthFrame>& frames, const std::vec
         this->Optimize(initial_groups[i], true);
         if (ConnectedGroups(initial_groups[i]).size() > 1) {
             // A connected measured graph can be fragmented by GNC's aggressive
-            // outlier schedule. Retry once from the original VGGT initialization
+            // outlier schedule. Retry once from the original VGGT-Ω initialization
             // with Huber loss, never stitch independently optimized gauges.
             progress("local cuNLS BA: connected Huber retry");
             SparseMap retry = original;
@@ -598,7 +598,7 @@ void MapBuilder::AddWindow(const std::vector<DepthFrame>& frames, const std::vec
     this->Record(this->map_,2,progress,frames.empty() ? nullptr : &frames.front());
 }
 std::vector<std::size_t> MapBuilder::RankWindows(const std::vector<std::vector<FrameId>>& windows) const {
-    // Rank cheap graph evidence before loading VGGT tensors or running local BA.
+    // Rank cheap graph evidence before loading VGGT-Ω tensors or running local BA.
     // Feature tracks alone cannot provide the shared-camera Sim(3) anchor.
     std::vector<std::tuple<std::size_t,std::size_t,std::size_t>> ranked;
     for (std::size_t index = 0; index < windows.size(); ++index) {

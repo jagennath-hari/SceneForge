@@ -53,7 +53,7 @@ impl Staging {
         if !self.images.contains_key(&frame) {
             rec.log(path.as_str(), &Transform3D::from_translation_mat3x3(center, [right,down,forward]))?;
         }
-        // Arbitrary presentation FOV until VGGT supplies measured intrinsics.
+        // Arbitrary presentation FOV until VGGT-Ω supplies measured intrinsics.
         rec.log(format!("{path}/image"), &Pinhole::from_focal_length_and_resolution(
             [image.width as f32, image.width as f32], [image.width as f32,image.height as f32])
             .with_camera_xyz(ViewCoordinates::RDF).with_image_plane_distance(0.07)

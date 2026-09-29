@@ -1,4 +1,4 @@
-"""Overlapping VGGT windows accumulated into one cuNLS-refined sparse map."""
+"""Overlapping VGGT-Ω windows accumulated into one cuNLS-refined sparse map."""
 
 from dataclasses import dataclass
 import logging
@@ -72,7 +72,7 @@ class WindowReconstructor(ReconstructionFrontend):
                             native_stage=self.native.last_stage,
                             alignment_warnings=self.native.alignment_warnings,
                             alignment_confidence_warning=bool(self.native.alignment_warnings),
-                            reconstruction_name='StereoForge · VGGT windows + cuNLS',
+                            reconstruction_name='StereoForge · VGGT-Ω windows + cuNLS',
                             units='reconstruction_units', attempt=str(self.attempt.relative_to(self.output)))
         if model is not None and self.native.builder.shared_calibration_complete:
             self.summary['shared_intrinsics'] = next(iter(model.cameras.values())).intrinsics.tolist()
@@ -90,7 +90,7 @@ class WindowReconstructor(ReconstructionFrontend):
             write_ply(self.output / 'point_cloud.ply',
                 np.asarray([p.xyz for p in model.points]), np.asarray([p.rgb for p in model.points], dtype=np.uint8))
             if self.summary.get('dense_refinement'):
-                # Preserve sparse output alongside the validated dense cloud. Raw VGGT windows are never overwritten.
+                # Preserve sparse output alongside the validated dense cloud. Raw VGGT-Ω windows are never overwritten.
                 (self.output / 'point_cloud.ply').replace(self.output / 'sparse_point_cloud.ply')
                 shutil.copyfile(self.output / 'dense_point_cloud.ply', self.output / 'point_cloud.ply')
         return self.summary
@@ -109,7 +109,7 @@ class WindowReconstructor(ReconstructionFrontend):
             self.summary['stage'] = 'vggt'
             on_window = None
             if self.visualization is not None:
-                self.visualization.event('VGGT inference: waiting for the first window; local maps remain separate until Sim(3)')
+                self.visualization.event('VGGT-Ω inference: waiting for the first window; local maps remain separate until Sim(3)')
                 def on_window(identifier: int) -> None:
                     self.visualization.window(self.output / 'vggt' / f'{identifier}.pt', list(self.images.values()), identifier)
             infer_clusters(checkpoint, paths, windows, self.output / 'vggt', self.devices, on_complete=on_window)

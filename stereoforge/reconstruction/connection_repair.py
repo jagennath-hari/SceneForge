@@ -136,7 +136,7 @@ class ConnectionRepair:
                     if weak:
                         logging.warning('Connection repair finished with %d weak boundaries; geometry checks remain unchanged', len(weak))
                     self._publish(frames, graph, history, initial_count, budget)
-                    logging.info('VGGT input: %d selected frames + %d repair frames = %d frames',
+                    logging.info('VGGT-Ω input: %d selected frames + %d repair frames = %d frames',
                                  initial_count, len(frames)-initial_count, len(frames))
                     return paths, tuple(frame['timestamp_seconds'] for frame in frames)
                 previous_images = dict(zip(paths, self.frontend.images.values(), strict=True))

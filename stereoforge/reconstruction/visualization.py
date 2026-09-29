@@ -162,7 +162,7 @@ class ReconstructionVisualization:
         if not self.enabled:
             return
         try:
-            self.event(f"VGGT window {identifier} ready: separated display group, not yet aligned to the common map")
+            self.event(f"VGGT-Ω window {identifier} ready: separated display group, not yet aligned to the common map")
             frames = self.native._load_frames(path, images)
             self.native.builder.preview_window(list(frames.values()))
         except Exception as error:

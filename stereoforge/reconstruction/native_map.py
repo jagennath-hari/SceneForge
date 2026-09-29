@@ -59,7 +59,7 @@ class NativeMap:
             rgb = np.ascontiguousarray((sequence.processed_rgb[index].numpy().transpose(1, 2, 0)*255).round(), dtype=np.uint8)
             with Image.open(images[frame.frame_index]) as image:
                 if not np.array_equal(np.asarray(image.convert('RGB')), rgb):
-                    raise ValueError(f'Feature/VGGT image grid mismatch at frame {frame.frame_index}')
+                    raise ValueError(f'Feature/VGGT-Ω image grid mismatch at frame {frame.frame_index}')
             frames[frame.frame_index] = self.backend.DepthFrame(frame.frame_index,
                 frame.camera_to_world.numpy().astype(np.float64), frame.intrinsics.numpy().astype(np.float64),
                 np.ascontiguousarray(frame.depth.numpy(), dtype=np.float32), rgb)

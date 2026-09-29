@@ -1,4 +1,4 @@
-"""Video → keyframes → overlapping VGGT windows → one cuNLS-refined sparse map."""
+"""Video → keyframes → overlapping VGGT-Ω windows → one cuNLS-refined sparse map."""
 
 import argparse
 from dataclasses import asdict, replace
@@ -42,13 +42,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument('--video', type=Path)
-    source.add_argument('--resume', type=Path, help='Reuse inputs/VGGT windows from this pipeline; recompute map in a fresh attempt')
+    source.add_argument('--resume', type=Path, help='Reuse inputs/VGGT-Ω windows from this pipeline; recompute map in a fresh attempt')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--checkpoint', type=Path)
-    parser.add_argument('--window-size', type=int, help='Keyframes per VGGT window (default 64)')
+    parser.add_argument('--window-size', type=int, help='Keyframes per VGGT-Ω window (default 64)')
     parser.add_argument('--overlap', type=int, help='Shared keyframes between windows (default 32)')
     parser.add_argument('--neighbors', type=int, help='Temporal feature matching neighbors (default 4)')
-    parser.add_argument('--device', help='cuda: visible GPUs for VGGT, first GPU for BA; cuda:N: one GPU')
+    parser.add_argument('--device', help='cuda: visible GPUs for VGGT-Ω, first GPU for BA; cuda:N: one GPU')
     parser.add_argument('--lm-iterations', type=int, help='Joint BA iteration budget (1–1000; default 1000)')
     parser.add_argument('--dense-voxel-fraction', type=float, help='Voxel width / median scene depth (default 0.01; larger uses less memory)')
     parser.add_argument('--keyframe-config', type=Path)
@@ -112,7 +112,7 @@ def main() -> int:
             reconstructor.native.builder.enable_rerun(str(recording))
             reconstructor.visualization = ReconstructionVisualization(reconstructor.native)
             logging.info('Rerun live viewer connected; recording also saved to %s', recording)
-        logging.info('Video → keyframes → VGGT windows → graph-ordered map → shared-calibration BA → dense refinement')
+        logging.info('Video → keyframes → VGGT-Ω windows → graph-ordered map → shared-calibration BA → dense refinement')
         if reconstructor.visualization is not None:
             reconstructor.visualization.event("Decoding / selecting keyframes: waiting for ordered candidate images")
         sampler = VideoFrameSampler(keyframe_config=config)

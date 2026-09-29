@@ -27,7 +27,7 @@ def resolve_checkpoint(checkpoint: Path | None = None) -> Path:
         status = exc.response.status_code if exc.response is not None else None
         if status in {401, 403}:
             raise RuntimeError(
-                "Hugging Face denied checkpoint access. Confirm VGGT-Omega access was approved "
+                "Hugging Face denied checkpoint access. Confirm VGGT-Ω access was approved "
                 "for the token's account and that the container has its read token mounted."
             ) from exc
         raise RuntimeError("Checkpoint download failed; check the Hugging Face service and network") from exc

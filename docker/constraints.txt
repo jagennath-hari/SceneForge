@@ -2,7 +2,7 @@
 torch==2.12.1+cu132
 torchvision==0.27.1+cu132
 numpy==1.26.4
-# Newer OpenCV releases require NumPy 2, while VGGT-Omega requires NumPy <2.
+# Newer OpenCV releases require NumPy 2, while VGGT-Ω requires NumPy <2.
 opencv-python==4.11.0.86
 # Retain the working TensorRT version for the native RaCo/LightGlue frontend.
 tensorrt-cu13==10.13.3.9

@@ -77,9 +77,9 @@ pub extern "C" fn sf_rerun_open(path: *const c_char, output: *mut *mut std::ffi:
                         Color::from_rgb(80,210,100), Color::from_rgb(80,140,255)])
           .with_radii([rerun::components::Radius::new_ui_points(1.0)]))?;
         recording.log_static("pipeline/layout_legend", &TextLog::new(
-            "GRAY cameras = schematic sphere, arbitrary FOV. ORANGE groups = independently normalized VGGT windows. BLUE map = accepted geometry in normalized display coordinates."))?;
+            "GRAY cameras = schematic sphere, arbitrary FOV. ORANGE groups = independently normalized VGGT-Ω windows. BLUE map = accepted geometry in normalized display coordinates."))?;
         recording.log("pipeline/stage", &TextLog::new(
-            "Preparing reconstruction. Selected images appear on a schematic sphere; their camera entities move through VGGT groups into the accepted map."
+            "Preparing reconstruction. Selected images appear on a schematic sphere; their camera entities move through VGGT-Ω groups into the accepted map."
         ))?;
         recording.flush_async()?;
         let session = Box::new(Session { recording, step: 0, dense_focus: None, rotations: Default::default(), map_fit: None, centers: Default::default(), camera_root: None, staging: staging::Staging::default(), logged_images: BTreeSet::new() });
@@ -142,7 +142,7 @@ pub extern "C" fn sf_rerun_snapshot(handle: *mut std::ffi::c_void, stage: u32,
             return Ok(());
         }
         let (root, label) = match stage {
-            0 => (session.staging.window(ids), "VGGT group — schematic placement, independent gauge"),
+            0 => (session.staging.window(ids), "VGGT-Ω group — schematic placement, independent gauge"),
             2 => ("world/map".to_owned(), "Accepted common map"),
             _ => ("world/map".to_owned(), "Accepted shared-calibration global BA"),
         };

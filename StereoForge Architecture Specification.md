@@ -40,7 +40,7 @@ use `.cuh`/`.cu`; host C++ uses `.hpp`/`.cpp`. C++ uses explicit types and `this
 for its own class members. Upstream submodules are consumed without source edits.
 
 The common map and optimization requests stay in memory as typed native objects.
-Python loads VGGT tensors and exports snapshots; it does not exchange solver state
+Python loads VGGT-Ω tensors and exports snapshots; it does not exchange solver state
 through COLMAP files or a separate file-based BA executable.
 
 ## 1. Video and keyframes
@@ -66,7 +66,7 @@ extraction and the native selector's debug view remain available for inspection.
 
 ## 2. Measured image evidence
 
-Feature images use VGGT's balanced preprocessing at resolution 512. Pixel
+Feature images use VGGT-Ω's balanced preprocessing at resolution 512. Pixel
 coordinates, intrinsics and feature tracks must refer to that processed grid.
 All input frames must have uniform processed dimensions.
 
@@ -79,13 +79,13 @@ most one feature observation per frame. Conflicting edges are rejected without
 discarding the entire previously consistent track. Tracks with at least three
 views supply reconstruction measurements.
 
-Before VGGT inference, bounded connection repair checks track support across
+Before VGGT-Ω inference, bounded connection repair checks track support across
 temporal boundaries. It can insert real intermediate frames, prepare their images
 and reverify affected pairs. Existing measurements are remapped and reused. Repair
 records the revised chronological frame mapping and any unresolved weak cuts.
 Image-graph connectivity alone does not guarantee observable 3D geometry.
 
-## 3. VGGT windows
+## 3. VGGT-Ω windows
 
 Default windows contain 64 selected keyframes with 32 shared keyframes. The final
 window may be shorter. These dimensions are configurable through the CLI.
@@ -103,7 +103,7 @@ automatic authorized download when missing. Explicit checkpoints remain supporte
 
 ## 4. Building the common map
 
-The native builder initializes sparse landmarks from VGGT depth and measured
+The native builder initializes sparse landmarks from VGGT-Ω depth and measured
 feature tracks, then performs local cuNLS BA. Surviving connected groups determine
 which geometry can be proposed to the accepted map.
 
@@ -155,7 +155,7 @@ or optimization policy is changed by source cleanup.
 ## 6. Dense refinement
 
 Sparse BA optimizes landmarks, not every depth pixel. A separate pass calibrates
-each owned VGGT depth map to the final sparse map's scale. Raw VGGT windows remain
+each owned VGGT-Ω depth map to the final sparse map's scale. Raw VGGT-Ω windows remain
 unchanged.
 
 PyTorch CUDA operations compare neighboring views using positive depth,
@@ -190,7 +190,7 @@ C++ invokes the StereoForge Rust adapter; the adapter uses the unmodified Rerun
 Rust SDK to stream to the standard viewer and save a `.rrd` recording.
 
 Early cameras arranged on a sphere are schematic placeholders. Feature links and
-track activity visualize processing, not recovered poses. VGGT windows are shown
+track activity visualize processing, not recovered poses. VGGT-Ω windows are shown
 as separate local predictions until accepted into the common map. Accepted sparse
 geometry, calibration updates and dense fusion then update the same viewer.
 
@@ -211,7 +211,7 @@ python -m stereoforge.reconstruction --video data/input/barn.mp4
 `sparse_point_cloud.ply` and `dense_point_cloud.ply`.
 
 Run-local input manifests, processed images, matches, tracks, repair records,
-VGGT tensors and `dense/` arrays are retained for reuse and inspection.
+VGGT-Ω tensors and `dense/` arrays are retained for reuse and inspection.
 `map_TIMESTAMP/` identifies each map-building attempt and contains its settings
 and `pipeline.rrd`. There is no separate `data/intermediate` directory for new runs.
 

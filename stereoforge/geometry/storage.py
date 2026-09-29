@@ -1,4 +1,4 @@
-"""CPU tensor artifacts for VGGT windows."""
+"""CPU tensor artifacts for VGGT-Ω windows."""
 from pathlib import Path
 import torch
 from .types import FrameGeometry, GeometrySequence

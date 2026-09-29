@@ -115,7 +115,7 @@ class WindowRecovery:
             clusters = [Cluster(index, list(frames)) for index, frames in enumerate(groups)]
             logging.info('Window %d recovery: predicting %d smaller overlapping windows (one level only)',
                          window.identifier, len(groups))
-            progress.status(f'window {window.identifier} recovery | smaller VGGT predictions')
+            progress.status(f'window {window.identifier} recovery | smaller VGGT-Ω predictions')
             visualization = self.reconstruction.visualization
 
             def ready(identifier: int) -> None:

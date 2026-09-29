@@ -43,7 +43,7 @@ Inside the container:
 python -m stereoforge.reconstruction --video data/input/barn.mp4
 ```
 
-Defaults: 64 keyframes per VGGT window, 32 shared keyframes, 1,000 joint BA
+Defaults: 64 keyframes per VGGT-Ω window, 32 shared keyframes, 1,000 joint BA
 iterations and Rerun enabled. Window dimensions count selected keyframes, not
 video frames. To override them:
 
@@ -55,7 +55,7 @@ python -m stereoforge.reconstruction \
 
 Use `--no-rerun` for headless processing, `--device cuda:0` to select one GPU,
 `--debug` for exception tracebacks, and `--diagnostics` for CUDA Jacobian checks.
-`--device cuda` distributes VGGT windows across visible GPUs; BA uses the first.
+`--device cuda` distributes VGGT-Ω windows across visible GPUs; BA uses the first.
 Keyframe selection settings are in `configs/keyframes_raco.json`.
 
 Decoding and keyframe selection run together. Only accepted keyframes are saved
@@ -79,11 +79,11 @@ are ignored by Git.
 | `dense/` | Refined depth, support masks and previews |
 | `map_TIMESTAMP/pipeline.rrd` | Rerun recording for the map-building attempt |
 
-Input manifests, feature matches, tracks and raw VGGT windows also live inside
+Input manifests, feature matches, tracks and raw VGGT-Ω windows also live inside
 the run directory. These are needed for inspection and reuse; there is no separate
 `data/intermediate` output location. Replay a recording with `rerun PATH/pipeline.rrd`.
 
-To reuse a run's unchanged inputs and VGGT windows in a new map-building attempt:
+To reuse a run's unchanged inputs and VGGT-Ω windows in a new map-building attempt:
 
 ```bash
 python -m stereoforge.reconstruction --resume data/output/reconstruction_TIMESTAMP
@@ -96,7 +96,7 @@ be reused. Existing saved runs are never relocated by a new invocation.
 ## Source layout
 
 - `stereoforge/video/`: Python model/cache adapters and native decoding, keyframes and matching.
-- `stereoforge/geometry/`: VGGT inference, tensor types, checkpoint loading and storage.
+- `stereoforge/geometry/`: VGGT-Ω inference, tensor types, checkpoint loading and storage.
 - `stereoforge/reconstruction/`: orchestration, feature tracks, sparse snapshots and dense refinement.
 - `stereoforge/optimization/`: Eigen map building and CUDA/cuNLS bundle adjustment, exposed through pybind11.
 - `stereoforge/visualization/`: Rust Rerun SDK adapter.

@@ -1,4 +1,4 @@
-"""Map-scaled VGGT depth, CUDA multi-view consistency refinement and native fusion.
+"""Map-scaled VGGT-Ω depth, CUDA multi-view consistency refinement and native fusion.
 
 Unsupported pixels retain their calibrated prior but never enter the dense cloud.
 This is geometric consensus refinement, not a learned densifier or a metric map.
@@ -109,7 +109,7 @@ class DenseRefiner:
                     source_frames = {f.frame_index: (index, f) for index, f in enumerate(sequence.frames)}
                     source_rgb = sequence.processed_rgb
                     if source_rgb is None:
-                        raise ValueError(f"VGGT window has no processed RGB: {path}")
+                        raise ValueError(f"VGGT-Ω window has no processed RGB: {path}")
                     source_path = path
                 index, raw = source_frames[frame]
                 depth = raw.depth.numpy()
@@ -216,7 +216,7 @@ class DenseRefiner:
             visualization.dense(preview['xyz'], preview['rgb'], final=True)
             visualization.activity(f"Dense reconstruction complete: {int(preview['count']):,} fused points; bounded viewer preview", final_scene=True)
         self._cache.clear()
-        return {'method': 'map-scaled VGGT + inverse-depth multi-view consensus', 'anchored_frames': len(anchored),
+        return {'method': 'map-scaled VGGT-Ω + inverse-depth multi-view consensus', 'anchored_frames': len(anchored),
                 'unanchored_frames': rejected, 'coverage': coverage, 'supported_pixels': accepted_pixels,
                 'fused_points': int(preview['count']), 'voxel_size': voxel_size,
                 'unsupported_pixels': 'calibrated prior retained, excluded from cloud',

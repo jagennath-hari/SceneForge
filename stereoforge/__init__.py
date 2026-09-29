@@ -1,1 +1,1 @@
-"""Continuous-video reconstruction with VGGT, cuNLS and Rerun."""
+"""Continuous-video reconstruction with VGGT-Ω, cuNLS and Rerun."""

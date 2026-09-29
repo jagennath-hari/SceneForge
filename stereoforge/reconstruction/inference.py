@@ -1,4 +1,4 @@
-"""Independent small VGGT clusters scheduled across visible GPUs."""
+"""Independent small VGGT-Ω clusters scheduled across visible GPUs."""
 
 from dataclasses import replace
 from collections.abc import Callable
@@ -58,14 +58,14 @@ def infer_clusters(checkpoint: Path, paths: list[Path], leaves: list,
                                       jobs[index::len(devices[:len(jobs)])], str(output), messages))
             process.start()
             workers.append(process)
-        with Progress("VGGT cluster inference", total=len(jobs), unit="cluster") as progress:
+        with Progress("VGGT-Ω cluster inference", total=len(jobs), unit="cluster") as progress:
             completed = 0
             while completed < len(jobs):
                 try:
                     kind, value = messages.get(timeout=1)
                 except Empty:
                     if any(p.exitcode not in (None, 0) for p in workers) or all(not p.is_alive() for p in workers):
-                        raise RuntimeError("VGGT worker exited before publishing all clusters; saved clusters are retained")
+                        raise RuntimeError("VGGT-Ω worker exited before publishing all clusters; saved clusters are retained")
                     continue
                 if kind == "error":
                     raise RuntimeError(str(value))

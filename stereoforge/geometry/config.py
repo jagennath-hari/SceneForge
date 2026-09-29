@@ -1,4 +1,4 @@
-"""Validated settings for the VGGT inference adapter."""
+"""Validated settings for the VGGT-Ω inference adapter."""
 
 from __future__ import annotations
 

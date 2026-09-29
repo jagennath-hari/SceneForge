@@ -1,6 +1,34 @@
 #!/bin/bash
 set -euo pipefail
 
+# Resolve the input before changing directories: relative paths belong to the caller.
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    echo "Usage: bash scripts/build_and_start.sh VIDEO_FILE"
+    exit 0
+fi
+if [[ $# -ne 1 ]]; then
+    echo "Usage: bash scripts/build_and_start.sh VIDEO_FILE" >&2
+    exit 2
+fi
+if [[ ! -f "$1" || ! -r "$1" ]]; then
+    echo "Video must be a readable regular file: $1" >&2
+    exit 1
+fi
+VIDEO_PATH="$(realpath -- "$1")"
+if ! command -v ffprobe >/dev/null 2>&1; then
+    echo "ffprobe is required on the host to validate videos. Install FFmpeg and retry." >&2
+    exit 1
+fi
+# Inspect actual media, excluding attached cover art. Decode a short prefix to
+# reject still images and files without at least two readable video frames.
+if ! VIDEO_FRAMES="$(ffprobe -v error -select_streams V:0 -read_intervals '%+#64' \
+    -count_frames -show_entries stream=nb_read_frames \
+    -of default=noprint_wrappers=1:nokey=1 "$VIDEO_PATH")" ||
+    [[ ! "$VIDEO_FRAMES" =~ ^[0-9]+$ ]] || (( VIDEO_FRAMES < 2 )); then
+    echo "Not a readable video with at least two frames: $VIDEO_PATH" >&2
+    exit 1
+fi
+
 # Configuration
 ORG="sceneforge"
 TAG="latest"
@@ -19,16 +47,47 @@ HOST_GID="$(id -g)"
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 
-# HF login stores credentials here through the cache bind mount.
-# Restrict directory access before either attaching or starting a container.
-mkdir -p .cache/huggingface
-chmod 700 .cache/huggingface
+# Required runtime credential file; never print the token or pass it into builds.
+HF_TOKEN_FILE="${REPO_ROOT}/.secrets/hf_token"
+if [[ ! -f "${HF_TOKEN_FILE}" || ! -r "${HF_TOKEN_FILE}" || ! -s "${HF_TOKEN_FILE}" ]] ||
+    ! LC_ALL=C grep -q '[^[:space:]]' "${HF_TOKEN_FILE}"; then
+    cat >&2 <<EOF
+Hugging Face token file is missing, unreadable, or empty:
+  ${HF_TOKEN_FILE}
 
-# Attach to the existing environment without rebuilding.
-if docker ps --format '{{.Names}}' | grep -Fxq "${RUN_CONTAINER}"; then
-    echo "Container '${RUN_CONTAINER}' already running. Attaching..."
-    exec docker exec -it "${RUN_CONTAINER}" bash
+Request access to https://huggingface.co/facebook/VGGT-Omega and wait for approval.
+Use a read token from that approved account with permission to download this repository.
+Create/edit the file from the project directory:
+
+  mkdir -p .secrets
+  chmod 700 .secrets
+  (umask 077; touch .secrets/hf_token)
+  chmod 600 .secrets/hf_token
+  nano .secrets/hf_token
+
+Paste only the token into the file, save it, then rerun this command.
+The file is ignored by Git and mounted read-only; it is not included in the image.
+EOF
+    exit 1
 fi
+chmod 700 "${REPO_ROOT}/.secrets"
+chmod 600 "${HF_TOKEN_FILE}"
+HF_SECRET_ARGS=(
+    --mount "type=bind,source=${HF_TOKEN_FILE},target=/run/secrets/hf_token,readonly"
+    --env HF_TOKEN_PATH=/run/secrets/hf_token
+)
+
+# Each invocation runs a reconstruction, rather than attaching to an old shell.
+# Existing containers may be processing another video; do not interrupt them.
+if docker container inspect "${RUN_CONTAINER}" >/dev/null 2>&1; then
+    echo "Container '${RUN_CONTAINER}' already exists. Stop/remove it before starting a new run." >&2
+    exit 1
+fi
+
+# The source is read-only; keyframe caches live on a separate writable mount.
+CONTAINER_VIDEO=/input/video
+mkdir -p .cache/huggingface .cache/sceneforge/video-keyframes data
+chmod 700 .cache/huggingface
 
 # Build order: NVIDIA CUDA → base → geometry → cuNLS → Rust/Rerun.
 declare -A DOCKERFILES=(
@@ -45,21 +104,6 @@ declare -A PARENTS=(
 )
 BUILD_SEQUENCE=("${BASE_IMAGE}" "${GEOMETRY_IMAGE}" "${CUNLS_IMAGE}" "${RERUN_IMAGE}")
 
-# Optional runtime credential file; never pass its contents to Docker or builds.
-HF_SECRET_ARGS=()
-if [[ -f "${REPO_ROOT}/.secrets/hf_token" ]]; then
-    if [[ ! -s "${REPO_ROOT}/.secrets/hf_token" ]]; then
-        echo "The HF token file is empty: .secrets/hf_token" >&2
-        exit 1
-    fi
-    chmod 700 "${REPO_ROOT}/.secrets"
-    chmod 600 "${REPO_ROOT}/.secrets/hf_token"
-    HF_SECRET_ARGS=(
-        --mount "type=bind,source=${REPO_ROOT}/.secrets/hf_token,target=/run/secrets/hf_token,readonly"
-        --env HF_TOKEN_PATH=/run/secrets/hf_token
-    )
-fi
-
 for image in "${BUILD_SEQUENCE[@]}"; do
     echo "Building '${image}' using parent '${PARENTS[$image]}'..."
     DOCKER_BUILDKIT=1 docker build \
@@ -71,9 +115,15 @@ for image in "${BUILD_SEQUENCE[@]}"; do
         --file "${DOCKERFILES[$image]}" .
 done
 
-# Start an interactive environment with only the essential host directories.
-mkdir -p .cache data
-exec docker run -it --rm \
+# Run directly, forwarding the reconstruction's exit status and terminal signals.
+TERMINAL_ARGS=()
+if [[ -t 0 && -t 1 ]]; then
+    TERMINAL_ARGS=(-it)
+fi
+# Docker --mount uses CSV: quote/escape the source so spaces and commas are valid.
+VIDEO_MOUNT_SOURCE="${VIDEO_PATH//\"/\"\"}"
+echo "Reconstructing '${VIDEO_PATH}' (outputs: ${REPO_ROOT}/data/output)..."
+exec docker run "${TERMINAL_ARGS[@]}" --rm \
     --name "${RUN_CONTAINER}" \
     --init \
     "${HF_SECRET_ARGS[@]}" \
@@ -99,4 +149,6 @@ exec docker run -it --rm \
     --mount "type=bind,source=${REPO_ROOT}/configs,target=/workspace/SceneForge/configs,readonly" \
     --mount "type=bind,source=${REPO_ROOT}/data,target=/workspace/SceneForge/data" \
     --mount "type=bind,source=${REPO_ROOT}/.cache,target=/home/${USERNAME}/.cache" \
-    "${RUN_IMAGE}" /bin/bash
+    --mount "type=bind,\"source=${VIDEO_MOUNT_SOURCE}\",target=${CONTAINER_VIDEO},readonly" \
+    --mount "type=bind,source=${REPO_ROOT}/.cache/sceneforge/video-keyframes,target=/input/.keyframes" \
+    "${RUN_IMAGE}" python -m sceneforge.reconstruction --video "${CONTAINER_VIDEO}"

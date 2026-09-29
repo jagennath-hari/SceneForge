@@ -16,13 +16,23 @@ On the host:
 
 ```bash
 git submodule update --init --recursive
-bash scripts/build_and_start.sh
+bash scripts/build_and_start.sh data/input/barn.mp4
 ```
 
+Pass one video path, relative to your current directory or absolute (including
+videos outside this repository). The host needs FFmpeg's `ffprobe`: the script
+checks for a readable video stream with at least two decodable frames before
+building or starting Docker. It rejects missing files, still images and non-video
+files regardless of their extension. This checks the beginning of the video;
+damage later in the recording can still cause decoding to fail.
+
 The script uses BuildKit to build CUDA → base → geometry → cuNLS → Rust/Rerun,
-then opens a shell as the host user. A running `sceneforge` container is attached
-without rebuilding. Stop it before rebuilding Dockerfiles, C++/CUDA or Rust code.
-Python source, configuration, data and caches have individual bind mounts.
+then directly runs reconstruction as the host user. It exits with the pipeline's
+status and removes the container when processing finishes. If a `sceneforge`
+container already exists, stop/remove it before launching another run.
+Python source, configuration, data and caches have individual bind mounts. The
+selected video is mounted read-only at `/input/video`, without copying it or
+mounting its parent directory.
 
 The Python package and Docker container are named `sceneforge`; the container
 workspace is `/workspace/SceneForge`. After the project rename, rebuild the images
@@ -44,15 +54,27 @@ After rebuilding, inspect the available operators inside the container with
 `python -m xformers.info`. Source-build compatibility still needs verification
 with the actual image build.
 
-Request access to VGGT-Ω on Hugging Face, then place your authorized read token
-in `.secrets/hf_token` before starting the container. This ignored file is mounted
-read-only at runtime; credentials are not baked into an image. Model weights and
+Request access to `facebook/VGGT-Omega` on Hugging Face and wait for approval,
+then place a read token from that account in `.secrets/hf_token`. The token must
+permit downloads from that repository. The launcher stops before Docker if the
+file is missing, unreadable, empty or whitespace-only, and prints instructions to
+create it. File presence does not prove access: Hugging Face checks authorization
+when the checkpoint needs downloading. This ignored file is mounted read-only at
+runtime; credentials are not baked into an image. Model weights and
 TensorRT engines are downloaded or prepared automatically when absent and retained
 in the mounted `.cache` directory.
 
 ## Run
 
-Inside the container:
+From the host, one command builds the environment and runs the pipeline:
+
+```bash
+bash scripts/build_and_start.sh "/path/to/my video.mp4"
+```
+
+Outputs are saved in this repository's `data/output/`. The script launches Rerun
+using the existing pipeline defaults. If you already have a container shell, the
+Python entry point remains available for custom options:
 
 ```bash
 python -m sceneforge.reconstruction --video data/input/barn.mp4
@@ -75,8 +97,12 @@ Keyframe selection settings are in `configs/keyframes_raco.json`.
 
 Decoding and keyframe selection run together. Only accepted keyframes are saved
 as images; rejected frames retain timestamp metadata. The source video must stay
-available for connection repair. Persistent `.keyframes` caches beside the video
-avoid repeating selection when inputs and settings match.
+available for connection repair. The launcher persists keyframes in
+`.cache/sceneforge/video-keyframes/`, mounted at `/input/.keyframes`, so it never
+writes beside your original video. Direct Python invocations use `.keyframes`
+beside their input video. Caches avoid repeating selection when inputs and settings
+match; the launcher's new input path produces a different cache identity from
+previous direct Python runs.
 
 ## Output
 

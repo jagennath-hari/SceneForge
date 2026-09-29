@@ -60,7 +60,8 @@ Only accepted images are PNG-encoded. Candidate metadata retains source-frame ID
 and timestamps, allowing connection repair to seek specific intermediate frames
 from the original video. The source video must remain available and unchanged.
 
-Caches use `.keyframes/` beside the source video and include source metadata,
+Caches use `.keyframes/` beside the container's source path (the host launcher
+mounts `.cache/sceneforge/video-keyframes/` there) and include source metadata,
 settings, model identity and the selector executable in their identity. Locked,
 atomic publication prevents reuse of incomplete results. Standalone frame
 extraction and the native selector's debug view remain available for inspection.
@@ -234,11 +235,18 @@ the full exported cloud independently of the viewer's point limit.
 
 ## Storage and execution
 
-Run inside Docker with:
+Run from the host with:
 
 ```bash
-python -m sceneforge.reconstruction --video data/input/barn.mp4
+bash scripts/build_and_start.sh data/input/barn.mp4
 ```
+
+The launcher requires host `ffprobe`, validates a short prefix of the video before
+building Docker, mounts only the chosen input file read-only at `/input/video`,
+and executes `python -m sceneforge.reconstruction --video /input/video`. Relative
+paths resolve against the caller's directory; files outside the repository are
+supported. The writable keyframe cache is mounted separately. The container exits
+with the reconstruction process rather than opening a shell.
 
 `data/input/` holds source videos. New runs live in
 `data/output/reconstruction_TIMESTAMP/`, with final artifacts at the run root:
@@ -256,7 +264,7 @@ run and reuse compatible keyframe/model caches. Partial results explicitly list
 missing frames; full coverage does not by itself establish reconstruction accuracy.
 
 Docker uses BuildKit and separate base, geometry, cuNLS and Rerun images. The start
-script supplies the runtime user, working directory and interactive command.
+script supplies the runtime user, working directory and reconstruction command.
 Python runs in one uv-managed environment. First-party native extensions and the
 Rust adapter are built into the image; source changes to those components require
 a rebuild. Datasets, generated runs and credentials are excluded from image builds

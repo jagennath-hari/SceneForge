@@ -92,31 +92,36 @@ software and the research papers that make the pipeline possible.
 ```
 
 ```bibtex
-@inproceedings{shenoi2026raco,
-  title     = {{RaCo}: Ranking and Covariance for Practical Learned Keypoints},
-  author    = {Shenoi, Abhiram and Lindenberger, Philipp and Sarlin, Paul-Edouard and Pollefeys, Marc},
-  booktitle = {International Conference on 3D Vision},
-  year      = {2026}
+@misc{shenoi2026racorankingcovariancepractical,
+      title={RaCo: Ranking and Covariance for Practical Learned Keypoints}, 
+      author={Abhiram Shenoi and Philipp Lindenberger and Paul-Edouard Sarlin and Marc Pollefeys},
+      year={2026},
+      eprint={2602.15755},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2602.15755}, 
 }
 ```
 
 ```bibtex
-@article{Zhao2023ALIKED,
-  title   = {{ALIKED}: A Lighter Keypoint and Descriptor Extraction Network via Deformable Transformation},
-  author  = {Zhao, Xiaoming and Wu, Xingming and Chen, Weihai and Chen, Peter C. Y. and Xu, Qingsong and Li, Zhengguo},
-  journal = {IEEE Transactions on Instrumentation & Measurement},
-  year    = {2023},
-  volume  = {72},
-  pages   = {1--16},
-  doi     = {10.1109/TIM.2023.3271000}
+@misc{zhao2023alikedlighterkeypointdescriptor,
+      title={ALIKED: A Lighter Keypoint and Descriptor Extraction Network via Deformable Transformation}, 
+      author={Xiaoming Zhao and Xingming Wu and Weihai Chen and Peter C. Y. Chen and Qingsong Xu and Zhengguo Li},
+      year={2023},
+      eprint={2304.03608},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2304.03608}, 
 }
 ```
 
 ```bibtex
-@inproceedings{lindenberger2023lightglue,
+@inproceedings{lindenberger23lightglue,
+  author    = {Philipp Lindenberger and
+               Paul-Edouard Sarlin and
+               Marc Pollefeys},
   title     = {{LightGlue}: Local Feature Matching at Light Speed},
-  author    = {Philipp Lindenberger and Paul-Edouard Sarlin and Marc Pollefeys},
-  booktitle = {ICCV},
+  booktitle = {ArXiv PrePrint},
   year      = {2023}
 }
 ```

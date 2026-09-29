@@ -63,8 +63,8 @@ host before starting. Run these commands from the host terminal.
 
 ## 📖 Citation
 
-If you find SceneForge useful in your research, please consider citing the
-following research papers that make this pipeline possible.
+If you find SceneForge useful in your research, please consider citing this
+software and the research papers that make the pipeline possible.
 
 ```bibtex
 @misc{wang2026vggtomega,
@@ -98,7 +98,9 @@ following research papers that make this pipeline possible.
   booktitle = {International Conference on 3D Vision},
   year      = {2026}
 }
+```
 
+```bibtex
 @article{Zhao2023ALIKED,
   title   = {{ALIKED}: A Lighter Keypoint and Descriptor Extraction Network via Deformable Transformation},
   author  = {Zhao, Xiaoming and Wu, Xingming and Chen, Weihai and Chen, Peter C. Y. and Xu, Qingsong and Li, Zhengguo},
@@ -108,7 +110,9 @@ following research papers that make this pipeline possible.
   pages   = {1--16},
   doi     = {10.1109/TIM.2023.3271000}
 }
+```
 
+```bibtex
 @inproceedings{lindenberger2023lightglue,
   title     = {{LightGlue}: Local Feature Matching at Light Speed},
   author    = {Philipp Lindenberger and Paul-Edouard Sarlin and Marc Pollefeys},

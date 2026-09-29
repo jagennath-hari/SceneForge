@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use SceneForge in your research, please cite this software."
+type: software
+title: SceneForge
+authors:
+  - family-names: Hari
+    given-names: Jagennath
+    orcid: "https://orcid.org/0009-0009-5915-0250"
+version: 1.0.0
+date-released: 2026-09-29
+url: "https://github.com/jagennath-hari/SceneForge"
+repository-code: "https://github.com/jagennath-hari/SceneForge"
+abstract: >-
+  GPU-accelerated 3D reconstruction from continuous monocular video using
+  learned keyframe selection, VGGT-Ω geometry priors, bundle adjustment,
+  and dense depth refinement and fusion, with live Rerun visualization.

@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
-ARG BASE_FROM=stereoforge/geometry:latest
+ARG BASE_FROM=sceneforge/geometry:latest
 FROM ${BASE_FROM} AS cunls
 
-# Build the checked-out submodule against the same CUDA toolkit as StereoForge.
+# Build the checked-out submodule against the same CUDA toolkit as SceneForge.
 # No edits to upstream source, GPU access, examples, or tests are required here.
 COPY third_party/cuNLS/ /opt/third_party/cuNLS/
 RUN cmake -S /opt/third_party/cuNLS -B /tmp/cunls-build -G Ninja \
@@ -24,13 +24,13 @@ ENV CMAKE_PREFIX_PATH=/opt/cunls \
 RUN apt-get update && apt-get install -y --no-install-recommends libeigen3-dev python3-dev && rm -rf /var/lib/apt/lists/*
 RUN --mount=type=cache,target=/root/.cache/uv uv pip install 'pybind11>=2.13,<3'
 
-# StereoForge factors and native solver; upstream cuNLS remains unchanged.
-COPY stereoforge/optimization/ /opt/stereoforge/optimization/
-RUN cmake -S /opt/stereoforge/optimization -B /tmp/stereoforge-optimization -G Ninja \
-        -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DPython_EXECUTABLE=/opt/stereoforge-venv/bin/python && \
-    cmake --build /tmp/stereoforge-optimization --parallel "$(nproc)" && \
-    cmake --install /tmp/stereoforge-optimization && \
-    rm -rf /tmp/stereoforge-optimization
+# SceneForge factors and native solver; upstream cuNLS remains unchanged.
+COPY sceneforge/optimization/ /opt/sceneforge/optimization/
+RUN cmake -S /opt/sceneforge/optimization -B /tmp/sceneforge-optimization -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DPython_EXECUTABLE=/opt/sceneforge-venv/bin/python && \
+    cmake --build /tmp/sceneforge-optimization --parallel "$(nproc)" && \
+    cmake --install /tmp/sceneforge-optimization && \
+    rm -rf /tmp/sceneforge-optimization
 
 ARG USERNAME=appuser
 ARG USER_UID=1000
@@ -59,14 +59,14 @@ RUN set -eu; \
         useradd --uid "${USER_UID}" --gid "${USER_GID}" --create-home \
             --home-dir "/home/${USERNAME}" --shell /bin/bash "${USERNAME}"; \
     fi; \
-    printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${USERNAME}" > /etc/sudoers.d/stereoforge; \
-    chmod 0440 /etc/sudoers.d/stereoforge; \
-    mkdir -p "/home/${USERNAME}/.cache" /workspace/StereoForge/data; \
-    chown -R "${USER_UID}:${USER_GID}" "/home/${USERNAME}" /workspace/StereoForge
+    printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${USERNAME}" > /etc/sudoers.d/sceneforge; \
+    chmod 0440 /etc/sudoers.d/sceneforge; \
+    mkdir -p "/home/${USERNAME}/.cache" /workspace/SceneForge/data; \
+    chown -R "${USER_UID}:${USER_GID}" "/home/${USERNAME}" /workspace/SceneForge
 
 # Include source defaults so the image also contains the project without mounts.
-COPY --chown=${USER_UID}:${USER_GID} stereoforge/ /workspace/StereoForge/stereoforge/
-COPY --chown=${USER_UID}:${USER_GID} configs/ /workspace/StereoForge/configs/
+COPY --chown=${USER_UID}:${USER_GID} sceneforge/ /workspace/SceneForge/sceneforge/
+COPY --chown=${USER_UID}:${USER_GID} configs/ /workspace/SceneForge/configs/
 ENV HOME=/home/${USERNAME} \
     XDG_CACHE_HOME=/home/${USERNAME}/.cache \
     HF_HOME=/home/${USERNAME}/.cache/huggingface \

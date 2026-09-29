@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Configuration
-ORG="stereoforge"
+ORG="sceneforge"
 TAG="latest"
 CUDA_IMAGE="nvidia/cuda:13.2.1-cudnn-devel-ubuntu24.04"
 
@@ -10,7 +10,7 @@ BASE_IMAGE="${ORG}/base:${TAG}"
 GEOMETRY_IMAGE="${ORG}/geometry:${TAG}"
 CUNLS_IMAGE="${ORG}/cunls:${TAG}"
 RERUN_IMAGE="${ORG}/rerun:${TAG}"
-RUN_CONTAINER="stereoforge"
+RUN_CONTAINER="sceneforge"
 RUN_IMAGE="${RERUN_IMAGE}"
 
 USERNAME="$(id -un)"
@@ -94,9 +94,9 @@ exec docker run -it --rm \
     -v "${HOME}/.Xauthority:/root/.Xauthority" \
     -v "${HOME}/.Xauthority:/home/${USERNAME}/.Xauthority:ro" \
     --user "${HOST_UID}:${HOST_GID}" \
-    --workdir /workspace/StereoForge \
-    --mount "type=bind,source=${REPO_ROOT}/stereoforge,target=/workspace/StereoForge/stereoforge" \
-    --mount "type=bind,source=${REPO_ROOT}/configs,target=/workspace/StereoForge/configs,readonly" \
-    --mount "type=bind,source=${REPO_ROOT}/data,target=/workspace/StereoForge/data" \
+    --workdir /workspace/SceneForge \
+    --mount "type=bind,source=${REPO_ROOT}/sceneforge,target=/workspace/SceneForge/sceneforge" \
+    --mount "type=bind,source=${REPO_ROOT}/configs,target=/workspace/SceneForge/configs,readonly" \
+    --mount "type=bind,source=${REPO_ROOT}/data,target=/workspace/SceneForge/data" \
     --mount "type=bind,source=${REPO_ROOT}/.cache,target=/home/${USERNAME}/.cache" \
     "${RUN_IMAGE}" /bin/bash

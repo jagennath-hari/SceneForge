@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG BASE_FROM=stereoforge/base:latest
+ARG BASE_FROM=sceneforge/base:latest
 FROM ${BASE_FROM} AS geometry
 
 # TensorRT 10.13.3.9 references the retired nvidia-cuda-runtime-cu13 package.
@@ -36,16 +36,16 @@ RUN git init /tmp/tensorrt-headers && \
     cp -r /tmp/tensorrt-headers/include /opt/tensorrt/include && rm -rf /tmp/tensorrt-headers
 # The repository gitlink pins the exact upstream implementation used by export.
 COPY third_party/lightglue-onnx/ /opt/third_party/lightglue-onnx/
-ENV PYTHONPATH=/workspace/StereoForge:/opt/third_party/lightglue-onnx
+ENV PYTHONPATH=/workspace/SceneForge:/opt/third_party/lightglue-onnx
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install 'onnx>=1.17,<2' 'onnxscript>=0.3,<1'
 
-COPY stereoforge/video/ /opt/stereoforge/video/
-RUN cmake -S /opt/stereoforge/video -B /opt/stereoforge/build -G Ninja \
+COPY sceneforge/video/ /opt/sceneforge/video/
+RUN cmake -S /opt/sceneforge/video -B /opt/sceneforge/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local && \
-    cmake --build /opt/stereoforge/build --parallel "$(nproc)" && \
-    cmake --install /opt/stereoforge/build && \
-    rm -rf /opt/stereoforge/build
+    cmake --build /opt/sceneforge/build --parallel "$(nproc)" && \
+    cmake --install /opt/sceneforge/build && \
+    rm -rf /opt/sceneforge/build
 
 COPY third_party/vggt-omega/requirements.txt /opt/requirements/vggt-omega.txt
 RUN --mount=type=cache,target=/root/.cache/uv \

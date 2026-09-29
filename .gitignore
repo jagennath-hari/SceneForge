@@ -13,7 +13,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
-/stereoforge/**/build/
+/sceneforge/**/build/
 
 # Rust compilation output (keep Cargo manifests and lockfiles).
-stereoforge/**/target/
+sceneforge/**/target/

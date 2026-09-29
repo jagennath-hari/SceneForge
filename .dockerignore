@@ -13,11 +13,11 @@
 !third_party/SelaVPRplusplus/hubconf.py
 !third_party/SelaVPRplusplus/model/
 !third_party/SelaVPRplusplus/model/**
-!stereoforge/
-!stereoforge/**
+!sceneforge/
+!sceneforge/**
 !configs/
 !configs/**
-stereoforge/**/build/
+sceneforge/**/build/
 **/.git
 **/.git/**
 **/__pycache__
@@ -34,4 +34,4 @@ third_party/cuNLS/dist/
 third_party/lightglue-onnx/weights/
 
 # Rust build artifacts stay out of the build context.
-stereoforge/**/target/
+sceneforge/**/target/

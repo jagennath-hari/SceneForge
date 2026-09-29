@@ -17,15 +17,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         cmake ffmpeg git libgl1 libglib2.0-0 ninja-build pkg-config \
         libavformat-dev libavcodec-dev libavutil-dev libswscale-dev nlohmann-json3-dev libopencv-dev
 
-RUN uv venv --python /usr/bin/python3 /opt/stereoforge-venv
-ENV VIRTUAL_ENV=/opt/stereoforge-venv \
-    PATH=/opt/stereoforge-venv/bin:${PATH} \
-    PIP_CONSTRAINT=/opt/stereoforge/constraints.txt \
-    UV_CONSTRAINT=/opt/stereoforge/constraints.txt \
-    UV_BUILD_CONSTRAINT=/opt/stereoforge/constraints.txt \
+RUN uv venv --python /usr/bin/python3 /opt/sceneforge-venv
+ENV VIRTUAL_ENV=/opt/sceneforge-venv \
+    PATH=/opt/sceneforge-venv/bin:${PATH} \
+    PIP_CONSTRAINT=/opt/sceneforge/constraints.txt \
+    UV_CONSTRAINT=/opt/sceneforge/constraints.txt \
+    UV_BUILD_CONSTRAINT=/opt/sceneforge/constraints.txt \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never
-COPY docker/constraints.txt /opt/stereoforge/constraints.txt
+COPY docker/constraints.txt /opt/sceneforge/constraints.txt
 # Install PyTorch explicitly on top of CUDA/cuDNN; this base has no framework.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install pip setuptools wheel && \

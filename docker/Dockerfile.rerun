@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG BASE_FROM=stereoforge/cunls:latest
+ARG BASE_FROM=sceneforge/cunls:latest
 FROM ${BASE_FROM} AS rerun
 
 ARG USER_UID=1000
@@ -37,14 +37,14 @@ RUN case "$(dpkg --print-architecture)" in \
     echo "${checksum}  /tmp/rerun" | sha256sum --check - && \
     install -m 0755 /tmp/rerun /usr/local/bin/rerun && rm /tmp/rerun
 
-# StereoForge-owned Rust adapter; upstream Rerun is a crates.io dependency.
-COPY stereoforge/visualization/ /opt/stereoforge/visualization/
+# SceneForge-owned Rust adapter; upstream Rerun is a crates.io dependency.
+COPY sceneforge/visualization/ /opt/sceneforge/visualization/
 RUN --mount=type=cache,target=/opt/cargo/registry \
     --mount=type=cache,target=/opt/cargo/git \
-    --mount=type=cache,target=/tmp/stereoforge-rust-target \
-    CARGO_TARGET_DIR=/tmp/stereoforge-rust-target cargo build --release \
-        --jobs "$(nproc)" --manifest-path /opt/stereoforge/visualization/Cargo.toml && \
-    install -m 0755 /tmp/stereoforge-rust-target/release/libstereoforge_rerun.so /usr/local/lib/libstereoforge_rerun.so
+    --mount=type=cache,target=/tmp/sceneforge-rust-target \
+    CARGO_TARGET_DIR=/tmp/sceneforge-rust-target cargo build --release \
+        --jobs "$(nproc)" --manifest-path /opt/sceneforge/visualization/Cargo.toml && \
+    install -m 0755 /tmp/sceneforge-rust-target/release/libsceneforge_rerun.so /usr/local/lib/libsceneforge_rerun.so
 
 # Let the host-matched development user manage the installed toolchains.
 RUN chown -R "${USER_UID}:${USER_GID}" /opt

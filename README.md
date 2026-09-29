@@ -1,6 +1,6 @@
-# StereoForge
+# SceneForge
 
-StereoForge reconstructs a continuous video into an optimized camera trajectory,
+SceneForge reconstructs a continuous video into an optimized camera trajectory,
 colored sparse landmarks and a refined dense point cloud, with live visualization
 in Rerun.
 
@@ -20,9 +20,15 @@ bash scripts/build_and_start.sh
 ```
 
 The script uses BuildKit to build CUDA → base → geometry → cuNLS → Rust/Rerun,
-then opens a shell as the host user. A running `stereoforge` container is attached
+then opens a shell as the host user. A running `sceneforge` container is attached
 without rebuilding. Stop it before rebuilding Dockerfiles, C++/CUDA or Rust code.
 Python source, configuration, data and caches have individual bind mounts.
+
+The Python package and Docker container are named `sceneforge`; the container
+workspace is `/workspace/SceneForge`. After the project rename, rebuild the images
+and use `python -m sceneforge.reconstruction`. Saved runs retain their historical
+paths and implementation signatures, so start a new `--video` run rather than
+resuming a run produced before the rename.
 
 The environment requires an NVIDIA GPU and NVIDIA Container Toolkit. It uses
 CUDA 13.2.1, the pinned PyTorch CUDA 13.2 wheels and TensorRT 10.13.3.9. Our native
@@ -49,7 +55,7 @@ in the mounted `.cache` directory.
 Inside the container:
 
 ```bash
-python -m stereoforge.reconstruction --video data/input/barn.mp4
+python -m sceneforge.reconstruction --video data/input/barn.mp4
 ```
 
 Defaults: 64 keyframes per VGGT-Ω window, 32 shared keyframes, 1,000 joint BA
@@ -57,7 +63,7 @@ iterations, loop retrieval and Rerun enabled. Window dimensions count selected k
 video frames. To override them:
 
 ```bash
-python -m stereoforge.reconstruction \
+python -m sceneforge.reconstruction \
   --video data/input/indoor_travel.MP4 \
   --window-size 64 --overlap 32 --lm-iterations 1000
 ```
@@ -95,7 +101,7 @@ the run directory. These are needed for inspection and reuse; there is no separa
 To reuse a run's unchanged inputs and VGGT-Ω windows in a new map-building attempt:
 
 ```bash
-python -m stereoforge.reconstruction --resume data/output/reconstruction_TIMESTAMP
+python -m sceneforge.reconstruction --resume data/output/reconstruction_TIMESTAMP
 ```
 
 Resume checks the video, checkpoint, settings and implementation identity. After
@@ -104,12 +110,12 @@ be reused. Existing saved runs are never relocated by a new invocation.
 
 ## Source layout
 
-- `stereoforge/video/`: Python model/cache adapters and native decoding, keyframes and matching.
-- `stereoforge/geometry/`: VGGT-Ω inference, tensor types, checkpoint loading and storage.
-- `stereoforge/reconstruction/`: orchestration, feature tracks, sparse snapshots and dense refinement.
-- `stereoforge/optimization/`: Eigen map building and CUDA/cuNLS bundle adjustment, exposed through pybind11.
-- `stereoforge/visualization/`: Rust Rerun SDK adapter.
-- `stereoforge/utils/`: shared progress, validation and export helpers.
+- `sceneforge/video/`: Python model/cache adapters and native decoding, keyframes and matching.
+- `sceneforge/geometry/`: VGGT-Ω inference, tensor types, checkpoint loading and storage.
+- `sceneforge/reconstruction/`: orchestration, feature tracks, sparse snapshots and dense refinement.
+- `sceneforge/optimization/`: Eigen map building and CUDA/cuNLS bundle adjustment, exposed through pybind11.
+- `sceneforge/visualization/`: Rust Rerun SDK adapter.
+- `sceneforge/utils/`: shared progress, validation and export helpers.
 - `docker/`, `scripts/`, `configs/`: environment and active keyframe configuration.
 
 ## Global descriptors and loop closure
@@ -152,5 +158,5 @@ Stereo synthesis is outside the current scope.
 Reconstruction units are not established meters, and a complete run does not
 establish geometric accuracy. Unresolved regions are reported as partial output.
 
-See [the architecture specification](StereoForge%20Architecture%20Specification.md)
+See [the architecture specification](SceneForge%20Architecture%20Specification.md)
 for the implementation and coordinate conventions.

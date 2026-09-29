@@ -61,6 +61,87 @@ host before starting. Run these commands from the host terminal.
 > Use a continuous video without cuts. Replace the example path with any local
 > video file; it does not need to be inside the repository. Quote paths containing spaces.
 
+## 🏗️ System Architecture
+
+```mermaid
+flowchart TD
+    video["Continuous monocular video"]
+
+    subgraph frontend["1 · Keyframes and image correspondences"]
+        keyframes["Streaming decode + keyframe selection<br/>FFmpeg / NVDEC · RaCo–ALIKED / LightGlue+ · CUDA RANSAC"]
+        prepare["Joint feature-image preparation<br/>Local feature images + SelaVPR++ global descriptors"]
+        temporal["Temporal neighbor pairs"]
+        loops["Distant loop candidates<br/>Global descriptor retrieval"]
+        matching["Unified pair verification<br/>RaCo–ALIKED / LightGlue+ + RANSAC"]
+        tracks["Measured feature tracks<br/>Verified temporal and loop correspondences"]
+        repair["Bounded connection repair<br/>Insert intermediate frames from the source video"]
+
+        keyframes --> prepare
+        prepare --> temporal
+        prepare --> loops
+        temporal --> matching
+        loops --> matching
+        matching --> tracks
+        tracks -->|Weak temporal connections| repair
+        repair -->|Additional frames| prepare
+    end
+
+    subgraph mapping["2 · Geometry and common map"]
+        windows["Overlapping VGGT-Ω windows<br/>Depth · confidence · intrinsics · camera poses"]
+        local["Local cuNLS bundle adjustment<br/>Initialize landmarks from depth and measured tracks"]
+        common["Common map assembly<br/>Graph-ordered Sim(3) alignment + map refinement"]
+        globalBA["Final global cuNLS bundle adjustment<br/>Shared intrinsics · camera poses · sparse landmarks"]
+
+        windows --> local
+        local --> common
+        common --> globalBA
+    end
+
+    subgraph reconstruction["3 · Dense refinement and output"]
+        depth["Depth calibration and multi-view refinement<br/>VGGT-Ω depth + optimized sparse geometry"]
+        fusion["Colored dense point-cloud fusion"]
+        output["Saved reconstruction<br/>Camera trajectory · sparse and dense PLY · refined depth"]
+
+        depth --> fusion
+        fusion --> output
+    end
+
+    viewer["Live Rerun viewer + RRD recording<br/>Rust SDK adapter"]
+
+    video --> keyframes
+    tracks -->|Ready keyframes| windows
+    tracks -->|2D observations and shared track identities| local
+    windows -->|Dense depth priors| depth
+    globalBA --> depth
+    globalBA -->|Optimized trajectory and sparse cloud| output
+
+    keyframes -.-> viewer
+    tracks -.-> viewer
+    windows -.-> viewer
+    common -.-> viewer
+    globalBA -.-> viewer
+    fusion -.-> viewer
+
+    classDef learned fill:#eaf2ff,stroke:#4078c0,color:#172b4d
+    classDef optimization fill:#e8f5ed,stroke:#3a8b59,color:#183d29
+    classDef artifact fill:#fff4dc,stroke:#b48730,color:#513c14
+    classDef visualization fill:#f3eaff,stroke:#8957b0,color:#40265c
+    class keyframes,prepare,matching,windows learned
+    class local,common,globalBA,depth,fusion optimization
+    class video,output artifact
+    class viewer visualization
+```
+
+Solid arrows show processing and data flow; dotted arrows show live visualization
+updates. Loop correspondences become shared landmark observations in bundle
+adjustment. Sparse BA refines cameras and landmarks; dense depth is refined
+separately using the optimized map.
+
+Python orchestrates the pipeline and model inference. C++/CUDA handles video
+processing, local feature matching, map operations and cuNLS optimization; the
+Rust adapter streams progress to Rerun. See the
+[architecture specification](SceneForge%20Architecture%20Specification.md) for details.
+
 ## 📖 Citation
 
 If you find SceneForge useful in your research, please consider citing this

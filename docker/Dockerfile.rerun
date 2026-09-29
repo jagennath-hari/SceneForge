@@ -38,13 +38,12 @@ RUN case "$(dpkg --print-architecture)" in \
     install -m 0755 /tmp/rerun /usr/local/bin/rerun && rm /tmp/rerun
 
 # StereoForge-owned Rust adapter; upstream Rerun is a crates.io dependency.
-ARG BUILD_JOBS=4
 COPY stereoforge/visualization/ /opt/stereoforge/visualization/
 RUN --mount=type=cache,target=/opt/cargo/registry \
     --mount=type=cache,target=/opt/cargo/git \
     --mount=type=cache,target=/tmp/stereoforge-rust-target \
     CARGO_TARGET_DIR=/tmp/stereoforge-rust-target cargo build --release \
-        --jobs "${BUILD_JOBS}" --manifest-path /opt/stereoforge/visualization/Cargo.toml && \
+        --jobs "$(nproc)" --manifest-path /opt/stereoforge/visualization/Cargo.toml && \
     install -m 0755 /tmp/stereoforge-rust-target/release/libstereoforge_rerun.so /usr/local/lib/libstereoforge_rerun.so
 
 # Let the host-matched development user manage the installed toolchains.

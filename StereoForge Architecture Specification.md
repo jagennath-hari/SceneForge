@@ -1,5 +1,34 @@
 # StereoForge Architecture Specification
 
+## Streaming video keyframes
+
+Rebuild Docker after this native change, then use the same end-to-end command.
+The first stage is now **Decoding and selecting keyframes**: one ordered FFmpeg
+/NVDEC decoder feeds a bounded in-memory queue (two outstanding candidates per
+feature worker). RaCo–ALIKED extraction uses the available peer-accessible GPUs;
+matching and decisions run in timestamp order against the last accepted keyframe.
+A single GPU uses the same path with one extraction worker. Selection thresholds,
+working-image conversion and reconstruction/BA settings are unchanged.
+
+Only accepted keyframes are PNG-encoded. Rejected images are discarded, while
+source-frame IDs and display timestamps remain in `candidates.json`. The last
+reliable candidate remains in memory for the selector's existing bridge rule.
+Connection repair seeks the original video with codec preroll to recover exact
+candidate timestamps and saves only requested intermediate frames. Keep the source
+video available and unchanged. Accepted keyframes update Rerun during selection.
+The decoder-to-feature handoff currently uses host image buffers; it is not a
+zero-copy GPU path.
+
+Streaming caches use `.keyframes/` beside the video, keyed by source metadata,
+settings, model manifest and selector executable. Publication uses a file lock
+and atomic directory rename. The first run creates a new cache; old `.frames/`
+caches and saved reconstructions are retained. The all-frame extractor and
+`--input FRAME_DIRECTORY --debug-view` native selector remain available for
+diagnostics. Feature buffers are bounded; timestamp and decision metadata grow
+with video length. Streaming does not restart after a mid-stream decoding error,
+because replaying frames into a stateful selector would invalidate its decisions.
+
+
 ## Product intent and current scope
 
 StereoForge reconstructs a common 3D map from a continuous monocular video.
@@ -251,7 +280,7 @@ from the mounted workspace; dependency installation belongs to Dockerfiles and
 
 ## Environment boundary
 
-The image chain is CUDA → base → geometry → stereo → cuNLS. Each Dockerfile has
+The image chain is CUDA → base → geometry → cuNLS → Rust/Rerun. Each Dockerfile has
 an explicit named stage and accepts `BASE_FROM`. The current base is
 `nvidia/cuda:13.2.1-cudnn-devel-ubuntu24.04`. PyTorch uses the CUDA 13.2 wheel index;
 TensorRT retains its working version for native keyframe inference. cuNLS is built
@@ -269,9 +298,9 @@ The custom cuNLS local optimization diagnostic is implemented below; full pipeli
 One uv-created virtual environment is shared by all Python dependencies. The
 legacy TensorRT installation uses pip in that same environment. BuildKit caches
 package downloads. Native video extraction is built inside the geometry image.
-StereoSpace remains installed as preparation for the next stage, but is not yet
-called by the application. There is no Compose deployment or development-only
-Dockerfile.
+StereoSpace is not required or installed for reconstruction. The geometry image
+installs Hugging Face Hub explicitly for checkpoint downloads. There is no Compose
+deployment or development-only Dockerfile.
 
 The build/start script only builds and enters the environment; it does not launch
 inference. It selects the NVIDIA runtime, exposes GPUs, and uses the requested
@@ -315,7 +344,7 @@ calibration.
 
 ## Video and adaptive inference
 
-The C++20 FFmpeg extractor decodes every frame by default, using NVDEC when
+The standalone all-frame C++20 FFmpeg extractor decodes every frame by default, using NVDEC when
 available. Unsupported hardware decoding falls back to CPU, restarting from the
 beginning if a hardware error occurs mid-stream. A CUDA area-resampling kernel
 reduces NV12, P010 and YUV420P surfaces before host transfer. Other surface formats
@@ -374,8 +403,8 @@ only after all PNGs finish. The original video is retained for future full-resol
 stereo rendering. VGGT's own crop/resize remains authoritative for its predicted
 intrinsics; working-image coordinates must not be mistaken for original-video pixels.
 
-The Python adapter manages subprocess cancellation, progress and an extraction cache
-under `.frames/` beside the source video. Cache keys include source path, size,
+The all-frame Python adapter manages subprocess cancellation, progress and an extraction cache
+under `.frames/` beside the source video. Streaming keyframe selection uses `.keyframes/`. Cache keys include source path, size,
 timestamps/inode, selection, resolution and executable hash. A per-key file lock
 and atomic directory rename prevent partial or concurrent publication. Reuse checks
 the manifest, expected files, sizes and timestamps; it is not a content checksum of
@@ -392,10 +421,11 @@ adapting overlapping section sizes from memory measurements. The target budget i
 all selected geometry frames. Video inputs intentionally reduce candidates to
 visual keyframes before VGGT; `--all-frames` bypasses this for diagnostics.
 
-Keyframe selection is a separate native pass over the decoded cache. The default
+Production keyframe selection consumes decoded images in memory; the native
+directory-based diagnostic can still read a decoded cache. The default
 RaCo–ALIKED/LightGlue+ frontend runs in TensorRT, with bounded GPU extraction
 workers and CUDA RANSAC. A single timestamp-ordered matcher/decision consumer spans
-all decoder sections. Features are compared to the last accepted keyframe, then
+the complete recording. Features are compared to the last accepted keyframe, then
 verified against fundamental and homography models. RaCo–ALIKED/LightGlue+ is
 the only supported keyframe frontend. The stronger model's support is checked against
 minimum inliers, inlier ratio and coverage of a 4 × 4 grid in both views. Homography
@@ -475,7 +505,8 @@ uses a cached peer mirror without host staging. Scores are retained alongside
 points and descriptors. CUDA RANSAC consumes the matcher's original device outputs
 on the same stream; only feature/selection aggregate statistics return to CPU.
 The debug window additionally downloads points, matches and masks for display.
-Input PNG decoding still occurs on CPU, with one pinned upload; CUDA converts
+The directory-based path decodes PNGs on CPU; streaming supplies in-memory BGR.
+Both use one pinned upload per candidate; CUDA converts
 BGR to RGB and applies antialiased Keys bicubic interpolation (a=-0.5), with
 half-pixel centers, clamped edges and weight normalization. Horizontal and vertical
 passes use 32×8 blocks and shared-memory strips with unconditional barriers,

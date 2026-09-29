@@ -109,6 +109,7 @@ private:
 class RaCoALIKEDExtractor final {
 public:
     RaCoALIKEDExtractor(LearnedOptions options, int device);
+    [[nodiscard]] FrameFeatures extract(const cv::Mat& image, std::size_t index, double timestamp);
     [[nodiscard]] FrameFeatures extract(const std::filesystem::path& path,
         std::size_t index, double timestamp);
 private:

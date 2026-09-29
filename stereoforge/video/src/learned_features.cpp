@@ -50,6 +50,10 @@ RaCoALIKEDExtractor::RaCoALIKEDExtractor(LearnedOptions options, int device) : o
 FrameFeatures RaCoALIKEDExtractor::extract(const std::filesystem::path& path, std::size_t index, double timestamp) {
     const cv::Mat image = cv::imread(path.string(), cv::IMREAD_COLOR);
     if (image.empty()) throw std::runtime_error("Cannot read candidate: " + path.string());
+    return this->extract(image, index, timestamp);
+}
+FrameFeatures RaCoALIKEDExtractor::extract(const cv::Mat& image, std::size_t index, double timestamp) {
+    if (image.empty() || image.type() != CV_8UC3) throw std::invalid_argument("Expected BGR working image");
     const double scale = std::min({1.0, static_cast<double>(this->options_.width) / image.cols,
         static_cast<double>(this->options_.height) / image.rows});
     FrameFeatures result;

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG BASE_FROM=stereoforge/stereo:latest
+ARG BASE_FROM=stereoforge/geometry:latest
 FROM ${BASE_FROM} AS cunls
 
 # Build the checked-out submodule against the same CUDA toolkit as StereoForge.

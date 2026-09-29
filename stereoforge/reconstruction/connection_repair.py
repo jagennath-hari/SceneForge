@@ -68,7 +68,8 @@ class ConnectionRepair:
         if not cache_value:
             raise ValueError('Selected frames lack decoded-cache provenance; start a fresh --video run')
         cache = Path(cache_value)
-        decoded = json.loads((cache / 'manifest.json').read_text())['frames']
+        streaming = manifest.get('storage') == 'keyframes_only'
+        decoded = json.loads((cache / ('candidates.json' if streaming else 'manifest.json')).read_text())['frames']
         # Verify provenance before inserting any images. Candidate order is the
         # native decoder's timestamp order, never inferred from a filename.
         previous_time = -math.inf
@@ -81,7 +82,8 @@ class ConnectionRepair:
             record.setdefault('source_frame_index', index)
         for frame in frames:
             candidate = decoded[frame['candidate_index']]
-            if any(frame[key] != candidate[key] for key in ('timestamp_seconds', 'source_frame_index', 'bytes')):
+            fields = ('timestamp_seconds', 'source_frame_index', 'timestamp_ticks') if streaming else ('timestamp_seconds', 'source_frame_index', 'bytes')
+            if any(frame[key] != candidate[key] for key in fields):
                 raise ValueError('Selected frame does not match the decoded cache')
 
         initial_count = len(frames)
@@ -142,7 +144,12 @@ class ConnectionRepair:
                 del graph
                 candidate_folder = self.directory / 'candidates'
                 candidate_folder.mkdir(exist_ok=True)
+                recovered = (VideoFrameSampler.recover_candidates(manifest, decoded, additions, candidate_folder)
+                             if streaming else {})
                 for index in additions:
+                    if streaming:
+                        frames.append({**recovered[index], 'candidate_index': index, 'selection_reason': 'weak_connection_repair'})
+                        continue
                     record = decoded[index]
                     source = cache / record['file']
                     if not source.is_file() or source.stat().st_size != record['bytes']:

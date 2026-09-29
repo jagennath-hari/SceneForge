@@ -1,6 +1,7 @@
 #pragma once
 
 #include <opencv2/core.hpp>
+#include "stereoforge/video/video_extractor.hpp"
 #include <cstddef>
 #include <filesystem>
 #include <functional>
@@ -22,6 +23,10 @@ struct FrameFeatures final {
     cv::Size size;
     double sharpness{};
     std::size_t feature_count{};
+    // Streaming keeps pixels only while queued, anchored, or eligible as a bridge.
+    cv::Mat image;
+    std::int64_t timestamp_ticks{};
+    std::size_t source_frame_index{};
     std::vector<cv::KeyPoint> points;
     std::shared_ptr<DeviceFeatures> device_features;
 };
@@ -57,7 +62,7 @@ using ExtractorFactory = std::function<std::unique_ptr<RaCoALIKEDExtractor>()>;
 
 class KeyframeSelector final {
 public:
-    using AcceptanceCallback = std::function<void(std::size_t candidate, std::size_t keyframe)>;
+    using AcceptanceCallback = std::function<void(std::size_t candidate, std::size_t keyframe, double timestamp)>;
     using ProgressCallback = std::function<void(std::size_t, std::size_t, std::size_t)>;
     // Called in timestamp order on the main thread; false requests a clean stop.
     using DebugCallback = std::function<bool(const FrameFeatures* reference,
@@ -70,7 +75,12 @@ public:
     [[nodiscard]] bool run(const std::filesystem::path& directory, const std::filesystem::path& output,
                            const ProgressCallback& progress = {}, const DebugCallback& debug = {},
                            const AcceptanceCallback& accepted = {});
+    [[nodiscard]] bool run_video(const ExtractionOptions& extraction, const std::filesystem::path& output,
+                                 const ProgressCallback& progress = {}, const AcceptanceCallback& accepted = {});
 private:
+    [[nodiscard]] bool run_impl(const std::filesystem::path& directory, const std::filesystem::path& output,
+        const ProgressCallback& progress, const DebugCallback& debug, const AcceptanceCallback& accepted,
+        const ExtractionOptions* extraction);
     KeyframeOptions options_;
     ExtractorFactory factory_;
     std::unique_ptr<LightGlueMatcher> matcher_;

@@ -11,6 +11,35 @@ Video → keyframes → measured feature tracks
       → camera trajectory + colored cloud + one viewer
 ```
 
+## Streaming video keyframes
+
+Rebuild Docker after this native change, then use the same end-to-end command.
+The first stage is now **Decoding and selecting keyframes**: one ordered FFmpeg
+/NVDEC decoder feeds a bounded in-memory queue (two outstanding candidates per
+feature worker). RaCo–ALIKED extraction uses the available peer-accessible GPUs;
+matching and decisions run in timestamp order against the last accepted keyframe.
+A single GPU uses the same path with one extraction worker. Selection thresholds,
+working-image conversion and reconstruction/BA settings are unchanged.
+
+Only accepted keyframes are PNG-encoded. Rejected images are discarded, while
+source-frame IDs and display timestamps remain in `candidates.json`. The last
+reliable candidate remains in memory for the selector's existing bridge rule.
+Connection repair seeks the original video with codec preroll to recover exact
+candidate timestamps and saves only requested intermediate frames. Keep the source
+video available and unchanged. Accepted keyframes update Rerun during selection.
+The decoder-to-feature handoff currently uses host image buffers; it is not a
+zero-copy GPU path.
+
+Streaming caches use `.keyframes/` beside the video, keyed by source metadata,
+settings, model manifest and selector executable. Publication uses a file lock
+and atomic directory rename. The first run creates a new cache; old `.frames/`
+caches and saved reconstructions are retained. The all-frame extractor and
+`--input FRAME_DIRECTORY --debug-view` native selector remain available for
+diagnostics. Feature buffers are bounded; timestamp and decision metadata grow
+with video length. Streaming does not restart after a mid-stream decoding error,
+because replaying frames into a stateful selector would invalidate its decisions.
+
+
 ## Run end to end
 
 Inside Docker:
@@ -235,7 +264,7 @@ git submodule update --init --recursive
 bash scripts/build_and_start.sh
 ```
 
-The script builds the CUDA → base → geometry → stereo → cuNLS → Rust/Rerun image chain with
+The script builds the CUDA → base → geometry → cuNLS → Rust/Rerun image chain with
 BuildKit and starts an interactive container. If the named container is already
 running, it attaches without rebuilding. Exit/stop it before rebuilding changed
 Dockerfiles or native code. Python source and configuration changes are visible

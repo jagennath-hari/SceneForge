@@ -38,7 +38,7 @@ target_include_directories(stereoforge_keyframes PUBLIC include ${OpenCV_INCLUDE
 # TensorRT headers call deprecated APIs internally. Treat vendor headers as
 # system headers while retaining deprecation warnings in our own source.
 target_include_directories(stereoforge_keyframes SYSTEM PUBLIC ${TENSORRT_INCLUDE})
-target_link_libraries(stereoforge_keyframes PUBLIC ${OpenCV_LIBS} ${TENSORRT_LIBRARY} CUDA::cudart PRIVATE Threads::Threads nlohmann_json::nlohmann_json)
+target_link_libraries(stereoforge_keyframes PUBLIC ${OpenCV_LIBS} ${TENSORRT_LIBRARY} CUDA::cudart PRIVATE stereoforge_video PkgConfig::FFMPEG Threads::Threads nlohmann_json::nlohmann_json)
 target_compile_options(stereoforge_keyframes PRIVATE
     "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic>"
     "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra>")

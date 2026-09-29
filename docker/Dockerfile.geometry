@@ -12,7 +12,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         tensorrt-cu13==10.13.3.9 \
         tensorrt-cu13-bindings==10.13.3.9 \
         tensorrt-cu13-libs==10.13.3.9
-# Expose the pip-installed TensorRT 10 libraries to native cuSFM executables.
+# Expose the pip-installed TensorRT 10 libraries to native feature inference.
 # TensorRT is installed by pip above; the CUDA/cuDNN base does not supply it.
 RUN python - <<'PY'
 from pathlib import Path
@@ -36,7 +36,7 @@ RUN git init /tmp/tensorrt-headers && \
     cp -r /tmp/tensorrt-headers/include /opt/tensorrt/include && rm -rf /tmp/tensorrt-headers
 # The repository gitlink pins the exact upstream implementation used by export.
 COPY third_party/lightglue-onnx/ /opt/third_party/lightglue-onnx/
-ENV PYTHONPATH=/opt/third_party/lightglue-onnx
+ENV PYTHONPATH=/workspace/StereoForge:/opt/third_party/lightglue-onnx
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install 'onnx>=1.17,<2' 'onnxscript>=0.3,<1'
 
@@ -49,7 +49,7 @@ RUN cmake -S /opt/stereoforge/video -B /opt/stereoforge/build -G Ninja \
 
 COPY third_party/vggt-omega/requirements.txt /opt/requirements/vggt-omega.txt
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install -r /opt/requirements/vggt-omega.txt 'open3d>=0.19,<0.20' 'scipy>=1.11,<2'
+    uv pip install -r /opt/requirements/vggt-omega.txt 'open3d>=0.19,<0.20' 'scipy>=1.11,<2' huggingface-hub
 COPY third_party/vggt-omega/ /opt/third_party/vggt-omega/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --no-build-isolation --no-deps /opt/third_party/vggt-omega

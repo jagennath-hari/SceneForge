@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <fstream>
 
 namespace {
 [[nodiscard]] double number(const std::string& value) {
@@ -31,6 +32,18 @@ int main(int argc, char** argv) {
             const std::string value = argv[i];
             if (key == "--input") options.input = value;
             else if (key == "--output") options.output = value;
+            else if (key == "--recover-manifest") {
+                std::ifstream request(value);
+                request.exceptions(std::ios::failbit | std::ios::badbit);
+                nlohmann::json document; request >> document;
+                options.timestamp_origin = document.at("timestamp_origin").get<double>();
+                for (const nlohmann::json& frame : document.at("frames")) {
+                    if (!options.requested_frames.emplace(frame.at("timestamp_ticks").get<std::int64_t>(),
+                        frame.at("source_frame_index").get<std::size_t>()).second)
+                        throw std::invalid_argument("Duplicate repair timestamp");
+                }
+                if (options.requested_frames.empty()) throw std::invalid_argument("Empty repair request");
+            }
             else if (key == "--start-seconds") options.start_seconds = number(value);
             else if (key == "--duration") options.duration = number(value);
             else if (key == "--hardware") {

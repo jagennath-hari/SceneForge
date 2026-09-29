@@ -11,7 +11,7 @@ import numpy as np
 from PIL import Image
 
 from stereoforge.geometry.storage import load_sequence
-from stereoforge.refinement.sparse_model import SparseCamera, SparseModel, SparsePoint
+from .models import SparseCamera, SparseModel, SparsePoint
 
 
 def native_backend():

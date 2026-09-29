@@ -450,7 +450,7 @@ def main() -> int:
             directory = cache.prepare()
         print(f"Models ready: {directory}")
         if not args.onnx_only:
-            print(f"TensorRT precision: {cache.precision}. Demos reuse these engines with matching config settings.")
+            print(f"TensorRT precision: {cache.precision}. Reconstruction reuses these engines with matching config settings.")
         return 0
     except (OSError, ValueError, RuntimeError, ImportError) as error:
         parser.exit(1, f"ERROR: {error}\n")

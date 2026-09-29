@@ -1,1 +1,1 @@
-"""Monocular video geometry and sparse refinement for stereo synthesis."""
+"""Continuous-video reconstruction with VGGT, cuNLS and Rerun."""

@@ -2,7 +2,6 @@ cmake_minimum_required(VERSION 3.22)
 project(StereoForgeOptimization LANGUAGES CXX CUDA)
 find_package(CUDAToolkit REQUIRED)
 find_package(cunls CONFIG REQUIRED)
-find_package(nlohmann_json 3.10 REQUIRED)
 add_library(stereoforge_optimization src/factors.cu src/bundle_adjuster.cpp)
 target_compile_features(stereoforge_optimization PUBLIC cxx_std_20)
 set_target_properties(stereoforge_optimization PROPERTIES
@@ -19,10 +18,6 @@ target_link_libraries(stereoforge_optimization PUBLIC cunls::cunls CUDA::cudart 
 target_compile_options(stereoforge_optimization PRIVATE
     "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic>"
     "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra>")
-add_executable(stereoforge-bundle-adjust src/main.cpp)
-target_link_libraries(stereoforge-bundle-adjust PRIVATE stereoforge_optimization nlohmann_json::nlohmann_json)
-set_target_properties(stereoforge-bundle-adjust PROPERTIES INSTALL_RPATH /opt/cunls/lib)
-install(TARGETS stereoforge-bundle-adjust RUNTIME DESTINATION bin)
 
 # In-process map builder: CPU Eigen geometry and CUDA/cuNLS BA, no solver files.
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)

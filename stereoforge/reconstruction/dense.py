@@ -14,7 +14,7 @@ import torch
 import torch.nn.functional as functional
 
 from stereoforge.geometry.storage import load_sequence
-from stereoforge.refinement.sparse_model import SparseModel
+from .models import SparseModel
 from stereoforge.utils.progress import Progress
 from .native_map import native_backend
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from stereoforge.refinement.sparse_model import SparseModel
+from .models import SparseModel
 from stereoforge.utils.artifacts import write_json
 from stereoforge.utils.progress import Progress
 from stereoforge.utils.point_cloud import write_ply

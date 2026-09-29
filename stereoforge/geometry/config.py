@@ -15,21 +15,10 @@ class GeometryConfig:
     preprocess_mode: str = "balanced"
     max_frames: int | None = None
     meters_per_unit: float | None = None
-    chunk_max_frames: int | None = None
-    chunk_overlap: int = 32
-    gpu_memory_fraction: float = 0.90
 
     def __post_init__(self) -> None:
         if not isinstance(self.device, str) or re.fullmatch(r"cpu|cuda(?::\d+)?", self.device) is None:
             raise ValueError("geometry.device must be cpu, cuda or cuda:N")
-        require_integer("geometry.chunk_overlap", self.chunk_overlap, minimum=5)
-        if self.chunk_max_frames is not None:
-            require_integer("geometry.chunk_max_frames", self.chunk_max_frames)
-            if self.chunk_max_frames < self.chunk_overlap + 2:
-                raise ValueError("chunk_max_frames must be at least chunk_overlap + 2")
-        require_finite("geometry.gpu_memory_fraction", self.gpu_memory_fraction)
-        if not 0 < self.gpu_memory_fraction <= 1:
-            raise ValueError("gpu_memory_fraction must be in (0,1]")
         require_integer("geometry.image_resolution", self.image_resolution)
         if self.image_resolution % 16:
             raise ValueError("geometry.image_resolution must be divisible by 16")

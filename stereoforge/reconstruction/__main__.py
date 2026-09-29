@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def signature(video: Path, keyframe_config: Path) -> dict:
     digest = hashlib.sha256()
-    files = [*Path(__file__).parent.glob("*.py"), *(ROOT / "stereoforge/refinement").glob("*.py"),
+    files = [*Path(__file__).parent.glob("*.py"),
              ROOT / "stereoforge/geometry/vggt_omega.py", ROOT / "stereoforge/geometry/storage.py"]
     for path in sorted(files):
         digest.update(str(path.relative_to(ROOT)).encode())
@@ -94,7 +94,7 @@ def main() -> int:
                                     device=args.device or 'cuda',
                                     lm_iterations=args.lm_iterations if args.lm_iterations is not None else 1000,
                                     dense_voxel_fraction=args.dense_voxel_fraction if args.dense_voxel_fraction is not None else 0.01)
-            output = (args.output or ROOT / 'data/intermediate' / datetime.now(timezone.utc).strftime(
+            output = (args.output or ROOT / 'data/output' / datetime.now(timezone.utc).strftime(
                 'reconstruction_%Y%m%d_%H%M%S_%f')).expanduser().resolve()
             output.mkdir(parents=True, exist_ok=False)
             checkpoint = resolve_checkpoint(args.checkpoint)

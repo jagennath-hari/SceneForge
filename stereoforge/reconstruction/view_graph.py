@@ -1,7 +1,6 @@
-"""Verified temporal image graph, globally identified tracks and separator hierarchy."""
+"""Verified temporal image graph and globally identified feature tracks."""
 
-from dataclasses import dataclass, field
-from collections import deque
+from dataclasses import dataclass
 import json
 from pathlib import Path
 
@@ -19,11 +18,9 @@ class Observation:
 class Cluster:
     identifier: int
     frames: list[int]
-    children: list["Cluster"] = field(default_factory=list)
 
     def document(self) -> dict:
-        return {"id": self.identifier, "frames": self.frames,
-                "children": [child.document() for child in self.children]}
+        return {"id": self.identifier, "frames": self.frames}
 
 
 class VerifiedGraph:
@@ -165,63 +162,3 @@ class VerifiedGraph:
         self.summary = {"verified_pairs": verified_pairs, "match_edges": len(edges),
                         "conflicting_edges_rejected": rejected, "tracks": len(self.tracks),
                         "components": components, "frontend": "RaCo-ALIKED/LightGlue+; native F/H RANSAC"}
-
-    def partition(self, maximum: int = 32, overlap: int = 8) -> Cluster:
-        if len(self.summary["components"]) != 1:
-            raise ValueError("Verified image graph is disconnected; inspect graph.json. No frames were silently dropped")
-        counter = 0
-
-        def connected(frames: set[int]) -> bool:
-            seen, frontier = set(), [min(frames)]
-            while frontier:
-                frame = frontier.pop()
-                if frame not in seen:
-                    seen.add(frame)
-                    frontier.extend((self.neighbors[frame] & frames) - seen)
-            return seen == frames
-
-        def divide(frames: set[int]) -> Cluster:
-            nonlocal counter
-            node = Cluster(counter, sorted(frames))
-            counter += 1
-            if len(frames) <= maximum:
-                return node
-            # BFS graph order, independent of estimated camera positions.
-            order, seen, queue = [], set(), deque([min(frames)])
-            while queue:
-                frame = queue.popleft()
-                if frame in seen:
-                    continue
-                seen.add(frame)
-                order.append(frame)
-                queue.extend(sorted((self.neighbors[frame] & frames) - seen))
-            if len(order) != len(frames):
-                raise ValueError("A proposed cluster is disconnected")
-            candidates = []
-            for cut in range(max(1, len(order)*2//5), min(len(order), len(order)*3//5+1)):
-                left, right = set(order[:cut]), set(order[cut:])
-                left_boundary = {f for f in left if self.neighbors[f] & right}
-                right_boundary = {f for f in right if self.neighbors[f] & left}
-                separator = min((left_boundary, right_boundary), key=lambda s: (len(s), sorted(s))).copy()
-                boundary = left_boundary | right_boundary
-                pool = set(boundary)
-                while len(pool) < overlap:
-                    expanded = pool | {n for f in pool for n in self.neighbors[f] & frames}
-                    if expanded == pool:
-                        break
-                    pool = expanded
-                for f in sorted(pool, key=lambda f: (f not in boundary, -len(self.neighbors[f] & frames), f)):
-                    if len(separator) >= overlap:
-                        break
-                    separator.add(f)
-                a, b = left | separator, right | separator
-                if (len(separator) >= 6 and max(len(a), len(b)) < len(frames)
-                        and connected(a) and connected(b)):
-                    candidates.append((len(separator), max(len(a), len(b)), sorted(a), sorted(b)))
-            if not candidates:
-                raise ValueError("Cannot partition the verified graph with sufficient shared cameras; inspect hierarchy inputs")
-            _, _, a, b = min(candidates)
-            node.children = [divide(set(a)), divide(set(b))]
-            return node
-
-        return divide(set(self.neighbors))

@@ -63,7 +63,7 @@ class VideoFrameSampler:
         executable = shutil.which("stereoforge-extract-frames")
         if executable is None:
             raise RuntimeError("Native video extractor is missing. Rebuild the Docker environment with "
-                               "bash scripts/build_and_start.sh, then rerun the demo.")
+                               "bash scripts/build_and_start.sh, then rerun reconstruction.")
         video = video.resolve(strict=True)
         identity = {
             "version": 1, "source": self._source_identity(video),

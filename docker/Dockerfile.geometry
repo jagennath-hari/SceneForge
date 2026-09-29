@@ -49,7 +49,7 @@ RUN cmake -S /opt/stereoforge/video -B /opt/stereoforge/build -G Ninja \
 
 COPY third_party/vggt-omega/requirements.txt /opt/requirements/vggt-omega.txt
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install -r /opt/requirements/vggt-omega.txt 'open3d>=0.19,<0.20' 'scipy>=1.11,<2' huggingface-hub
+    uv pip install -r /opt/requirements/vggt-omega.txt huggingface-hub
 COPY third_party/vggt-omega/ /opt/third_party/vggt-omega/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --no-build-isolation --no-deps /opt/third_party/vggt-omega

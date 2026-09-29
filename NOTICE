@@ -1,0 +1,10 @@
+SceneForge
+Copyright 2026 Jagennath Hari
+
+The Apache License, Version 2.0 applies to SceneForge's original contributions.
+Third-party code, models, weights, and material derived from them retain their
+respective licenses and notices; this license does not relicense those materials.
+
+VGGT-Ω is distributed under Meta's FAIR Noncommercial Research License, which
+restricts use of its research materials, outputs, and results to noncommercial
+research. See third_party/vggt-omega/LICENSE, including its Acceptable Use Policy.

@@ -132,3 +132,17 @@ This work integrates the following open-source libraries and tools:
 
 - [**LightGlue-ONNX**](https://github.com/fabio-sim/LightGlue-ONNX) — ONNX/TensorRT implementation of the RaCo–ALIKED–LightGlue+ frontend.
 - [**cuNLS**](https://github.com/nvidia-isaac/cuNLS) — GPU-accelerated nonlinear least-squares optimization for bundle adjustment.
+
+## 📄 License
+
+SceneForge's original code is released under the [Apache License 2.0](LICENSE).
+You may use, modify, and distribute that code, including for commercial purposes,
+subject to the license's notice, attribution, and redistribution requirements.
+The license does not grant rights to use the authors' trademarks.
+
+Third-party components and model weights retain their respective licenses.
+**The current pipeline uses VGGT-Ω under the
+[FAIR Noncommercial Research License](https://github.com/facebookresearch/vggt-omega/blob/main/LICENSE),
+which restricts use of its materials, outputs, and results to noncommercial
+research.** SceneForge's Apache-2.0 license does not override those restrictions.
+See [NOTICE](NOTICE) and the upstream licenses for details.

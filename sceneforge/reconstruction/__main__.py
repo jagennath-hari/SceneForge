@@ -41,6 +41,18 @@ from .windowed import WindowReconstructor, WindowOptions, POLICY
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def artifact_display_path(path: Path) -> Path:
+    """Translate paths in Docker's data mount for host-facing log messages only."""
+    host_data = os.environ.get('SCENEFORGE_HOST_DATA_DIR')
+    if not host_data or not Path(host_data).is_absolute():
+        return path
+    try:
+        relative = path.resolve().relative_to((ROOT / 'data').resolve())
+    except ValueError:
+        return path  # A custom output outside the mount has no known host path.
+    return Path(host_data) / relative
+
+
 def signature(video: Path, keyframe_config: Path) -> dict:
     digest = hashlib.sha256()
     files = [*Path(__file__).parent.glob("*.py"),
@@ -140,7 +152,8 @@ def main() -> int:
             recording = attempt / 'pipeline.rrd'
             viewer_port = reconstructor.native.builder.enable_rerun(str(recording), not args.headless)
             reconstructor.visualization = ReconstructionVisualization(reconstructor.native)
-            logging.info('Rerun %s; recording: %s', 'recording only' if args.headless else 'live viewer connected', recording)
+            logging.info('Rerun %s; recording: %s', 'recording only' if args.headless else 'live viewer connected',
+                         artifact_display_path(recording))
         logging.info('Video → keyframes → %s → VGGT-Ω windows → common map + BA → dense refinement',
                      'temporal and loop tracks' if options.loop_closure else 'temporal tracks')
         if reconstructor.visualization is not None:
@@ -164,17 +177,17 @@ def main() -> int:
                        'timestamps_seconds': sampled.timestamps_seconds})
         result = reconstructor.run(list(sampled.paths), checkpoint, sampled.timestamps_seconds)
         logging.info('%s: %d/%d keyframes. Artifacts: %s', result['status'], result['registered_frames'],
-                     result['input_frames'], output)
+                     result['input_frames'], artifact_display_path(output))
         if options.loop_closure:
             loops = result.get('loop_closure', {})
             logging.info('Optimized map retains %d loop landmarks across %d verified pairs',
                          loops.get('retained_loop_landmarks', 0), loops.get('retained_loop_pairs', 0))
         if args.rerun:
-            logging.info('Rerun recording: %s', recording)
+            logging.info('Rerun recording: %s', artifact_display_path(recording))
         keep_viewer = bool(viewer_port)
         return 0 if result['status'] == 'complete' else 1
     except (Exception, KeyboardInterrupt) as error:
-        logging.error('%s%s', str(error) or 'Interrupted', f'\nArtifacts retained in {output}' if output else '')
+        logging.error('%s%s', str(error) or 'Interrupted', f'\nArtifacts retained in {artifact_display_path(output)}' if output else '')
         if args.debug:
             logging.exception('Reconstruction traceback')
         return 130 if isinstance(error, KeyboardInterrupt) else 1

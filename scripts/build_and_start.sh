@@ -177,6 +177,7 @@ exec docker run "${TERMINAL_ARGS[@]}" --rm \
     --pid=host \
     --ipc=host \
     -e NVIDIA_DRIVER_CAPABILITIES=all \
+    -e SCENEFORGE_HOST_DATA_DIR="${REPO_ROOT}/data" \
     "${DISPLAY_ARGS[@]}" \
     --user "${HOST_UID}:${HOST_GID}" \
     --workdir /workspace/SceneForge \

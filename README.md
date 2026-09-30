@@ -90,6 +90,8 @@ host before starting. Run these commands from the host terminal.
 
 ## 🏗️ System Architecture
 
+https://github.com/user-attachments/assets/7ea90940-dd29-47ac-b4bf-821049f6747f
+
 ```mermaid
 flowchart TD
     video["Continuous monocular video"]

@@ -24,11 +24,11 @@
 #include <vector>
 
 namespace sceneforge::optimization {
-RerunRecorder::RerunRecorder(const std::string& path) {
+RerunRecorder::RerunRecorder(const std::string& path, bool live) {
     this->library_ = dlopen("/usr/local/lib/libsceneforge_rerun.so", RTLD_NOW | RTLD_LOCAL);
     if (this->library_ == nullptr) { throw std::runtime_error(std::string("Load Rust Rerun adapter: ") + dlerror()); }
     try {
-        const Open open = reinterpret_cast<Open>(dlsym(this->library_, "sf_rerun_open"));
+        const Open open = reinterpret_cast<Open>(dlsym(this->library_, "sf_rerun_open_session"));
         this->snapshot_ = reinterpret_cast<SnapshotCall>(dlsym(this->library_, "sf_rerun_snapshot"));
         this->event_ = reinterpret_cast<EventCall>(dlsym(this->library_, "sf_rerun_status"));
         this->image_ = reinterpret_cast<ImageCall>(dlsym(this->library_, "sf_rerun_image"));
@@ -37,7 +37,7 @@ RerunRecorder::RerunRecorder(const std::string& path) {
             throw std::runtime_error("Incompatible Rust Rerun adapter; rebuild Docker");
         }
         std::array<char,2048> error{};
-        if (open(path.c_str(), &this->session_, error.data(), error.size()) != 0) {
+        if (open(path.c_str(), live, &this->viewer_port_, &this->session_, error.data(), error.size()) != 0) {
             throw std::runtime_error(std::string("Open Rerun recording: ") + error.data());
         }
     } catch (...) { dlclose(this->library_); this->library_ = nullptr; throw; }

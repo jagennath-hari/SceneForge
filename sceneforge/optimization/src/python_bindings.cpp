@@ -107,7 +107,9 @@ PYBIND11_MODULE(_sceneforge_map, module) {
             builder.RerunKeyframe(frame);
         })
         .def("preview_window",&so::MapBuilder::PreviewWindow,py::call_guard<py::gil_scoped_release>())
-        .def("enable_rerun",&so::MapBuilder::EnableRerun,py::call_guard<py::gil_scoped_release>())
+        .def("enable_rerun",&so::MapBuilder::EnableRerun,py::arg("path"),py::arg("live")=true,
+             py::call_guard<py::gil_scoped_release>())
+        .def("close_rerun",&so::MapBuilder::CloseRerun,py::call_guard<py::gil_scoped_release>())
         .def("set_tracks",&so::MapBuilder::SetTracks,py::call_guard<py::gil_scoped_release>())
         .def("add_window",&so::MapBuilder::AddWindow,py::call_guard<py::gil_scoped_release>())
         .def("rank_windows",&so::MapBuilder::RankWindows,py::call_guard<py::gil_scoped_release>())

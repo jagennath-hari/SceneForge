@@ -180,8 +180,12 @@ void MapBuilder::PreviewWindow(const std::vector<DepthFrame>& frames) {
         this->recorder_->Image(frames.front());
     } catch (...) { this->recorder_.reset(); throw; }
 }
-void MapBuilder::EnableRerun(const std::string& path) {
-    this->recorder_ = std::make_unique<RerunRecorder>(path);
+std::uint16_t MapBuilder::EnableRerun(const std::string& path, bool live) {
+    this->recorder_ = std::make_unique<RerunRecorder>(path, live);
+    return this->recorder_->ViewerPort();
+}
+void MapBuilder::CloseRerun() {
+    this->recorder_.reset();
 }
 void MapBuilder::Record(const SparseMap& model, std::uint32_t stage,
                         const std::function<void(const std::string&)>& progress, const DepthFrame* image) {

@@ -20,11 +20,11 @@ set -euo pipefail
 
 # Resolve the input before changing directories: relative paths belong to the caller.
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-    echo "Usage: bash scripts/build_and_start.sh VIDEO_FILE"
+    echo "Usage: bash scripts/build_and_start.sh VIDEO_FILE [--headless]"
     exit 0
 fi
-if [[ $# -ne 1 ]]; then
-    echo "Usage: bash scripts/build_and_start.sh VIDEO_FILE" >&2
+if [[ $# -lt 1 || $# -gt 2 || ( $# -eq 2 && "$2" != "--headless" ) ]]; then
+    echo "Usage: bash scripts/build_and_start.sh VIDEO_FILE [--headless]" >&2
     exit 2
 fi
 if [[ ! -f "$1" || ! -r "$1" ]]; then
@@ -44,6 +44,11 @@ if ! VIDEO_FRAMES="$(ffprobe -v error -select_streams V:0 -read_intervals '%+#64
     [[ ! "$VIDEO_FRAMES" =~ ^[0-9]+$ ]] || (( VIDEO_FRAMES < 2 )); then
     echo "Not a readable video with at least two frames: $VIDEO_PATH" >&2
     exit 1
+fi
+
+RECONSTRUCTION_ARGS=()
+if [[ "${2:-}" == "--headless" || -z "${DISPLAY:-}" ]]; then
+    RECONSTRUCTION_ARGS+=(--headless)
 fi
 
 # Configuration
@@ -137,6 +142,24 @@ TERMINAL_ARGS=()
 if [[ -t 0 && -t 1 ]]; then
     TERMINAL_ARGS=(-it)
 fi
+# Headless recording does not need a display or X11 mounts.
+DISPLAY_ARGS=(-e DISPLAY=)
+if [[ ${#RECONSTRUCTION_ARGS[@]} -eq 0 ]]; then
+    DISPLAY_ARGS=(
+        -e DISPLAY="${DISPLAY}"
+        -v /tmp/.X11-unix:/tmp/.X11-unix
+        -e XDG_RUNTIME_DIR=/tmp/runtime-root
+        -v /tmp/runtime-root:/tmp/runtime-root
+    )
+    AUTH_FILE="${XAUTHORITY:-${HOME}/.Xauthority}"
+    if [[ -f "${AUTH_FILE}" ]]; then
+        AUTH_SOURCE="${AUTH_FILE//\"/\"\"}"
+        DISPLAY_ARGS+=(
+            -e XAUTHORITY=/tmp/viewer.Xauthority
+            --mount "type=bind,\"source=${AUTH_SOURCE}\",target=/tmp/viewer.Xauthority,readonly"
+        )
+    fi
+fi
 # Docker --mount uses CSV: quote/escape the source so spaces and commas are valid.
 VIDEO_MOUNT_SOURCE="${VIDEO_PATH//\"/\"\"}"
 echo "Reconstructing '${VIDEO_PATH}' (outputs: ${REPO_ROOT}/data/output)..."
@@ -154,13 +177,7 @@ exec docker run "${TERMINAL_ARGS[@]}" --rm \
     --pid=host \
     --ipc=host \
     -e NVIDIA_DRIVER_CAPABILITIES=all \
-    -e DISPLAY="${DISPLAY:-}" \
-    -e XAUTHORITY="/home/${USERNAME}/.Xauthority" \
-    -v /tmp/.X11-unix:/tmp/.X11-unix \
-    -e XDG_RUNTIME_DIR=/tmp/runtime-root \
-    -v /tmp/runtime-root:/tmp/runtime-root \
-    -v "${HOME}/.Xauthority:/root/.Xauthority" \
-    -v "${HOME}/.Xauthority:/home/${USERNAME}/.Xauthority:ro" \
+    "${DISPLAY_ARGS[@]}" \
     --user "${HOST_UID}:${HOST_GID}" \
     --workdir /workspace/SceneForge \
     --mount "type=bind,source=${REPO_ROOT}/sceneforge,target=/workspace/SceneForge/sceneforge" \
@@ -169,4 +186,4 @@ exec docker run "${TERMINAL_ARGS[@]}" --rm \
     --mount "type=bind,source=${REPO_ROOT}/.cache,target=/home/${USERNAME}/.cache" \
     --mount "type=bind,\"source=${VIDEO_MOUNT_SOURCE}\",target=${CONTAINER_VIDEO},readonly" \
     --mount "type=bind,source=${REPO_ROOT}/.cache/sceneforge/video-keyframes,target=/input/.keyframes" \
-    "${RUN_IMAGE}" python -m sceneforge.reconstruction --video "${CONTAINER_VIDEO}"
+    "${RUN_IMAGE}" python -m sceneforge.reconstruction --video "${CONTAINER_VIDEO}" "${RECONSTRUCTION_ARGS[@]}"

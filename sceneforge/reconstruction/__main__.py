@@ -23,6 +23,9 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+import os
+import socket
+import time
 from pathlib import Path
 import shutil
 from uuid import uuid4
@@ -73,12 +76,18 @@ def main() -> int:
     parser.add_argument('--keyframe-config', type=Path)
     parser.add_argument('--diagnostics', action='store_true', help='Check native CUDA Jacobians (slower; no intermediate map dumps)')
     parser.add_argument('--rerun', action=argparse.BooleanOptionalAction, default=True,
-                        help='Stream to Rerun and save pipeline.rrd (default); --no-rerun runs headless')
+                        help='Save pipeline.rrd (default); --no-rerun disables visualization and recording')
+    parser.add_argument('--headless', action='store_true',
+                        default=not bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')),
+                        help='Save the recording without opening a viewer; automatic when no display is available')
     parser.add_argument('--debug', action='store_true', help='Show exception traceback')
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
     logging.getLogger('dinov3').setLevel(logging.WARNING)
     output = None
+    reconstructor = None
+    viewer_port = 0
+    keep_viewer = False
     try:
         native_backend()
         if args.resume:
@@ -129,9 +138,9 @@ def main() -> int:
         reconstructor = WindowReconstructor(options, output, config, attempt, args.diagnostics)
         if args.rerun:
             recording = attempt / 'pipeline.rrd'
-            reconstructor.native.builder.enable_rerun(str(recording))
+            viewer_port = reconstructor.native.builder.enable_rerun(str(recording), not args.headless)
             reconstructor.visualization = ReconstructionVisualization(reconstructor.native)
-            logging.info('Rerun live viewer connected; recording also saved to %s', recording)
+            logging.info('Rerun %s; recording: %s', 'recording only' if args.headless else 'live viewer connected', recording)
         logging.info('Video → keyframes → %s → VGGT-Ω windows → common map + BA → dense refinement',
                      'temporal and loop tracks' if options.loop_closure else 'temporal tracks')
         if reconstructor.visualization is not None:
@@ -162,12 +171,30 @@ def main() -> int:
                          loops.get('retained_loop_landmarks', 0), loops.get('retained_loop_pairs', 0))
         if args.rerun:
             logging.info('Rerun recording: %s', recording)
+        keep_viewer = bool(viewer_port)
         return 0 if result['status'] == 'complete' else 1
     except (Exception, KeyboardInterrupt) as error:
         logging.error('%s%s', str(error) or 'Interrupted', f'\nArtifacts retained in {output}' if output else '')
         if args.debug:
             logging.exception('Reconstruction traceback')
         return 130 if isinstance(error, KeyboardInterrupt) else 1
+    finally:
+        if reconstructor is not None and args.rerun:
+            # Flush and close the recording before waiting, including on failures.
+            reconstructor.native.builder.close_rerun()
+        reconstructor = None
+        if keep_viewer:
+            logging.info('Reconstruction saved. Close the Rerun viewer or press Ctrl+C to exit.')
+            try:
+                while True:
+                    try:
+                        with socket.create_connection(('127.0.0.1', viewer_port), timeout=1):
+                            pass
+                    except OSError:
+                        break
+                    time.sleep(0.5)
+            except KeyboardInterrupt:
+                pass  # The completed reconstruction's exit status is preserved.
 
 
 if __name__ == '__main__':

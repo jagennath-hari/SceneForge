@@ -57,20 +57,27 @@ fn guarded(error: *mut c_char, capacity: usize, operation: impl FnOnce() -> Resu
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn sf_rerun_open(path: *const c_char, output: *mut *mut std::ffi::c_void,
+pub extern "C" fn sf_rerun_open_session(path: *const c_char, live: bool, port: *mut u16, output: *mut *mut std::ffi::c_void,
                                 error: *mut c_char, capacity: usize) -> i32 {
     guarded(error, capacity, || {
-        if path.is_null() || output.is_null() { return Err("Null recording path/handle".into()); }
+        if path.is_null() || port.is_null() || output.is_null() { return Err("Null recording path/handle".into()); }
         // SAFETY: C++ supplies a terminated UTF-8 path and writable handle.
         let path = unsafe { CStr::from_ptr(path) }.to_str()?;
-        // Launch the official viewer (or reuse its existing server). Use the
-        // actual port returned by the SDK, not an assumed localhost port.
-        let viewer = rerun::spawn(&rerun::SpawnOptions::default())?;
-        let uri = format!("rerun+http://127.0.0.1:{}/proxy", viewer.port).parse()?;
-        let recording = rerun::RecordingStreamBuilder::new("SceneForge").set_sinks((
-            rerun::sink::FileSink::new(path)?,
-            rerun::sink::GrpcSink::new(uri),
-        ))?;
+        // Own a separate viewer so waiting at shutdown cannot follow another run.
+        // Headless runs write exactly the same recording without starting a server.
+        let builder = rerun::RecordingStreamBuilder::new("SceneForge");
+        let (recording, viewer_port) = if live {
+            let viewer = rerun::spawn(&rerun::SpawnOptions {
+                new: true, wait_for_bind: true, ..Default::default()
+            })?;
+            let uri = format!("rerun+http://127.0.0.1:{}/proxy", viewer.port).parse()?;
+            (builder.set_sinks((
+                rerun::sink::FileSink::new(path)?,
+                rerun::sink::GrpcSink::new(uri),
+            ))?, viewer.port)
+        } else {
+            (builder.save(path)?, 0)
+        };
         // The blueprint follows reconstruction_step. Log the initial eye at
         // step zero too: a temporal pose without that timeline is unavailable
         // when the viewer queries it, until a later stage logs another pose.
@@ -100,7 +107,7 @@ pub extern "C" fn sf_rerun_open(path: *const c_char, output: *mut *mut std::ffi:
         ))?;
         recording.flush_async()?;
         let session = Box::new(Session { recording, step: 0, dense_focus: None, rotations: Default::default(), map_fit: None, centers: Default::default(), camera_root: None, staging: staging::Staging::default(), logged_images: BTreeSet::new() });
-        unsafe { *output = Box::into_raw(session).cast(); }
+        unsafe { *port = viewer_port; *output = Box::into_raw(session).cast(); }
         Ok(())
     })
 }

@@ -70,6 +70,19 @@ host before starting. Run these commands from the host terminal.
    Builds the Docker environment and runs reconstruction with live Rerun
    visualization. Results are saved under `data/output/`.
 
+   The viewer stays open after reconstruction; close it to exit. To run headless
+   and save a recording without opening a window:
+
+   ```bash
+   bash scripts/build_and_start.sh "data/input/barn.mp4" --headless
+   ```
+
+   Reopen the saved recording later (use the path printed at the end of the run):
+
+   ```bash
+   bash scripts/visualize.sh "data/output/<run>/<map>/pipeline.rrd"
+   ```
+
 > Use a continuous video without cuts. Replace the example path with any local
 > video file; it does not need to be inside the repository. Quote paths containing spaces.
 

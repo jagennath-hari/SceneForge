@@ -83,7 +83,8 @@ public:
     void RerunEvent(const std::string& message);
     void RerunKeyframe(const DepthFrame& frame);
     void PreviewWindow(const std::vector<DepthFrame>& frames);
-    void EnableRerun(const std::string& path);
+    [[nodiscard]] std::uint16_t EnableRerun(const std::string& path, bool live = true);
+    void CloseRerun();
     void SetTracks(std::vector<Observations> tracks);
     void AddWindow(const std::vector<DepthFrame>& frames, const std::vector<DepthFrame>& reference_frames,
                    const std::function<void(const std::string&)>& progress);

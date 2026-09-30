@@ -19,6 +19,17 @@ SceneForge has been tested on:
 > This is the tested reference configuration. Memory requirements depend on image
 > resolution and the number of keyframes per VGGT-Ω window.
 
+## 🎬 Sample Videos
+
+Some of the videos used with SceneForge, from
+[Tanks and Temples](https://www.tanksandtemples.org/download/):
+
+- [**Barn**](https://drive.google.com/file/d/0B-ePgl6HF260ZlBZcHFrTHFLdGM/view?usp=sharing&resourcekey=0-e64ZPu9sUpdNaPTNnjCpXw)
+- [**Caterpillar**](https://drive.google.com/file/d/0B-ePgl6HF260Z00xVWgyN2c3WEU/view?usp=sharing&resourcekey=0--zNcCkfMys94g7ZoRRyaGg)
+- [**Meeting Room**](https://drive.google.com/file/d/0B-ePgl6HF260V3BFSFFTZFJwSWc/view?usp=sharing&resourcekey=0-BZ5VQktqutuIpQSvImnUvg)
+
+The dataset has its own [license terms](https://www.tanksandtemples.org/license/).
+
 ## 🚀 Quick Start
 
 Install Git, Docker with NVIDIA Container Toolkit, and FFmpeg (`ffprobe`) on the
@@ -50,8 +61,10 @@ host before starting. Run these commands from the host terminal.
 
 3. **Reconstruct a video**
 
+   For example, save the [Barn video](https://drive.google.com/file/d/0B-ePgl6HF260ZlBZcHFrTHFLdGM/view?usp=sharing&resourcekey=0-e64ZPu9sUpdNaPTNnjCpXw) as `data/input/barn.mp4`, then run:
+
    ```bash
-   bash scripts/build_and_start.sh "/path/to/your/video.mp4"
+   bash scripts/build_and_start.sh "data/input/barn.mp4"
    ```
 
    Builds the Docker environment and runs reconstruction with live Rerun

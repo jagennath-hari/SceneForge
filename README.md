@@ -1,11 +1,24 @@
 # SceneForge: Hierarchical Neural SfM with GPU Bundle Adjustment
 
 SceneForge reconstructs continuous monocular video into a shared 3D map by combining
-learned keyframe selection, VGGT-Ω geometry priors, and GPU-accelerated bundle
-adjustment. The system aligns overlapping reconstructions, jointly refines camera
-poses, calibration, and landmarks using temporal and verified loop correspondences,
-and fuses refined depth into a colored dense point cloud. Live Rerun visualization
-reveals the reconstruction as it develops, from selected keyframes to the final map.
+learned image correspondences, VGGT-Ω geometry priors, and GPU-accelerated bundle
+adjustment. RaCo–ALIKED and LightGlue+ select keyframes and establish feature tracks,
+while VGGT-Ω predicts camera poses, intrinsics, and dense depth for overlapping
+keyframe windows. Local bundle adjustment refines each reconstruction, and Sim(3)
+alignment reconciles scale, rotation, and translation using shared cameras and
+landmarks to assemble a common map.
+
+SelaVPR++ global descriptors retrieve potential revisits between temporally distant
+keyframes. Local feature matching and geometric verification establish loop
+correspondences, which join the measured feature tracks. Their shared landmark
+observations constrain bundle adjustment across revisited regions, allowing the
+optimizer to reduce accumulated drift. GPU-accelerated cuNLS optimization refines
+camera poses and sparse landmarks, followed by global bundle adjustment of the map
+and shared camera intrinsics.
+
+Finally, VGGT-Ω depth is calibrated and refined using the optimized geometry, then
+fused into a colored dense point cloud. Live Rerun visualization reveals the
+reconstruction as it develops, from selected keyframes to the final map.
 
 https://github.com/user-attachments/assets/e11bb4bb-bc97-4042-ab52-a19de2ddf6a7
 
@@ -170,9 +183,10 @@ Python orchestrates the pipeline and model inference. C++/CUDA handles video
 processing, local feature matching, map operations and cuNLS optimization; the
 Rust adapter streams progress to Rerun.
 
-![Meeting Room reconstruction](assets/meeting_room.png)
-
-*Final reconstruction of the Meeting Room sequence.*
+<div align="center">
+  <img src="assets/meeting_room.png" alt="Meeting Room reconstruction" width="800"/>
+  <p>Final reconstruction of the Meeting Room sequence.</p>
+</div>
 
 ## 📖 Citation
 

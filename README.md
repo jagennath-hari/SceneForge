@@ -1,5 +1,17 @@
 # SceneForge: Hierarchical Neural SfM with GPU Bundle Adjustment
 
+<p align="center">
+  <a href="https://pytorch.org/">
+    <img src="https://img.shields.io/badge/PyTorch-EE4C2C?style=for-the-badge&amp;logo=pytorch&amp;logoColor=white" alt="PyTorch" />
+  </a>
+  <a href="https://developer.nvidia.com/tensorrt">
+    <img src="https://img.shields.io/badge/TensorRT-76B900?style=for-the-badge&amp;logo=nvidia&amp;logoColor=white" alt="TensorRT" />
+  </a>
+  <a href="https://rerun.io/">
+    <img src="https://img.shields.io/badge/Rerun-FF6F00?style=for-the-badge" alt="Rerun" />
+  </a>
+</p>
+
 <div align="justify">
 
 SceneForge is a hierarchical neural structure-from-motion pipeline for continuous

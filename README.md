@@ -1,4 +1,4 @@
-# SceneForge: GPU-Accelerated 3D Reconstruction from Monocular Video
+# SceneForge: Hierarchical Neural SfM with GPU Bundle Adjustment
 
 SceneForge reconstructs continuous monocular video into a shared 3D map by combining
 learned keyframe selection, VGGT-Ω geometry priors, and GPU-accelerated bundle

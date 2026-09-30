@@ -88,9 +88,9 @@ host before starting. Run these commands from the host terminal.
 > Use a continuous video without cuts. Replace the example path with any local
 > video file; it does not need to be inside the repository. Quote paths containing spaces.
 
-## 🏗️ System Architecture
-
 https://github.com/user-attachments/assets/7ea90940-dd29-47ac-b4bf-821049f6747f
+
+## 🏗️ System Architecture
 
 ```mermaid
 flowchart TD

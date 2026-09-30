@@ -7,6 +7,8 @@ poses, calibration, and landmarks using temporal and verified loop correspondenc
 and fuses refined depth into a colored dense point cloud. Live Rerun visualization
 reveals the reconstruction as it develops, from selected keyframes to the final map.
 
+[▶ Watch the Barn reconstruction](assets/barn_demo.mp4)
+
 ## 🖥️ Tested Configuration
 
 SceneForge has been tested on:
@@ -68,7 +70,7 @@ host before starting. Run these commands from the host terminal.
    ```
 
    Builds the Docker environment and runs reconstruction with live Rerun
-   visualization. Results are saved under `data/output/`.
+   visualization. Results are saved under [data/output/](data/output/).
 
    The viewer stays open after reconstruction; close it to exit. To run headless
    and save a recording without opening a window:

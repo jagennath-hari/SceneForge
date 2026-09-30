@@ -172,6 +172,8 @@ Rust adapter streams progress to Rerun.
 
 ![Meeting Room reconstruction](assets/meeting_room.png)
 
+*Final reconstruction of the Meeting Room sequence.*
+
 ## 📖 Citation
 
 If you find SceneForge useful in your research, please consider citing this

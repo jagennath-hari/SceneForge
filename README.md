@@ -1,11 +1,11 @@
 # SceneForge: Hierarchical Neural SfM with GPU Bundle Adjustment
 
 <p align="center">
-  <a href="https://github.com/facebookresearch/vggt-omega">
+  <a href="https://vggt-omega.github.io/">
     <img src="https://img.shields.io/badge/VGGT--%CE%A9-EE4C2C?style=for-the-badge&amp;logo=pytorch&amp;logoColor=white" alt="VGGT-Ω" />
   </a>
-  <a href="https://developer.nvidia.com/tensorrt">
-    <img src="https://img.shields.io/badge/TensorRT-76B900?style=for-the-badge&amp;logo=nvidia&amp;logoColor=white" alt="TensorRT" />
+  <a href="https://github.com/fabio-sim/LightGlue-ONNX">
+    <img src="https://img.shields.io/badge/LightGlue-76B900?style=for-the-badge&amp;logo=nvidia&amp;logoColor=white" alt="LightGlue" />
   </a>
   <a href="https://nvidia-isaac.github.io/cuNLS/">
     <img src="https://img.shields.io/badge/cuNLS-76B900?style=for-the-badge&amp;logo=nvidia&amp;logoColor=white" alt="cuNLS" />

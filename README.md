@@ -170,6 +170,8 @@ Python orchestrates the pipeline and model inference. C++/CUDA handles video
 processing, local feature matching, map operations and cuNLS optimization; the
 Rust adapter streams progress to Rerun.
 
+![Meeting Room reconstruction](assets/meeting_room.png)
+
 ## 📖 Citation
 
 If you find SceneForge useful in your research, please consider citing this

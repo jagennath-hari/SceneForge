@@ -7,7 +7,7 @@ poses, calibration, and landmarks using temporal and verified loop correspondenc
 and fuses refined depth into a colored dense point cloud. Live Rerun visualization
 reveals the reconstruction as it develops, from selected keyframes to the final map.
 
-[▶ Watch the Barn reconstruction](assets/barn_demo.mp4)
+https://github.com/user-attachments/assets/e11bb4bb-bc97-4042-ab52-a19de2ddf6a7
 
 ## 🖥️ Tested Configuration
 

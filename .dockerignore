@@ -35,7 +35,3 @@ third_party/lightglue-onnx/weights/
 
 # Rust build artifacts stay out of the build context.
 sceneforge/**/target/
-
-# Only the runtime entrypoint is needed from the host scripts directory.
-!scripts/
-!scripts/entrypoint.sh

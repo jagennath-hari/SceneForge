@@ -67,4 +67,4 @@ RUN --mount=type=cache,target=/opt/cargo/registry \
 RUN chown -R "${USER_UID}:${USER_GID}" /opt
 
 # Selected by docker run; prepare missing GPU engines, then execute reconstruction.
-COPY --chmod=0755 scripts/entrypoint.sh /usr/local/bin/sceneforge-entrypoint
+COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/sceneforge-entrypoint

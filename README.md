@@ -135,7 +135,7 @@ flowchart TD
     subgraph mapping["2 · Geometry and common map"]
         windows["Overlapping VGGT-Ω windows<br/>Depth · confidence · intrinsics · camera poses"]
         local["Local cuNLS bundle adjustment<br/>Initialize landmarks from depth and measured tracks"]
-        common["Common map assembly<br/>Graph-ordered Sim(3) alignment + map refinement"]
+        common["Common map assembly<br/>Graph-ordered SIM(3) alignment + map refinement"]
         globalBA["Final global cuNLS bundle adjustment<br/>Shared intrinsics · camera poses · sparse landmarks"]
 
         windows --> local

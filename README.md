@@ -16,7 +16,7 @@
 
 SceneForge is a hierarchical neural structure-from-motion pipeline for continuous
 monocular video. It combines learned keyframe selection and VGGT-Ω geometry priors
-with Sim(3) alignment to assemble overlapping reconstructions into a common map.
+with (\mathrm{SIM}(3)) alignment to assemble overlapping reconstructions into a common map.
 SelaVPR++ retrieves loop candidates whose verified feature correspondences
 constrain GPU-accelerated cuNLS bundle adjustment of camera poses, shared
 intrinsics, and sparse landmarks. Multi-view depth refinement and fusion produce a colored dense
